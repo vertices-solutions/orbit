@@ -1111,6 +1111,7 @@ name = "hpcd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "clap",
  "prost",
  "proto",
  "russh",
