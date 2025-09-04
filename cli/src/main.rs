@@ -1,9 +1,11 @@
-use tokio::sync::mpsc;
-
 use anyhow::bail;
 use clap::{Parser, Subcommand};
 use proto::agent_client::AgentClient;
-use proto::{MfaAnswer, PingReply, PingRequest, StreamEvent};
+use proto::{MfaAnswer, PingReply, PingRequest, StreamEvent, SubmitRequest, stream_event};
+use std::io::Write;
+use tokio::io;
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, transport::Channel};
@@ -19,7 +21,10 @@ struct Cli {
 enum Cmd {
     Ping,
     Ls,
-    //    Submit { project: String, #[arg(last = true)] args: Vec<String> },
+    Submit {
+        local_path: String,
+        remote_path: String,
+    },
     //    Status { job_id: String },
     //    Logs   { job_id: String },
 }
@@ -63,13 +68,189 @@ async fn send_ls(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
     let mut exit_code: Option<i32> = None;
     while let Some(item) = inbound.next().await {
         match item {
-            Ok(StreamEvent { event: Some(ev) }) => {}
+            Ok(StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(bytes) => {
+                    write_all(&mut std::io::stdout(), &bytes);
+                }
+                stream_event::Event::Stderr(bytes) => {
+                    write_all(&mut std::io::stderr(), &bytes)?;
+                }
+                stream_event::Event::ExitCode(code) => {
+                    exit_code = Some(code);
+                    break;
+                }
+                stream_event::Event::Mfa(mfa) => {
+                    // Prompt for all answers in this round
+                    eprintln!();
+                    if !mfa.name.is_empty() {
+                        eprintln!("MFA: {}", mfa.name);
+                    }
+                    if !mfa.instructions.is_empty() {
+                        eprintln!("{}", mfa.instructions);
+                    }
+
+                    let mut responses = Vec::with_capacity(mfa.prompts.len());
+                    for p in &mfa.prompts {
+                        let ans = prompt_value(&p.text, p.echo).await?;
+                        responses.push(ans);
+                    }
+
+                    // Send the answers back
+                    if tx_ans.send(MfaAnswer { responses }).await.is_err() {
+                        eprintln!("server closed while sending MFA answers");
+                        break;
+                    }
+                }
+                stream_event::Event::Error(err) => {
+                    // "command not allowed" goes here
+                    // "SSH connect failed also goes here"
+                    eprintln!("server error: {err}");
+                    exit_code = Some(1);
+                    break;
+                }
+            },
             Ok(StreamEvent { event: None }) => log::info!("received empty event"),
-            Err(status) => {}
+            Err(status) => {
+                eprintln!("stream error: {}", status);
+                exit_code = Some(1);
+                break;
+            }
         }
     }
+    match exit_code {
+        Some(num) => {
+            if num != 0 {
+                bail!("received exit code {num}");
+            }
+            return Ok(());
+        }
+        None => {
+            return Ok(());
+        }
+    }
+}
 
+async fn send_submit(
+    client: &mut AgentClient<Channel>,
+    local_path: &str,
+    remote_path: &str,
+) -> anyhow::Result<()> {
+    // outgoing stream client -> server with MFA answers
+    let (tx_ans, rx_ans) = mpsc::channel::<SubmitRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(SubmitRequest {
+            msg: Some(proto::submit_request::Msg::Init(proto::SubmitRequestInit {
+                local_file_path: local_path.to_owned(),
+                remote_file_path: remote_path.to_owned(),
+            })),
+        })
+        .await?;
+    // Start LS RPC
+    let response = client.submit(Request::new(outbound)).await?;
+    let mut inbound = response.into_inner();
+    let mut exit_code: Option<i32> = None;
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(bytes) => {
+                    write_all(&mut std::io::stdout(), &bytes);
+                }
+                stream_event::Event::Stderr(bytes) => {
+                    write_all(&mut std::io::stderr(), &bytes)?;
+                }
+                stream_event::Event::ExitCode(code) => {
+                    exit_code = Some(code);
+                    break;
+                }
+                stream_event::Event::Mfa(mfa) => {
+                    // Prompt for all answers in this round
+                    eprintln!();
+                    if !mfa.name.is_empty() {
+                        eprintln!("MFA: {}", mfa.name);
+                    }
+                    if !mfa.instructions.is_empty() {
+                        eprintln!("{}", mfa.instructions);
+                    }
+
+                    let mut responses = Vec::with_capacity(mfa.prompts.len());
+                    for p in &mfa.prompts {
+                        let ans = prompt_value(&p.text, p.echo).await?;
+                        responses.push(ans);
+                    }
+
+                    // Send the answers back
+                    if tx_ans
+                        .send(SubmitRequest {
+                            msg: Some(proto::submit_request::Msg::Mfa(MfaAnswer { responses })),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        eprintln!("server closed while sending MFA answers");
+                        break;
+                    }
+                }
+                stream_event::Event::Error(err) => {
+                    // "command not allowed" goes here
+                    // "SSH connect failed also goes here"
+                    eprintln!("server error: {err}");
+                    exit_code = Some(1);
+                    break;
+                }
+            },
+            Ok(StreamEvent { event: None }) => log::info!("received empty event"),
+            Err(status) => {
+                eprintln!("stream error: {}", status);
+                exit_code = Some(1);
+                break;
+            }
+        }
+    }
+    match exit_code {
+        Some(num) => {
+            if num != 0 {
+                bail!("on client side: received exit code {num}");
+            }
+            return Ok(());
+        }
+        None => {
+            return Ok(());
+        }
+    }
+}
+
+fn write_all<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
+    w.write_all(buf)?;
+    w.flush()?;
     Ok(())
+}
+
+async fn prompt_value(prompt: &str, echo: bool) -> anyhow::Result<String> {
+    let prompt = prompt.to_string();
+    if echo {
+        tokio::task::spawn_blocking(move || -> anyhow::Result<String> {
+            print!("{}", prompt);
+            std::io::stdout().flush()?;
+            let mut s = String::new();
+            std::io::stdin().read_line(&mut s)?;
+            // Trim common line endings
+            while s.ends_with('\n') || s.ends_with('\r') {
+                s.pop();
+            }
+            Ok(s)
+        })
+        .await?
+    } else {
+        bail!("Method not supported")
+        /*
+        tokio::task::spawn_blocking(move || -> Result<String> {
+            let s = rpassword::prompt_password(prompt)?;
+            Ok(s)
+        })
+        .await?
+        */
+    }
 }
 
 #[tokio::main]
@@ -81,7 +262,11 @@ async fn main() -> anyhow::Result<()> {
             Ok(()) => println!("pong"),
             Err(e) => bail!(e),
         },
-        Cmd::Ls => {}
+        Cmd::Ls => send_ls(&mut client).await?,
+        Cmd::Submit {
+            local_path,
+            remote_path,
+        } => send_submit(&mut client, &local_path, &remote_path).await?,
     }
     Ok(())
 }

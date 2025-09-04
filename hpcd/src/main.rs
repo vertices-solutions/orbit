@@ -1,14 +1,17 @@
 use anyhow::Context;
 use clap::Parser;
+use log::LevelFilter;
 use proto::agent_server::{Agent, AgentServer};
-use proto::{MfaAnswer, PingReply, PingRequest, StreamEvent, stream_event};
+use proto::{
+    MfaAnswer, MfaPrompt, PingReply, PingRequest, StreamEvent, SubmitRequest, agent_client,
+    stream_event,
+};
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio_stream::{Stream, StreamExt};
-use tonic::transport::Server;
-
 use tonic::Status;
+use tonic::transport::Server;
 mod ssh;
 use ssh::{SessionManager, SshParams};
 
@@ -64,7 +67,7 @@ impl AgentSvc {
         let mgr = self.mgr.clone();
         let cmd = command.to_string();
         tokio::spawn(async move {
-            if let Err(err) = mgr.exec_whitelisted(&cmd, evt_tx.clone(), mfa_rx).await {
+            if let Err(err) = mgr.exec(&cmd, evt_tx.clone(), mfa_rx).await {
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
                         event: Some(stream_event::Event::Error(err.to_string())),
@@ -75,11 +78,60 @@ impl AgentSvc {
         let out: OutStream = Box::pin(receiver_to_stream(evt_rx));
         Ok(tonic::Response::new(out))
     }
+    async fn submit_full(
+        &self,
+        request: tonic::Request<tonic::Streaming<SubmitRequest>>,
+    ) -> Result<tonic::Response<OutStream>, Status> {
+        log::debug!("submit request initiated");
+        // Setting up inbound stream (client -> server) carrying data or MFA answers from client to mfa_tx
+        let mut inbound = request.into_inner();
+
+        // Spawning a thread to handle the incoming data
+        let init = inbound
+            .message()
+            .await
+            .map_err(|e| Status::unknown(format!("read error: {e}")))?
+            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+        let (local_path, remote_path) = match init.msg {
+            Some(proto::submit_request::Msg::Init(i)) => (i.local_file_path, i.remote_file_path),
+            _ => return Err(Status::invalid_argument("first message must be init(path)")),
+        };
+        log::debug!("transfering data from {} to {}", &local_path, &remote_path);
+        let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
+
+        // Pipe the remaining client messages (if any) into MFA answers
+        let (mfa_tx, mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        tokio::spawn(async move {
+            while let Ok(Some(item)) = inbound.message().await {
+                if let Some(proto::submit_request::Msg::Mfa(ans)) = item.msg {
+                    if mfa_tx.send(ans).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let mgr = self.mgr.clone();
+        tokio::spawn(async move {
+            //if let Err(err) = mgr.sync_dir(&local_path, evt_tx.clone(), mfa_rx).await {
+            if let Err(err) = mgr.sync_dir(&local_path, &remote_path, None, None).await {
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(err.to_string())),
+                    }))
+                    .await;
+            }
+        });
+
+        let out: OutStream = Box::pin(receiver_to_stream(evt_rx));
+        Ok(tonic::Response::new(out))
+    }
 }
 
 #[tonic::async_trait]
 impl Agent for AgentSvc {
     type LsStream = OutStream;
+    type SubmitStream = OutStream;
     async fn ping(
         &self,
         request: tonic::Request<PingRequest>,
@@ -103,11 +155,21 @@ impl Agent for AgentSvc {
         &self,
         request: tonic::Request<tonic::Streaming<MfaAnswer>>,
     ) -> Result<tonic::Response<Self::LsStream>, Status> {
-        self.run_command("ls -l $HOME", request).await
+        self.run_command("ls", request).await
+    }
+
+    async fn submit(
+        &self,
+        request: tonic::Request<tonic::Streaming<SubmitRequest>>,
+    ) -> Result<tonic::Response<Self::SubmitStream>, Status> {
+        self.submit_full(request).await
     }
 }
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    env_logger::builder()
+        .filter_level(LevelFilter::Debug)
+        .init();
     let opts = Opts::parse();
     let server_addr: SocketAddr = "127.0.0.1:50056".parse()?;
     let remote_server: SocketAddr = opts

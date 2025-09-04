@@ -1,17 +1,28 @@
-use std::{net::SocketAddr, sync::Arc, time::Duration};
-
 use anyhow::{Context, Result, anyhow};
-use tokio::sync::{Mutex, mpsc};
-use tokio_stream::wrappers::ReceiverStream;
-
+use blake3::Hasher as Blake3;
+use log;
+use pathdiff::diff_paths;
+use proto::{MfaAnswer, MfaPrompt, Prompt, StreamEvent, stream_event};
 use russh::ChannelMsg;
 use russh::client::Config;
 use russh::client::{Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::PrivateKeyWithHashAlg;
+use russh::keys::ssh_key::private::Ed25519PrivateKey;
 use russh::{Channel, ChannelId};
+use russh_sftp::client::SftpSession;
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use sha2::{Digest, Sha256};
+use std::fs::OpenOptions;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
+use tokio::fs as tokiofs;
+use tokio::io::{AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{Mutex, mpsc};
+use tokio_stream::wrappers::ReceiverStream;
 
-use proto::{MfaAnswer, MfaPrompt, Prompt, StreamEvent, stream_event};
-
+use tokio::io::AsyncReadExt;
+use walkdir::WalkDir;
 /// Minimal russh client handler. We rely on default implementations.
 /// You could extend this to verify host keys or log events.
 #[derive(Clone, Debug, Default)]
@@ -19,6 +30,12 @@ pub struct ClientHandler;
 
 impl Handler for ClientHandler {
     type Error = anyhow::Error;
+    async fn check_server_key(
+        &mut self,
+        server_public_key: &russh::keys::ssh_key::PublicKey,
+    ) -> std::result::Result<bool, Self::Error> {
+        return Ok(true);
+    }
 }
 
 /// Parameters for establishing the SSH connection.
@@ -77,20 +94,31 @@ impl SessionManager {
         };
 
         if needs_connect {
+            log::info!(
+                "re-establishing connection with {}@{}",
+                &self.params.username,
+                &self.params.addr
+            );
             // Establish TCP + SSH
             let handler = ClientHandler::default();
             let mut handle = russh::client::connect(self.config.clone(), self.params.addr, handler)
                 .await
                 .context("SSH connect failed")?;
-
+            log::info!(
+                "established initial connection with {}@{}, proceeding with auth",
+                &self.params.username,
+                &self.params.addr
+            );
             // Try publickey first if identity provided
             if let Some(path) = &self.params.identity_path {
                 let key = russh::keys::load_secret_key(path, None)
                     .with_context(|| format!("failed to load secret key at {}", path))?;
                 let key = Arc::new(key);
                 // Prefer SHA-256 for RSA if applicable (ignored for non-RSA keys)
-                let pk =
-                    PrivateKeyWithHashAlg::new(key, Some(russh::keys::ssh_key::HashAlg::Sha256));
+                let pk = PrivateKeyWithHashAlg::new(
+                    key,
+                    handle.best_supported_rsa_hash().await?.flatten(),
+                );
                 match handle
                     .authenticate_publickey(self.params.username.clone(), pk)
                     .await?
@@ -131,18 +159,26 @@ impl SessionManager {
                 let handle_clone = self.handle.clone();
                 let want_reply = true;
                 let jh = tokio::spawn(async move {
-                    let mut ticker = tokio::time::interval(interval);
+                    let mut ticker = tokio::time::interval(interval / 2);
                     loop {
                         ticker.tick().await;
                         if let Some(ref h) = *handle_clone.lock().await {
                             if h.is_closed() {
+                                log::debug!("keepalive handle is closed");
                                 break;
                             }
                         }
                         // Ignore errors; connection may be closing.
                         let _ = match *handle_clone.lock().await {
                             Some(ref v) => {
-                                v.send_keepalive(want_reply).await;
+                                match v.send_keepalive(want_reply).await {
+                                    Err(e) => {
+                                        log::debug!("error when sending a keepalive: {}", e);
+                                    }
+                                    Ok(_) => {
+                                        log::debug!("successfully sent a keepalive message");
+                                    }
+                                };
                             }
                             None => {}
                         };
@@ -151,6 +187,12 @@ impl SessionManager {
 
                 *self.keepalive_task_handle.lock().await = Some(jh);
             }
+        } else {
+            log::info!(
+                "don't need to re-establish connection to {}@{}",
+                &self.params.username,
+                &self.params.addr
+            );
         }
 
         Ok(())
@@ -224,24 +266,38 @@ impl SessionManager {
             }
         }
     }
+    async fn exec_simple(&self, cmd: &str) -> Result<i32> {
+        // Executes a command with "dummy" channels.
+        // TODO: Refactor cases when this is needed.
+        let mut guard = self.handle.lock().await;
+        let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
+        let mut chan = handle.channel_open_session().await?;
+        chan.exec(true, cmd).await?;
+        let mut code: i32 = 0;
+        while let Some(msg) = chan.wait().await {
+            if let ChannelMsg::ExitStatus { exit_status } = msg {
+                code = exit_status as i32;
+            }
+            if matches!(msg, ChannelMsg::Close) {
+                break;
+            }
+        }
+        let _ = chan.eof().await;
+        let _ = chan.close().await;
+        Ok(code)
+    }
 
     /// Execute a single whitelisted command over the (shared) SSH connection,
     /// streaming stdout/stderr and exit code to `evt_tx`.
     ///
     /// Only one command is run at a time; a long-lived channel lock ensures that.
-    pub async fn exec_whitelisted(
+    pub async fn exec(
         &self,
-        command: &str,
+        cmd: &str,
         evt_tx: mpsc::Sender<Result<StreamEvent, tonic::Status>>,
         mut mfa_rx: mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         // Enforce whitelist
-        let cmd = match command {
-            "ls" => "ls",
-            "uname -a" => "uname -a",
-            "w" => "w",
-            other => return Err(anyhow!("command not allowed: {}", other)),
-        };
 
         // Ensure connection & (re)authenticate if needed (may prompt MFA)
         self.ensure_connected(&evt_tx, &mut mfa_rx).await?;
@@ -304,6 +360,400 @@ impl SessionManager {
 
         Ok(())
     }
+    async fn sftp(&self) -> Result<SftpSession> {
+        // TODO: this function is using dummy auth channels right now - for production use, they
+        // MUST be hooked to user-guided MFA
+        let guard = self.handle.lock().await;
+        let handle = guard
+            .as_ref()
+            .ok_or_else(|| anyhow!("SSH handle lost before opening SFTP"))?;
+        let channel = handle.clone().channel_open_session().await?;
+        channel.request_subsystem(true, "sftp").await?;
+        let sftp = SftpSession::new(channel.into_stream()).await?;
+        Ok(sftp)
+    }
+    async fn ensure_remote_dir(&self, sftp_session: &SftpSession, remote_dir: &str) -> Result<()> {
+        // Normalize to components and create incrementally
+        let mut cur = String::from("");
+        log::debug!("remote dir: {remote_dir}");
+        for comp in Path::new(remote_dir).components() {
+            let seg = match comp {
+                std::path::Component::RootDir => "/".to_string(),
+                std::path::Component::Normal(os) => os.to_string_lossy().to_string(),
+                std::path::Component::CurDir => continue,
+                std::path::Component::ParentDir => continue, // TODO: this actually needs to remove component, I will need to fix this
+                _ => continue,
+            };
+            log::debug!("seg: {}", &seg);
+            if seg.is_empty() {
+                log::debug!("empty seg");
+                continue;
+            }
+            if (cur != "/" && !cur.is_empty()) {
+                cur = format!("{}/{}", cur.trim_end_matches("/"), seg);
+            } else {
+                cur = format!("/{}", seg);
+            }
+            log::debug!("cur: {}", &cur);
+            match sftp_session.metadata(&cur).await {
+                Ok(meta) => {
+                    if !meta.is_dir() {
+                        return Err(anyhow!(
+                            "remote path exists but is not a directory: {}",
+                            cur
+                        ));
+                    }
+                }
+                Err(e) => {
+                    log::debug!("got error when retrieving metadata: {}", e);
+                    let mut attrs = FileAttributes::default();
+                    attrs.permissions = Some(0o700);
+                    let _ = sftp_session
+                        .create_dir(&cur)
+                        .await
+                        .context(format!("creating path {}", &cur))?;
+                    match sftp_session.set_metadata(&cur, attrs).await {
+                        Ok(_) => {}
+                        Err(e) => {
+                            log::debug!("error when setting metadata for path {}: {}", &cur, e)
+                        }
+                    };
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn remote_block_hashes(
+        &self,
+        remote_path: &str,
+        block_size: usize,
+    ) -> Result<Vec<String>> {
+        // Ensure connection; reuse current handle
+        let mut guard = self.handle.lock().await;
+        let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
+
+        let mut chan = handle.channel_open_session().await?;
+        // We intentionally avoid shell interpolation by using a here-doc with arguments
+        let py = format!(
+            r#"python3 - <<'PY'
+import sys, os, hashlib
+path = r{rp}
+bs = {bs}
+try:
+    st = os.stat(path)
+except Exception as e:
+    print("ERR", e)
+    sys.exit(2)
+h = hashlib.sha256
+off = 0
+with open(path, 'rb') as f:
+    while True:
+        b = f.read(bs)
+        if not b: break
+        print(off, len(b), h(b).hexdigest())
+        off += len(b)
+PY"#,
+            rp = format!(
+                "'{}'",
+                remote_path.replace("\\", "\\\\").replace("'", "\\'")
+            ),
+            bs = block_size
+        );
+        chan.exec(true, py.as_bytes()).await?;
+        let mut stdout = Vec::new();
+        while let Some(msg) = chan.wait().await {
+            match msg {
+                ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
+                ChannelMsg::ExtendedData { .. } => {}
+                ChannelMsg::ExitStatus { exit_status } => {
+                    if exit_status != 0 {
+                        return Err(anyhow!("remote hashing exited with status {}", exit_status));
+                    }
+                }
+                ChannelMsg::Close => break,
+                _ => {}
+            }
+        }
+        let _ = chan.eof().await;
+        let _ = chan.close().await;
+
+        let out = String::from_utf8(stdout)?;
+        let mut hashes = Vec::new();
+        for line in out.lines() {
+            if line.starts_with("ERR ") {
+                return Err(anyhow!("remote: {}", line));
+            }
+            let mut it = line.split_whitespace();
+            let _off = it.next();
+            let _len = it.next();
+            let hex = it.next();
+            if let Some(h) = hex {
+                hashes.push(h.to_string());
+            }
+        }
+        Ok(hashes)
+    }
+    async fn sync_one_file(
+        &self,
+        sftp: &SftpSession,
+        local_path: &Path,
+        remote_path: &str,
+        block_size: usize,
+    ) -> Result<()> {
+        let lmeta = tokiofs::metadata(local_path).await?;
+        let lsize = lmeta.len();
+        let lmtime = lmeta
+            .modified()
+            .unwrap_or(UNIX_EPOCH)
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let mut rmeta = match sftp.metadata(remote_path).await {
+            Ok(v) => v,
+            Err(e) => {
+                /*
+                log::error!(
+                    "Encountered error when querying metadata for remote path {}: {}",
+                    remote_path,
+                    e
+                );
+                */
+                match e {
+                    russh_sftp::client::error::Error::Status(ref estatus) => {
+                        log::debug!("Status error: {:?}", estatus);
+                        match estatus.status_code {
+                            russh_sftp::protocol::StatusCode::NoSuchFile => {
+                                // This is a good case - we just need to transfer file and exit,
+                                // that's it
+                                log::debug!("file {} doesn't exist, uploading", remote_path);
+                                return upload_single_file(
+                                    sftp,
+                                    &local_path.to_path_buf(),
+                                    remote_path,
+                                    block_size,
+                                )
+                                .await;
+                            }
+                            _ => {
+                                log::warn!("encountered Status error with status {:?}", estatus);
+                                anyhow::bail!("encountered Status error with status {:?}", estatus)
+                            }
+                        }
+                    }
+                    /*
+                    russh_sftp::client::error::Error::IO(ref ioerror) => {
+                        log::debug!("IO error: {}", ioerror);
+                    }
+                    russh_sftp::client::error::Error::Timeout => {
+                        log::debug!("encountered timeout error");
+                    }
+                    russh_sftp::client::error::Error::Limited(ref limiterror) => {
+                        log::debug!("Limit exceeded error: {}", limiterror);
+                    }
+                    russh_sftp::client::error::Error::UnexpectedPacket => {
+                        log::debug!("Unexpected packet");
+                    }
+                    russh_sftp::client::error::Error::UnexpectedBehavior(ref uerror) => {
+                        log::debug!("Unexpected behavior: {}", uerror);
+                    }
+                    */
+                    _ => anyhow::bail!("encountered error: {}", e),
+                };
+            }
+        };
+        // TODO: add a simple option if file doesn't exist yet.
+        if rmeta.is_dir() {
+            anyhow::bail!("{} is a directory", remote_path);
+        }
+        if let Some(rmtime) = rmeta.mtime {
+            if rmtime as u64 >= lmtime {
+                log::debug!(
+                    "remote file {remote_path} is at least as new as local file {local_path:?}, skipping transfer",
+                );
+                return Ok(());
+            }
+        } else {
+            log::debug!("could not get mtime for remote path {remote_path}")
+        }
+
+        if rmeta.is_empty() {
+            // Remote file is empty - weird but OK, we'll just upload our local file.
+            return upload_single_file(sftp, &local_path.to_path_buf(), remote_path, block_size)
+                .await;
+        }
+        log::debug!("Opening remote file for random-access writes");
+        // Try to open remote file for random-access writes (create if absent)
+        let flags = OpenFlags::WRITE
+            .union(OpenFlags::READ)
+            .union(OpenFlags::APPEND);
+        let mut rfile = sftp
+            .open_with_flags(remote_path, flags)
+            .await
+            .context("opening remote file for random-access writes")?;
+        // Plan: compute remote block hashes (without downloading file data) by running
+        // a tiny Python hashing script *on the remote* over an exec channel.
+        // If that fails (python missing, permission issues, etc), fall back to full upload.
+        let remote_hashes = match self.remote_block_hashes(remote_path, block_size).await {
+            Ok(h) => Some(h),
+            Err(e) => {
+                log::warn!(
+                    "remote hash plan unavailable for {}: {} ; falling back to full upload",
+                    remote_path,
+                    e
+                );
+                None
+            }
+        };
+        log::debug!("remote hashes: {:?}", remote_hashes);
+        log::debug!("determining difference between local remote and local hashes");
+        if let Some(rblocks) = remote_hashes {
+            // Compute local block hashes
+            let lblocks = local_block_hashes(local_path, block_size).await?;
+
+            log::info!("local hashes: {:?}", lblocks);
+            // Compare and send only differing blocks
+            for (i, lbh) in lblocks.iter().enumerate() {
+                log::info!("comparing blocks {}", i);
+                let offset = (i as u64) * (block_size as u64);
+                let remaining = lsize.saturating_sub(offset);
+                let this_block = remaining.min(block_size as u64) as usize;
+
+                let differing = match rblocks.get(i) {
+                    Some(rh) => rh != lbh,
+                    None => true, // remote shorter; need to append
+                };
+
+                if differing {
+                    log::info!("found differing block at offset {offset}, index {i}");
+                    // Read local block and write to remote at offset
+                    let mut buf = vec![0u8; this_block];
+                    let mut f = tokiofs::File::open(local_path).await.context(format!(
+                        "opening local file {}",
+                        local_path.to_string_lossy()
+                    ))?;
+                    f.seek(std::io::SeekFrom::Start(offset))
+                        .await
+                        .context(format!("seeking in remote file at offset {offset}"))?;
+                    f.read_exact(&mut buf).await.context(format!(
+                        "reading from {:?} at offset {}",
+                        local_path, offset
+                    ))?;
+                    // TODO: in case of errors, fallback to doing full transfer
+                    rfile
+                        .seek(std::io::SeekFrom::Start(offset))
+                        .await
+                        .context(format!("seeking in remote file at offset {offset}"))?;
+                    let written = rfile
+                        .write(&buf)
+                        .await
+                        .with_context(|| format!("writing block @{} to {}", offset, remote_path))?;
+                    rfile.flush().await?;
+                    log::info!("written {} bytes at offset {}", written, offset);
+                }
+            }
+
+            // Truncate/extend remote file to match local size if needed
+            if rblocks.len() as u64 * block_size as u64 != lsize {
+                log::info!("setting length medatata on remote file");
+                // Use SFTP fsetstat(size) when supported; otherwise remote 'truncate'
+                rmeta.size = Some(lsize);
+                if let Err(_e) = rfile.set_metadata(rmeta).await {
+                    log::warn!("setting metadata on remote failed - falling back to truncate");
+                    // fallback via small exec
+                    let cmd = format!("truncate -s {} {}", lsize, sh_escape(remote_path));
+                    let _ = self.exec_simple(&cmd).await;
+                }
+            }
+        } else {
+            log::debug!("no hash blocks found, falling back to full upload");
+            return upload_single_file(sftp, &local_path.to_path_buf(), remote_path, block_size)
+                .await;
+        }
+
+        // Try to set remote mtime to local mtime so next run can skip
+        log::debug!("setting remote mtime equal to local mtime");
+        let mut attrs = FileAttributes::default();
+        attrs.mtime = Some(lmtime as u32);
+        let _ = sftp.set_metadata(remote_path, attrs).await;
+
+        Ok(())
+    }
+
+    /// Sync an entire local directory tree into a remote directory.
+    /// - Creates remote directories as needed
+    /// - Skips files where remote mtime >= local mtime
+    /// - Uses block-delta writes for changed files
+    pub async fn sync_dir<P: AsRef<Path>>(
+        &self,
+        local_dir: P,
+        remote_dir: &str,
+        block_size: Option<usize>,
+        parallelism: Option<usize>,
+    ) -> Result<()> {
+        let block_size = match block_size {
+            Some(v) => v,
+            None => 1024 * 1024, // 1 MiB block size
+        };
+        let parallelism = match parallelism {
+            Some(v) => v,
+            None => 8,
+        };
+        let local_dir = local_dir.as_ref().canonicalize()?;
+
+        let sftp = self.sftp().await?;
+        log::info!("making sure the remote directory exists");
+        self.ensure_remote_dir(&sftp, remote_dir).await?;
+        let local_script_path = local_dir.join("main.py");
+        if !local_script_path.exists() {
+            anyhow::bail!("Path {:?} does not exist", local_script_path.as_path());
+        }
+        let remote_script_path = format!("{}/main.py", &remote_dir);
+
+        self.sync_one_file(&sftp, &local_script_path, &remote_script_path, block_size)
+            .await?;
+        /*
+        let mut tasks = futures::stream::FuturesUnordered::new();
+        let sem = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
+
+        for entry in WalkDir::new(&local_dir).into_iter().filter_map(Result::ok) {
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let path_local = entry.path().to_path_buf();
+            let rel = diff_paths(&path_local, &local_dir)
+                .ok_or_else(|| anyhow!("failed computing relative path for {:?}", path_local))?;
+            let remote_path = join_remote(remote_dir, &rel);
+
+            // Create (nested) remote directories if needed
+            if let Some(parent_rel) = rel.parent() {
+                let remote_parent = join_remote(remote_dir, parent_rel);
+                self.ensure_remote_dir(&sftp, &remote_parent).await?;
+            }
+
+            let sftp_clone = sftp.clone();
+            let this = self.clone();
+            let permit = sem.clone().acquire_owned().await.unwrap();
+
+            tasks.push(tokio::spawn(async move {
+                let _p = permit; // keep permit alive in task
+                this.sync_one_file(&sftp_clone, &path_local, &remote_path, block_size)
+                    .await
+            }));
+        }
+
+        // Drive all file tasks
+        while let Some(res) = tasks.next().await {
+            match res {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => return Err(e),
+                Err(join_err) => return Err(anyhow!("sync task join error: {join_err}")),
+            }
+        }
+        */
+
+        Ok(())
+    }
 }
 
 /// Helper to wrap an mpsc receiver as a tonic stream.
@@ -311,4 +761,105 @@ pub fn receiver_to_stream(
     rx: mpsc::Receiver<Result<StreamEvent, tonic::Status>>,
 ) -> ReceiverStream<Result<StreamEvent, tonic::Status>> {
     ReceiverStream::new(rx)
+}
+
+/// Compute local per-block hashes (BLAKE3, 16-byte) for a file.
+async fn local_block_hashes(path: &Path, block_size: usize) -> Result<Vec<String>> {
+    let mut f = tokiofs::File::open(path).await?;
+    let size = f.metadata().await?.len();
+    let mut out = Vec::with_capacity(((size + block_size as u64 - 1) / block_size as u64) as usize);
+    let mut offset = 0u64;
+    let mut buf = vec![0u8; block_size];
+    loop {
+        let n = f.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        let mut h = Sha256::new();
+        h.update(&buf[..n]);
+        let hash = h.finalize();
+        // 16 bytes (similar to remote B2b-128) to keep lines small
+        out.push(format!("{:x}", hash));
+        offset += n as u64;
+    }
+    Ok(out)
+}
+
+/// Convert bytes to lowercase hex
+fn hex16(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut s = String::with_capacity(bytes.len() * 2);
+    for &b in bytes {
+        s.push(HEX[(b >> 4) as usize] as char);
+        s.push(HEX[(b & 0x0f) as usize] as char);
+    }
+    s
+}
+
+/// Helper: return mtime (seconds) from std metadata across platforms.
+fn filetime_secs(meta: &std::fs::Metadata) -> Result<i64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        Ok(meta.mtime())
+    }
+    #[cfg(not(unix))]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        Ok(mt.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
+    }
+}
+
+/// Build a remote path by appending a relative path to a remote directory.
+fn join_remote(base: &str, rel: &Path) -> String {
+    let mut s = base.trim_end_matches('/').to_string();
+    for comp in rel.components() {
+        if let std::path::Component::Normal(os) = comp {
+            s.push('/');
+            s.push_str(&os.to_string_lossy());
+        }
+    }
+    s
+}
+
+/// Very small, safe-ish shell escaper for paths.
+fn sh_escape(p: &str) -> String {
+    let mut out = String::from("'");
+    out.push_str(&p.replace('\'', r"'\''"));
+    out.push('\'');
+    out
+}
+
+async fn upload_single_file(
+    sftp: &SftpSession,
+    local_path: &PathBuf,
+    remote_path: &str,
+    block_size: usize,
+) -> anyhow::Result<()> {
+    // File just doesn't exist yet we simply copy it over SFTP
+    log::debug!(
+        "Uploading file over sftp: {} -> {}",
+        local_path.to_string_lossy(),
+        remote_path
+    );
+    let mut lf = tokiofs::File::open(local_path).await?;
+
+    let flags = OpenFlags::READ
+        .union(OpenFlags::WRITE)
+        .union(OpenFlags::APPEND);
+    let mut rfile = sftp.open_with_flags(remote_path, flags).await?;
+    let mut offset = 0u64;
+    let mut buf = vec![0u8; block_size];
+    loop {
+        let n = lf.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        rfile.seek(std::io::SeekFrom::Start(offset)).await?;
+        rfile.write(&buf[..n]).await?;
+        offset += n as u64;
+    }
+    rfile.flush().await?;
+    Ok(())
 }

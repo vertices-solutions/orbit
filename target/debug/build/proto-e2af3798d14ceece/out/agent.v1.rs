@@ -55,6 +55,30 @@ pub mod stream_event {
     }
 }
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubmitRequestInit {
+    #[prost(string, tag = "1")]
+    pub local_file_path: ::prost::alloc::string::String,
+    #[prost(string, tag = "2")]
+    pub remote_file_path: ::prost::alloc::string::String,
+}
+/// Client -> Server
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
+pub struct SubmitRequest {
+    #[prost(oneof = "submit_request::Msg", tags = "1, 2")]
+    pub msg: ::core::option::Option<submit_request::Msg>,
+}
+/// Nested message and enum types in `SubmitRequest`.
+pub mod submit_request {
+    #[derive(Clone, PartialEq, Eq, Hash, ::prost::Oneof)]
+    pub enum Msg {
+        /// Initial file path submission
+        #[prost(message, tag = "1")]
+        Init(super::SubmitRequestInit),
+        #[prost(message, tag = "2")]
+        Mfa(super::MfaAnswer),
+    }
+}
+#[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct PingRequest {
     #[prost(string, tag = "1")]
     pub message: ::prost::alloc::string::String,
@@ -195,6 +219,27 @@ pub mod agent_client {
             req.extensions_mut().insert(GrpcMethod::new("agent.v1.Agent", "Ls"));
             self.inner.streaming(req, path, codec).await
         }
+        pub async fn submit(
+            &mut self,
+            request: impl tonic::IntoStreamingRequest<Message = super::SubmitRequest>,
+        ) -> std::result::Result<
+            tonic::Response<tonic::codec::Streaming<super::StreamEvent>>,
+            tonic::Status,
+        > {
+            self.inner
+                .ready()
+                .await
+                .map_err(|e| {
+                    tonic::Status::unknown(
+                        format!("Service was not ready: {}", e.into()),
+                    )
+                })?;
+            let codec = tonic_prost::ProstCodec::default();
+            let path = http::uri::PathAndQuery::from_static("/agent.v1.Agent/Submit");
+            let mut req = request.into_streaming_request();
+            req.extensions_mut().insert(GrpcMethod::new("agent.v1.Agent", "Submit"));
+            self.inner.streaming(req, path, codec).await
+        }
     }
 }
 /// Generated server implementations.
@@ -224,6 +269,16 @@ pub mod agent_server {
             &self,
             request: tonic::Request<tonic::Streaming<super::MfaAnswer>>,
         ) -> std::result::Result<tonic::Response<Self::LsStream>, tonic::Status>;
+        /// Server streaming response type for the Submit method.
+        type SubmitStream: tonic::codegen::tokio_stream::Stream<
+                Item = std::result::Result<super::StreamEvent, tonic::Status>,
+            >
+            + std::marker::Send
+            + 'static;
+        async fn submit(
+            &self,
+            request: tonic::Request<tonic::Streaming<super::SubmitRequest>>,
+        ) -> std::result::Result<tonic::Response<Self::SubmitStream>, tonic::Status>;
     }
     /// One bidirectional streaming method keeps MFA + output on a single pipe.
     #[derive(Debug)]
@@ -374,6 +429,52 @@ pub mod agent_server {
                     let inner = self.inner.clone();
                     let fut = async move {
                         let method = LsSvc(inner);
+                        let codec = tonic_prost::ProstCodec::default();
+                        let mut grpc = tonic::server::Grpc::new(codec)
+                            .apply_compression_config(
+                                accept_compression_encodings,
+                                send_compression_encodings,
+                            )
+                            .apply_max_message_size_config(
+                                max_decoding_message_size,
+                                max_encoding_message_size,
+                            );
+                        let res = grpc.streaming(method, req).await;
+                        Ok(res)
+                    };
+                    Box::pin(fut)
+                }
+                "/agent.v1.Agent/Submit" => {
+                    #[allow(non_camel_case_types)]
+                    struct SubmitSvc<T: Agent>(pub Arc<T>);
+                    impl<T: Agent> tonic::server::StreamingService<super::SubmitRequest>
+                    for SubmitSvc<T> {
+                        type Response = super::StreamEvent;
+                        type ResponseStream = T::SubmitStream;
+                        type Future = BoxFuture<
+                            tonic::Response<Self::ResponseStream>,
+                            tonic::Status,
+                        >;
+                        fn call(
+                            &mut self,
+                            request: tonic::Request<
+                                tonic::Streaming<super::SubmitRequest>,
+                            >,
+                        ) -> Self::Future {
+                            let inner = Arc::clone(&self.0);
+                            let fut = async move {
+                                <T as Agent>::submit(&inner, request).await
+                            };
+                            Box::pin(fut)
+                        }
+                    }
+                    let accept_compression_encodings = self.accept_compression_encodings;
+                    let send_compression_encodings = self.send_compression_encodings;
+                    let max_decoding_message_size = self.max_decoding_message_size;
+                    let max_encoding_message_size = self.max_encoding_message_size;
+                    let inner = self.inner.clone();
+                    let fut = async move {
+                        let method = SubmitSvc(inner);
                         let codec = tonic_prost::ProstCodec::default();
                         let mut grpc = tonic::server::Grpc::new(codec)
                             .apply_compression_config(
