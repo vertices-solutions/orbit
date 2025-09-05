@@ -78,6 +78,7 @@ impl AgentSvc {
         let out: OutStream = Box::pin(receiver_to_stream(evt_rx));
         Ok(tonic::Response::new(out))
     }
+
     async fn submit_full(
         &self,
         request: tonic::Request<tonic::Streaming<SubmitRequest>>,
@@ -114,7 +115,17 @@ impl AgentSvc {
         let mgr = self.mgr.clone();
         tokio::spawn(async move {
             //if let Err(err) = mgr.sync_dir(&local_path, evt_tx.clone(), mfa_rx).await {
-            if let Err(err) = mgr.sync_dir(&local_path, &remote_path, None, None).await {
+            if let Err(err) = mgr
+                .sync_dir(
+                    &local_path,
+                    &remote_path,
+                    Some(1024 * 1024),
+                    None,
+                    &evt_tx.clone(),
+                    mfa_rx,
+                )
+                .await
+            {
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
                         event: Some(stream_event::Event::Error(err.to_string())),

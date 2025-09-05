@@ -3,6 +3,7 @@ use blake3::Hasher as Blake3;
 use log;
 use pathdiff::diff_paths;
 use proto::{MfaAnswer, MfaPrompt, Prompt, StreamEvent, stream_event};
+use rand::{Rng, distr::Alphanumeric};
 use russh::ChannelMsg;
 use russh::client::Config;
 use russh::client::{Handler, KeyboardInteractiveAuthResponse};
@@ -17,11 +18,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::fs as tokiofs;
+use tokio::io::AsyncReadExt;
 use tokio::io::{AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-
-use tokio::io::AsyncReadExt;
 use walkdir::WalkDir;
 /// Minimal russh client handler. We rely on default implementations.
 /// You could extend this to verify host keys or log events.
@@ -130,7 +130,7 @@ impl SessionManager {
                         remaining_methods,
                         partial_success,
                     } if partial_success
-                        & remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) =>
+                        && remaining_methods.contains(&russh::MethodKind::KeyboardInteractive) =>
                     {
                         // Fall back to KI
                         self.do_keyboard_interactive(&mut handle, evt_tx, mfa_rx)
@@ -287,7 +287,45 @@ impl SessionManager {
         Ok(code)
     }
 
-    /// Execute a single whitelisted command over the (shared) SSH connection,
+    // Execute command over SSH, retrieving stdout, stderr and exit code as output
+    async fn exec_capture(&self, cmd: &str) -> Result<(Vec<u8>, Vec<u8>, i32)> {
+        let mut guard = self.handle.lock().await;
+        let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
+        let mut chan = handle.channel_open_session().await?;
+        let actual_command = cmd;
+        log::debug!("executing '{}'", &actual_command);
+        //r#"bash -lc 'echo "$SHELL"; echo "$PATH"; command -v python3; python3 -V'"#;
+        chan.exec(true, actual_command)
+            .await
+            .context("exec request")?;
+        //chan.eof().await?;
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let mut code: i32 = 0;
+        loop {
+            let Some(msg) = chan.wait().await else {
+                break;
+            };
+            match msg {
+                ChannelMsg::Data { ref data } => {
+                    out.extend_from_slice(&data.to_vec());
+                }
+                ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
+                    err.extend_from_slice(&data)
+                }
+                ChannelMsg::ExitStatus { exit_status } => code = exit_status as i32,
+
+                ChannelMsg::Close => break,
+
+                _ => {}
+            }
+        }
+
+        let _ = chan.close().await;
+        Ok((out, err, code))
+    }
+
+    /// Execute a single command over the (shared) SSH connection,
     /// streaming stdout/stderr and exit code to `evt_tx`.
     ///
     /// Only one command is run at a time; a long-lived channel lock ensures that.
@@ -389,7 +427,7 @@ impl SessionManager {
                 log::debug!("empty seg");
                 continue;
             }
-            if (cur != "/" && !cur.is_empty()) {
+            if cur != "/" && !cur.is_empty() {
                 cur = format!("{}/{}", cur.trim_end_matches("/"), seg);
             } else {
                 cur = format!("/{}", seg);
@@ -423,26 +461,51 @@ impl SessionManager {
         }
         Ok(())
     }
+    async fn write_remote_temp_exe(&self, content: &[u8], suffix: &str) -> Result<String> {
+        let sftp = self.sftp().await?;
+        let rand: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(10)
+            .map(char::from)
+            .collect();
+        let path = format!("/tmp/hpcd_{}.{}", rand, suffix.trim_start_matches('.'));
+
+        // Create & write
+        let flags = OpenFlags::WRITE
+            .union(OpenFlags::CREATE)
+            .union(OpenFlags::APPEND)
+            .union(OpenFlags::TRUNCATE);
+        let mut attrs = FileAttributes::default();
+        attrs.permissions = Some(0o700);
+        let mut f = sftp
+            .open_with_flags_and_attributes(&path, flags, attrs)
+            .await
+            .with_context(|| format!("open remote temp {}", &path))?;
+        f.write(content)
+            .await
+            .with_context(|| format!("write remote temp {}", &path))?;
+        f.flush().await?;
+        f.shutdown().await?;
+        Ok(path)
+    }
+
+    /// computes hashes of blocks on a remote file
+    /// Using a Python helper script.
+    ///
     async fn remote_block_hashes(
         &self,
         remote_path: &str,
         block_size: usize,
     ) -> Result<Vec<String>> {
-        // Ensure connection; reuse current handle
-        let mut guard = self.handle.lock().await;
-        let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
-
-        let mut chan = handle.channel_open_session().await?;
-        // We intentionally avoid shell interpolation by using a here-doc with arguments
-        let py = format!(
-            r#"python3 - <<'PY'
+        let py_script = format!(
+            r#"#!/usr/bin/env python3
 import sys, os, hashlib
 path = r{rp}
 bs = {bs}
 try:
     st = os.stat(path)
 except Exception as e:
-    print("ERR", e)
+    print("ERR", e, file=sys.stderr)
     sys.exit(2)
 h = hashlib.sha256
 off = 0
@@ -450,36 +513,43 @@ with open(path, 'rb') as f:
     while True:
         b = f.read(bs)
         if not b: break
-        print(off, len(b), h(b).hexdigest())
+        print(off, len(b), h(b).hexdigest(), file=sys.stdout)
         off += len(b)
-PY"#,
+sys.stdout.flush()
+"#,
             rp = format!(
                 "'{}'",
                 remote_path.replace("\\", "\\\\").replace("'", "\\'")
             ),
             bs = block_size
         );
-        chan.exec(true, py.as_bytes()).await?;
-        let mut stdout = Vec::new();
-        while let Some(msg) = chan.wait().await {
-            match msg {
-                ChannelMsg::Data { data } => stdout.extend_from_slice(&data),
-                ChannelMsg::ExtendedData { .. } => {}
-                ChannelMsg::ExitStatus { exit_status } => {
-                    if exit_status != 0 {
-                        return Err(anyhow!("remote hashing exited with status {}", exit_status));
-                    }
-                }
-                ChannelMsg::Close => break,
-                _ => {}
-            }
+        let script_path = self
+            .write_remote_temp_exe(py_script.as_bytes(), "py")
+            .await?;
+        let cmd_py3 = format!("python3 -u {}", &script_path);
+        let (out, err, code) = self.exec_capture(&cmd_py3).await?;
+        let (out, err, code) = if code != 0 {
+            let cmd_py = format!("python -u {}", &script_path);
+            self.exec_capture(&cmd_py).await?
+        } else {
+            (out, err, code)
+        };
+        log::debug!(
+            "remote_block_hashes - out={:?},err={:?},code={:?}",
+            &out,
+            &err,
+            code
+        );
+        // 3) Cleanup temp script (best-effort)
+        //let _ = self.sftp().await?.remove_file(&script_path).await;
+        if code != 0 {
+            let err_message = String::from_utf8(err)?;
+            return Err(anyhow!(err_message));
         }
-        let _ = chan.eof().await;
-        let _ = chan.close().await;
-
-        let out = String::from_utf8(stdout)?;
+        let out = String::from_utf8(out)?;
         let mut hashes = Vec::new();
         for line in out.lines() {
+            log::debug!("received line from remote: {line}");
             if line.starts_with("ERR ") {
                 return Err(anyhow!("remote: {}", line));
             }
@@ -512,16 +582,8 @@ PY"#,
         let mut rmeta = match sftp.metadata(remote_path).await {
             Ok(v) => v,
             Err(e) => {
-                /*
-                log::error!(
-                    "Encountered error when querying metadata for remote path {}: {}",
-                    remote_path,
-                    e
-                );
-                */
                 match e {
                     russh_sftp::client::error::Error::Status(ref estatus) => {
-                        log::debug!("Status error: {:?}", estatus);
                         match estatus.status_code {
                             russh_sftp::protocol::StatusCode::NoSuchFile => {
                                 // This is a good case - we just need to transfer file and exit,
@@ -562,7 +624,6 @@ PY"#,
                 };
             }
         };
-        // TODO: add a simple option if file doesn't exist yet.
         if rmeta.is_dir() {
             anyhow::bail!("{} is a directory", remote_path);
         }
@@ -571,6 +632,7 @@ PY"#,
                 log::debug!(
                     "remote file {remote_path} is at least as new as local file {local_path:?}, skipping transfer",
                 );
+
                 return Ok(());
             }
         } else {
@@ -584,9 +646,11 @@ PY"#,
         }
         log::debug!("Opening remote file for random-access writes");
         // Try to open remote file for random-access writes (create if absent)
-        let flags = OpenFlags::WRITE
-            .union(OpenFlags::READ)
-            .union(OpenFlags::APPEND);
+        let flags = OpenFlags::WRITE.union(OpenFlags::READ);
+        /*
+            .union(OpenFlags::APPEND)
+            .union(OpenFlags::TRUNCATE);
+        */
         let mut rfile = sftp
             .open_with_flags(remote_path, flags)
             .await
@@ -635,17 +699,18 @@ PY"#,
                     f.seek(std::io::SeekFrom::Start(offset))
                         .await
                         .context(format!("seeking in remote file at offset {offset}"))?;
-                    f.read_exact(&mut buf).await.context(format!(
+                    let n = f.read(&mut buf[..]).await.context(format!(
                         "reading from {:?} at offset {}",
                         local_path, offset
                     ))?;
+                    log::debug!("read {n} bytes from {local_path:?} at offset {offset}");
                     // TODO: in case of errors, fallback to doing full transfer
                     rfile
                         .seek(std::io::SeekFrom::Start(offset))
                         .await
                         .context(format!("seeking in remote file at offset {offset}"))?;
                     let written = rfile
-                        .write(&buf)
+                        .write(&buf[..n])
                         .await
                         .with_context(|| format!("writing block @{} to {}", offset, remote_path))?;
                     rfile.flush().await?;
@@ -654,6 +719,7 @@ PY"#,
             }
 
             // Truncate/extend remote file to match local size if needed
+            // this is done in case the local file was truncated
             if rblocks.len() as u64 * block_size as u64 != lsize {
                 log::info!("setting length medatata on remote file");
                 // Use SFTP fsetstat(size) when supported; otherwise remote 'truncate'
@@ -671,12 +737,13 @@ PY"#,
                 .await;
         }
 
+        /*
         // Try to set remote mtime to local mtime so next run can skip
         log::debug!("setting remote mtime equal to local mtime");
         let mut attrs = FileAttributes::default();
         attrs.mtime = Some(lmtime as u32);
         let _ = sftp.set_metadata(remote_path, attrs).await;
-
+        */
         Ok(())
     }
 
@@ -690,6 +757,8 @@ PY"#,
         remote_dir: &str,
         block_size: Option<usize>,
         parallelism: Option<usize>,
+        evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        mut mfa_rx: mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         let block_size = match block_size {
             Some(v) => v,
@@ -699,6 +768,8 @@ PY"#,
             Some(v) => v,
             None => 8,
         };
+
+        self.ensure_connected(evt_tx, &mut mfa_rx).await?;
         let local_dir = local_dir.as_ref().canonicalize()?;
 
         let sftp = self.sftp().await?;
@@ -844,10 +915,10 @@ async fn upload_single_file(
         remote_path
     );
     let mut lf = tokiofs::File::open(local_path).await?;
-
+    // Removed flag APPEND because it's not needed
     let flags = OpenFlags::READ
         .union(OpenFlags::WRITE)
-        .union(OpenFlags::APPEND);
+        .union(OpenFlags::CREATE);
     let mut rfile = sftp.open_with_flags(remote_path, flags).await?;
     let mut offset = 0u64;
     let mut buf = vec![0u8; block_size];
