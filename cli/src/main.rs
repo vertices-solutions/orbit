@@ -141,8 +141,9 @@ async fn send_submit(
     tx_ans
         .send(SubmitRequest {
             msg: Some(proto::submit_request::Msg::Init(proto::SubmitRequestInit {
-                local_file_path: local_path.to_owned(),
-                remote_file_path: remote_path.to_owned(),
+                local_path: local_path.to_owned(),
+                remote_path: remote_path.to_owned(),
+                hostid: "gpurig".to_owned(),
             })),
         })
         .await?;

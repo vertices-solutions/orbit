@@ -1,5 +1,6 @@
 use anyhow::{Context, Result, anyhow};
 use blake3::Hasher as Blake3;
+use futures::stream::StreamExt;
 use log;
 use pathdiff::diff_paths;
 use proto::{MfaAnswer, MfaPrompt, Prompt, StreamEvent, stream_event};
@@ -453,7 +454,7 @@ impl SessionManager {
                     match sftp_session.set_metadata(&cur, attrs).await {
                         Ok(_) => {}
                         Err(e) => {
-                            log::debug!("error when setting metadata for path {}: {}", &cur, e)
+                            log::warn!("error when setting metadata for path {}: {}", &cur, e)
                         }
                     };
                 }
@@ -534,12 +535,6 @@ sys.stdout.flush()
         } else {
             (out, err, code)
         };
-        log::debug!(
-            "remote_block_hashes - out={:?},err={:?},code={:?}",
-            &out,
-            &err,
-            code
-        );
         // 3) Cleanup temp script (best-effort)
         //let _ = self.sftp().await?.remove_file(&script_path).await;
         if code != 0 {
@@ -549,7 +544,6 @@ sys.stdout.flush()
         let out = String::from_utf8(out)?;
         let mut hashes = Vec::new();
         for line in out.lines() {
-            log::debug!("received line from remote: {line}");
             if line.starts_with("ERR ") {
                 return Err(anyhow!("remote: {}", line));
             }
@@ -563,6 +557,8 @@ sys.stdout.flush()
         }
         Ok(hashes)
     }
+    /// Syncs a single file from source to destination.
+    /// Is kinda stable, but definitely needs more testing.
     async fn sync_one_file(
         &self,
         sftp: &SftpSession,
@@ -669,16 +665,12 @@ sys.stdout.flush()
                 None
             }
         };
-        log::debug!("remote hashes: {:?}", remote_hashes);
-        log::debug!("determining difference between local remote and local hashes");
         if let Some(rblocks) = remote_hashes {
             // Compute local block hashes
             let lblocks = local_block_hashes(local_path, block_size).await?;
 
-            log::info!("local hashes: {:?}", lblocks);
             // Compare and send only differing blocks
             for (i, lbh) in lblocks.iter().enumerate() {
-                log::info!("comparing blocks {}", i);
                 let offset = (i as u64) * (block_size as u64);
                 let remaining = lsize.saturating_sub(offset);
                 let this_block = remaining.min(block_size as u64) as usize;
@@ -689,7 +681,7 @@ sys.stdout.flush()
                 };
 
                 if differing {
-                    log::info!("found differing block at offset {offset}, index {i}");
+                    log::debug!("found differing block at offset {offset}, index {i}");
                     // Read local block and write to remote at offset
                     let mut buf = vec![0u8; this_block];
                     let mut f = tokiofs::File::open(local_path).await.context(format!(
@@ -703,7 +695,6 @@ sys.stdout.flush()
                         "reading from {:?} at offset {}",
                         local_path, offset
                     ))?;
-                    log::debug!("read {n} bytes from {local_path:?} at offset {offset}");
                     // TODO: in case of errors, fallback to doing full transfer
                     rfile
                         .seek(std::io::SeekFrom::Start(offset))
@@ -714,7 +705,6 @@ sys.stdout.flush()
                         .await
                         .with_context(|| format!("writing block @{} to {}", offset, remote_path))?;
                     rfile.flush().await?;
-                    log::info!("written {} bytes at offset {}", written, offset);
                 }
             }
 
@@ -732,7 +722,6 @@ sys.stdout.flush()
                 }
             }
         } else {
-            log::debug!("no hash blocks found, falling back to full upload");
             return upload_single_file(sftp, &local_path.to_path_buf(), remote_path, block_size)
                 .await;
         }
@@ -775,54 +764,66 @@ sys.stdout.flush()
         let sftp = self.sftp().await?;
         log::info!("making sure the remote directory exists");
         self.ensure_remote_dir(&sftp, remote_dir).await?;
-        let local_script_path = local_dir.join("main.py");
-        if !local_script_path.exists() {
-            anyhow::bail!("Path {:?} does not exist", local_script_path.as_path());
-        }
-        let remote_script_path = format!("{}/main.py", &remote_dir);
 
-        self.sync_one_file(&sftp, &local_script_path, &remote_script_path, block_size)
-            .await?;
-        /*
-        let mut tasks = futures::stream::FuturesUnordered::new();
-        let sem = Arc::new(tokio::sync::Semaphore::new(parallelism.max(1)));
+        let mut work: Vec<(PathBuf, String)> = Vec::new();
 
-        for entry in WalkDir::new(&local_dir).into_iter().filter_map(Result::ok) {
-            if !entry.file_type().is_file() {
+        let follow_links = false;
+        let sftp_for_dirs = self.sftp().await?;
+        for entry in WalkDir::new(&local_dir)
+            .follow_links(follow_links)
+            .into_iter()
+        {
+            let direntry = match entry {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!("encountered error when enumerating local files: {:?}", e);
+                    continue;
+                }
+            };
+            if !direntry.file_type().is_file() {
+                // We skip directories - creating them is handled by file creation logic
+                log::debug!(
+                    "encountered directory {:?}, continuing",
+                    direntry.into_path()
+                );
                 continue;
             }
-            let path_local = entry.path().to_path_buf();
+            let path_local = direntry.path().to_path_buf();
             let rel = diff_paths(&path_local, &local_dir)
                 .ok_or_else(|| anyhow!("failed computing relative path for {:?}", path_local))?;
             let remote_path = join_remote(remote_dir, &rel);
-
-            // Create (nested) remote directories if needed
             if let Some(parent_rel) = rel.parent() {
                 let remote_parent = join_remote(remote_dir, parent_rel);
                 self.ensure_remote_dir(&sftp, &remote_parent).await?;
             }
-
-            let sftp_clone = sftp.clone();
-            let this = self.clone();
-            let permit = sem.clone().acquire_owned().await.unwrap();
-
-            tasks.push(tokio::spawn(async move {
-                let _p = permit; // keep permit alive in task
-                this.sync_one_file(&sftp_clone, &path_local, &remote_path, block_size)
-                    .await
-            }));
+            work.push((path_local, remote_path));
         }
-
-        // Drive all file tasks
-        while let Some(res) = tasks.next().await {
-            match res {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => return Err(e),
-                Err(join_err) => return Err(anyhow!("sync task join error: {join_err}")),
+        drop(sftp_for_dirs);
+        let results = futures::stream::iter(work.into_iter().map(
+            |(local_path, remote_path)| async move {
+                let sftp = self.sftp().await?;
+                self.sync_one_file(&sftp, &local_path, &remote_path, block_size)
+                    .await
+            },
+        ))
+        .buffer_unordered(parallelism)
+        .collect::<Vec<_>>()
+        .await;
+        let mut errs = Vec::new();
+        for res in results {
+            if let Err(e) = res {
+                errs.push(e);
             }
         }
-        */
-
+        if !errs.is_empty() {
+            // Build a helpful combined error message.
+            use std::fmt::Write as _;
+            let mut msg = String::new();
+            for (i, e) in errs.iter().enumerate() {
+                let _ = writeln!(&mut msg, "[{}] {:#}", i + 1, e);
+            }
+            anyhow::bail!("sync_dir encountered {} error(s):\n{}", errs.len(), msg);
+        }
         Ok(())
     }
 }
@@ -928,7 +929,7 @@ async fn upload_single_file(
             break;
         }
         rfile.seek(std::io::SeekFrom::Start(offset)).await?;
-        rfile.write(&buf[..n]).await?;
+        rfile.write_all(&buf[..n]).await?;
         offset += n as u64;
     }
     rfile.flush().await?;
