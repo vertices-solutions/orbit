@@ -20,6 +20,12 @@ pub enum Address {
     Ip(IpAddr),
 }
 
+#[derive(Debug)]
+pub enum ParseSlurmVersionError {
+    WrongFormat,              // not exactly 3 dot-separated parts
+    NotANumber(&'static str), // one part isn’t an integer
+}
+
 /// Slurm version triplet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
@@ -34,7 +40,37 @@ impl std::fmt::Display for SlurmVersion {
         write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
+impl FromStr for SlurmVersion {
+    type Err = ParseSlurmVersionError;
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        let mut parts = s.split(".");
 
+        let major = parts
+            .next()
+            .ok_or(ParseSlurmVersionError::WrongFormat)?
+            .parse::<i64>()
+            .map_err(|_| ParseSlurmVersionError::NotANumber("major"))?;
+        let minor = parts
+            .next()
+            .ok_or(ParseSlurmVersionError::WrongFormat)?
+            .parse::<i64>()
+            .map_err(|_| ParseSlurmVersionError::NotANumber("minor"))?;
+        let patch = parts
+            .next()
+            .ok_or(ParseSlurmVersionError::WrongFormat)?
+            .parse::<i64>()
+            .map_err(|_| ParseSlurmVersionError::NotANumber("patch"))?;
+
+        if parts.next().is_some() {
+            return Err(ParseSlurmVersionError::WrongFormat);
+        }
+        Ok(SlurmVersion {
+            major: major,
+            minor: minor,
+            patch: patch,
+        })
+    }
+}
 /// Linux distribution info.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]

@@ -76,7 +76,14 @@ impl SessionManager {
             keepalive_task_handle: Arc::new(Mutex::new(None)),
         }
     }
-
+    pub async fn needs_connect(&self) -> bool {
+        let handle_field = self.handle.lock().await;
+        return match handle_field.as_ref() {
+            None => true,
+            Some(h) if h.is_closed() => true,
+            Some(_) => false,
+        };
+    }
     /// Ensure we have a connected & authenticated handle.
     /// Streams any keyboard-interactive MFA prompts to `evt_tx`
     /// and consumes responses from `mfa_rx`.

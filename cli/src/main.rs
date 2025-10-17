@@ -2,10 +2,12 @@ use anyhow::bail;
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, MfaAnswer, PingReply, PingRequest, StreamEvent,
-    SubmitRequest, SubmitRequestInit, add_cluster_init, add_cluster_request, stream_event,
+    AddClusterInit, AddClusterRequest, ListClustersRequest, MfaAnswer, PingReply, PingRequest,
+    StreamEvent, SubmitRequest, SubmitRequestInit, add_cluster_init, add_cluster_request,
+    stream_event,
 };
 use std::io::Write;
+use std::path::PathBuf;
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -13,6 +15,9 @@ use tokio::time::{Duration, timeout};
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, transport::Channel};
 use tonic_types::StatusExt;
+
+mod hpcfile;
+
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -30,6 +35,19 @@ enum Cmd {
         remote_path: String,
     },
     AddCluster(AddClusterArgs),
+    ListClusters,
+    Init(InitProjectArgs),
+}
+
+#[derive(Args, Debug)]
+struct InitProjectArgs {
+    // path to project to be initialized
+    projectpath: PathBuf,
+
+    // force init project: ignore directory if exists, make sure that all directories within the
+    // path
+    #[arg(long, short)]
+    force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -71,13 +89,13 @@ async fn send_ping(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
             Ok(response) => response,
             Err(status) => match status.code() {
                 tonic::Code::InvalidArgument => {
-                    bail!("invalid argument error - {}", status.message());
+                    bail!("invalid argument: {}", status.message());
                 }
                 tonic::Code::Cancelled => {
-                    bail!("operation was canceled - {}", status.message());
+                    bail!("operation was canceled:{}", status.message());
                 }
                 _ => {
-                    bail!("occured: {}", status);
+                    bail!("error occured: {}", status);
                 }
             },
         },
@@ -89,7 +107,63 @@ async fn send_ping(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
         v => bail!("invalid response from server: expected 'pong', got '{v}'"),
     }
 }
+async fn send_list_clusters(client: &mut AgentClient<Channel>, filter: &str) -> anyhow::Result<()> {
+    let list_clusters_request = ListClustersRequest {
+        filter: filter.to_string(),
+    };
+    let response = match timeout(
+        Duration::from_secs(1),
+        client.list_clusters(list_clusters_request),
+    )
+    .await
+    {
+        Ok(Ok(res)) => res.into_inner(),
+        Ok(Err(status)) => match status.code() {
+            tonic::Code::InvalidArgument => {
+                bail!("invalid argument: '{}'", status.message())
+            }
+            tonic::Code::Internal => {
+                bail!("internal error: '{}'", status.message())
+            }
+            _ => {
+                bail!(
+                    "error encountered: {} - '{}'",
+                    status.code(),
+                    status.message()
+                )
+            }
+        },
+        Err(e) => {
+            bail!("operation timed out: {}", e)
+        }
+    };
+    // TODO: go through list of clusters to determine the lengths of fields
+    println!(
+        "{:<12} {:<16} {:<20} {:<4} {:<12}",
+        "username", "hostid", "address", "port", "status"
+    );
 
+    for item in response.clusters.iter() {
+        let host_str = match item.host {
+            Some(ref v) => match v {
+                proto::list_clusters_unit_response::Host::Hostname(s) => s,
+                proto::list_clusters_unit_response::Host::Ipaddr(s) => s,
+            },
+            None => "<unknown>",
+        };
+
+        let connected_str = match item.connected {
+            true => "connected",
+            false => "disconnected",
+        };
+        println!(
+            "{:<12} {:<16} {:<20} {:<4} {:<12}",
+            item.username, item.hostid, host_str, item.port, connected_str
+        );
+    }
+
+    Ok(())
+}
 async fn send_ls(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
     // outgoing stream client -> server with MFA answers
     let (tx_ans, rx_ans) = mpsc::channel::<MfaAnswer>(16);
@@ -165,7 +239,6 @@ async fn send_ls(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
 
 async fn send_submit(
     client: &mut AgentClient<Channel>,
-
     hostid: &str,
     local_path: &str,
     remote_path: &str,
@@ -363,6 +436,43 @@ async fn send_add_cluster(
         }
     }
 }
+
+async fn run_init_project(project_path: PathBuf, force: bool) -> anyhow::Result<()> {
+    if project_path.exists() {
+        if !project_path.is_dir() {
+            bail!("{} is not a directory", project_path.to_string_lossy());
+        }
+        if !force {
+            bail!(
+                "{} exists - use --force to overwrite that instead",
+                project_path.to_string_lossy()
+            )
+        }
+    }
+
+    if !project_path.exists() {
+        if force {
+            tokio::fs::create_dir_all(&project_path).await?;
+        } else {
+            tokio::fs::create_dir(&project_path).await?;
+        }
+    }
+
+    let hpcfile_path = project_path.join("Hpcfile");
+    if hpcfile_path.exists() & !force {
+        bail!(
+            "{} exists, can't init it - use --force if you want overwrite it",
+            hpcfile_path.to_string_lossy()
+        );
+    }
+    let hpcfile_config = hpcfile::Hpcfile::default();
+    let hpcfile_content = toml::to_string(&hpcfile_config)?;
+
+    tokio::fs::write(&hpcfile_path, &hpcfile_content.into_bytes()).await?;
+
+    Ok(())
+}
+
 fn write_all<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
     w.write_all(buf)?;
     w.flush()?;
@@ -423,6 +533,10 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
+        Cmd::ListClusters => {
+            send_list_clusters(&mut client, "").await?;
+        }
+        Cmd::Init(args) => run_init_project(args.projectpath, args.force).await?,
     }
     Ok(())
 }

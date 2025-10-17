@@ -269,10 +269,22 @@ impl Agent for AgentSvc {
                 }
             },
         };
-        let clusters = hosts
+        let mut clusters: Vec<ListClustersUnitResponse> = hosts
             .iter()
             .map(|x| db_host_record_to_api_unit_response(x))
             .collect();
+        let mgr_inner = self.mgr.clone().write_owned().await;
+        for cluster in clusters.iter_mut() {
+            // mapping contains hostid - test if it is connected
+            match mgr_inner.get(&cluster.hostid) {
+                Some(ssh_mgr) => {
+                    if !(ssh_mgr.needs_connect().await) {
+                        cluster.connected = true;
+                    }
+                }
+                None => {}
+            }
+        }
         return Ok(ListClustersResponse { clusters: clusters }.into());
     }
     async fn submit(
@@ -332,7 +344,7 @@ impl Agent for AgentSvc {
                 .sync_dir(
                     &local_path,
                     &remote_path,
-                    Some(1024 * 1024),
+                    Some(1024 * 1024), // TODO: this should be adjustable. Probably sqrt(file size in bytes) will be a good start.
                     None,
                     &evt_tx.clone(),
                     mfa_rx,
@@ -399,7 +411,7 @@ impl Agent for AgentSvc {
                 crate::state::db::Address::Ip(ip)
             }
         };
-        log::debug!(
+        log::info!(
             "adding cluster (hostid={},username={},address={:?})",
             &hostid,
             &username,
@@ -419,7 +431,6 @@ impl Agent for AgentSvc {
             }
         });
 
-        // TODO: this also should be configurable and stored in the database
         let port = match u16::try_from(port) {
             Ok(v) => v,
             Err(e) => {
@@ -459,11 +470,12 @@ impl Agent for AgentSvc {
         let ssh_params = SshParams {
             username: username.to_string(),
             addr: connection_addr,
-            identity_path: identity_path,
+            identity_path: identity_path.clone(),
             keepalive_secs: 60,
             ki_submethods: None,
         };
         let hs = self.hs.clone().write_owned().await;
+        let mut mgr = self.mgr.clone().write_owned().await;
         tokio::spawn(async move {
             let sm = SessionManager::new(ssh_params);
             if let Err(e) = sm.ensure_connected(&evt_tx, &mut mfa_rx).await {
@@ -585,20 +597,87 @@ impl Agent for AgentSvc {
                 name: os_info.id,
                 version: os_info.version,
             };
+
+            let (out, err, code) = match sm.exec_capture(slurm::DETERMINE_SLURM_VERSION_CMD).await {
+                Ok((vo, ve, ec)) => (vo, ve, ec),
+                Err(e) => {
+                    let _ = evt_tx
+                        .send(Err(Status::aborted(format!(
+                            "failed to gather slurm version for {hostid}: {}",
+                            e.to_string()
+                        ))))
+                        .await;
+                    return;
+                }
+            };
+
+            if code != 0 {
+                let err_message =
+                    String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+                let _ = evt_tx
+                    .send(Err(Status::aborted(format!(
+                        "failed to gather slurm version for {hostid}: remote command returned non-zero exit code {}, and error message : {}",
+                        code,
+                        err_message
+                    ))))
+                    .await;
+                return;
+            }
+            let out = match String::from_utf8(out) {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = evt_tx
+                    .send(Err(Status::aborted(format!(
+                        "failed to gather slurm version for {hostid}: could not decode the gathered output: {}",
+                        e.to_string()
+                    ))))
+                    .await;
+                    return;
+                }
+            };
+            let mut parts = out.split_whitespace();
+            if parts.next().is_none() {
+                let _ = evt_tx
+                    .send(Err(Status::aborted(format!(
+                        "failed to gather slurm version for {hostid}: server returned an unexpected output: {out}",
+
+                    ))))
+                    .await;
+                return;
+            }
+
+            let slurm_version: crate::state::db::SlurmVersion = match parts.next() {
+                Some(v) => match v.parse() {
+                    Ok(vv) => vv,
+                    Err(e) => {
+                        let _ = evt_tx
+                            .send(Err(Status::aborted(format!(
+                                "failed to parse slurm version for {hostid}: '{e:?}'",
+                            ))))
+                            .await;
+                        return;
+                    }
+                },
+                None => {
+                    let _ = evt_tx
+                    .send(Err(Status::aborted(format!(
+                        "failed to gather slurm version for {hostid}: server returned an unexpected output: {out}",
+
+                    ))))
+                    .await;
+                    return;
+                }
+            };
+
             let new_host = crate::state::db::NewHost {
                 username: username,
-                hostid: hostid,
+                hostid: hostid.clone(),
                 address: addr.clone(),
                 distro: distro_info,
                 kernel_version: os_info.kernel,
-                slurm: SlurmVersion {
-                    // TODO: implement actual version gathering
-                    major: 10,
-                    minor: 10,
-                    patch: 10,
-                },
-                port: 22,
-                identity_path: None,
+                slurm: slurm_version,
+                port: port,
+                identity_path: identity_path,
             };
             match hs.insert_host(&new_host).await {
                 Ok(v) => {
@@ -610,8 +689,9 @@ impl Agent for AgentSvc {
                     }));
                 }
             };
-        });
 
+            mgr.insert(hostid.clone(), Arc::new(sm));
+        });
         let out: OutStream = Box::pin(receiver_to_stream(evt_rx));
         Ok(tonic::Response::new(out))
     }
@@ -636,6 +716,7 @@ fn db_host_record_to_api_unit_response(hs: &HostRecord) -> ListClustersUnitRespo
         },
         port: hs.port as i32,
         connected: false,
+        hostid: hs.hostid.to_owned(),
     };
     return rp;
 }

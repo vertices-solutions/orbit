@@ -3,4 +3,5 @@ target/
 test_project/
 test/
 test.db
+test.db*
 test_dir_hasher.sh
