@@ -16,6 +16,7 @@ shellexpand = { version = "3.1.1", features = ["full"] }
 toml = "0.9.8"
 serde = { version = "1.0.228", features = ["derive"] }
 thiserror = "2.0.17"
+tera = "1.20.0"
 
 
 [[bin]]

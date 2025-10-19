@@ -344,7 +344,7 @@ impl Agent for AgentSvc {
                 .sync_dir(
                     &local_path,
                     &remote_path,
-                    Some(1024 * 1024), // TODO: this should be adjustable. Probably sqrt(file size in bytes) will be a good start.
+                    Some(1024 * 1024), // TODO: this should be adjustable, and done per-file. Probably sqrt(file size in bytes) will be a good start.
                     None,
                     &evt_tx.clone(),
                     mfa_rx,
@@ -356,7 +356,8 @@ impl Agent for AgentSvc {
                         event: Some(stream_event::Event::Error(err.to_string())),
                     }))
                     .await;
-            }
+            };
+            // after syncing all files - submit the job.
         });
 
         let out: OutStream = Box::pin(receiver_to_stream(evt_rx));

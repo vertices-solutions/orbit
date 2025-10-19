@@ -6,6 +6,8 @@ use proto::{
     StreamEvent, SubmitRequest, SubmitRequestInit, add_cluster_init, add_cluster_request,
     stream_event,
 };
+use serde::Deserialize;
+use std::any::Any;
 use std::io::Write;
 use std::path::PathBuf;
 use tokio::io;
@@ -16,8 +18,7 @@ use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, transport::Channel};
 use tonic_types::StatusExt;
 
-mod hpcfile;
-
+mod project;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -38,24 +39,51 @@ enum Cmd {
     ListClusters,
     Init(InitProjectArgs),
 }
+#[derive(clap::ValueEnum, Clone, Default, Debug, serde::Serialize, Deserialize)]
+enum WLM {
+    #[default]
+    Slurm,
+}
+
+impl ToString for WLM {
+    fn to_string(&self) -> String {
+        match self {
+            Self::Slurm => "slurm".to_owned(),
+        }
+    }
+}
 
 #[derive(Args, Debug)]
 struct InitProjectArgs {
     // path to project to be initialized
     projectpath: PathBuf,
-
+    // Workload Manager to use
+    #[arg(long, default_value_t=WLM::Slurm)]
+    manager: WLM,
     // force init project: ignore directory if exists, make sure that all directories within the
     // path
-    #[arg(long, short)]
+    #[arg(long)]
     force: bool,
+
+    #[arg(long)]
+    mem: Option<crate::project::hpcfile::Bytes>,
+
+    #[arg(long)]
+    cpus: Option<u32>,
+
+    #[arg(long)]
+    account: Option<String>,
+
+    #[arg(long)]
+    time: Option<String>,
 }
 
 #[derive(Args, Debug)]
 #[command(
     group(
         ArgGroup::new("addcluster")
-            .required(true)      // at least one is required…
-            .multiple(false)     // …and they are mutually exclusive
+            .required(true)      // at least one is required...
+            .multiple(false)     // ...and they are mutually exclusive
             .args(&["hostname", "ip"])
     )
 )]
@@ -437,7 +465,9 @@ async fn send_add_cluster(
     }
 }
 
-async fn run_init_project(project_path: PathBuf, force: bool) -> anyhow::Result<()> {
+async fn run_init_project(args: &InitProjectArgs) -> anyhow::Result<()> {
+    let project_path = &args.projectpath;
+    let force = args.force;
     if project_path.exists() {
         if !project_path.is_dir() {
             bail!("{} is not a directory", project_path.to_string_lossy());
@@ -465,7 +495,21 @@ async fn run_init_project(project_path: PathBuf, force: bool) -> anyhow::Result<
             hpcfile_path.to_string_lossy()
         );
     }
-    let hpcfile_config = hpcfile::Hpcfile::default();
+    // TODO: add more customization options for this; templates also live at this level.
+    let mut hpcfile_config = project::hpcfile::Hpcfile::default();
+
+    let slurm_config = project::hpcfile::SlurmConfig::new(
+        args.time.clone(),
+        args.account.clone(),
+        args.cpus.clone(),
+        args.mem.clone(),
+        "python3 main.py".into(),
+    );
+
+    let batch_script_path = project_path.join("batch_script.sh");
+    tokio::fs::write(&batch_script_path, &slurm_config.to_sbatch_script()).await?;
+
+    hpcfile_config.batch_script = Some(batch_script_path);
     let hpcfile_content = toml::to_string(&hpcfile_config)?;
 
     tokio::fs::write(&hpcfile_path, &hpcfile_content.into_bytes()).await?;
@@ -536,7 +580,7 @@ async fn main() -> anyhow::Result<()> {
         Cmd::ListClusters => {
             send_list_clusters(&mut client, "").await?;
         }
-        Cmd::Init(args) => run_init_project(args.projectpath, args.force).await?,
+        Cmd::Init(ref args) => run_init_project(args).await?,
     }
     Ok(())
 }
