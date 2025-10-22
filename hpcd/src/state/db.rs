@@ -1,15 +1,14 @@
 use futures_util::TryStreamExt;
 
-use std::{net::IpAddr, path::Path, str::FromStr, time::Duration};
-
 use sqlx::{
     Row, Sqlite, SqlitePool,
     sqlite::{SqliteConnectOptions, SqlitePoolOptions},
 };
+use std::collections::HashMap;
+use std::{net::IpAddr, path::Path, str::FromStr, time::Duration};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 /// Address for a host: either hostname or IP.
@@ -126,11 +125,34 @@ pub enum HostStoreError {
     InvalidAddress,
     #[error("empty hostid")]
     EmptyHostId,
+    #[error("host not found: {0}")]
+    HostNotFound(String),
 }
 
+// This structure is used for inserting data into the db when data first appears
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PartitionSpec {
+    /// Slurm partition name
+    pub name: String,
+    /// Arbitrary metadata
+    pub info: Option<serde_json::Value>,
+}
+
+// This structure is returned from the db
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
+pub struct PartitionRecord {
+    pub id: i64,
+    pub host_id: i64,
+    pub name: String,
+    pub info: Option<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
 pub type Result<T> = std::result::Result<T, HostStoreError>;
 
-/// Async store that uses a `SqlitePool` (cloneable, Send + Sync).
+/// Async store
 #[derive(Clone)]
 pub struct HostStore {
     pool: SqlitePool,
@@ -203,6 +225,7 @@ impl HostStore {
         // If we're upgrading an existing table, make sure `hostid` exists and is indexed.
         self.ensure_hostid_column_and_index().await?;
 
+        self.ensure_partitions_table().await?;
         // Other helpful indexes
         sqlx::query(
             r#"
@@ -218,7 +241,27 @@ impl HostStore {
 
         Ok(())
     }
-
+    async fn ensure_partitions_table(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+        CREATE TABLE IF NOT EXISTS partitions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          host_id INTEGER NOT NULL
+            REFERENCES hosts(id) ON DELETE CASCADE,
+          name TEXT NOT NULL,
+          info TEXT, -- JSON (stringified)
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          UNIQUE(host_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_partitions_host_id ON partitions(host_id);
+        CREATE INDEX IF NOT EXISTS idx_partitions_name    ON partitions(name);
+    "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
     /// Adds `hostid` if missing, backfills for NULL rows, then enforces uniqueness.
     async fn ensure_hostid_column_and_index(&self) -> Result<()> {
         // Does the column exist?
@@ -492,9 +535,110 @@ impl HostStore {
         };
         Ok(row.map(|r| r.try_get::<i64, _>("id").unwrap()))
     }
+    pub async fn upsert_partition_by_hostid(
+        &self,
+        hostid: &str,
+        spec: &PartitionSpec,
+    ) -> Result<i64> {
+        let host_id = self
+            .find_id_by_hostid(hostid)
+            .await?
+            .ok_or_else(|| HostStoreError::HostNotFound(hostid.into()))?;
+        let info_text = spec.info.as_ref().map(|v| v.to_string());
+        let rec = sqlx::query(r#"
+        INSERT INTO partitions(host_id, name, info) 
+        VALUES (?1, ?2, ?3)
+        ON CONFLICT (host_id, name)
+        DO UPDATE SET
+            info = excluded.info, -- excluded is sqlite name for table with values that would be inserted if conflict didn't happen
+            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+        RETURNING id;"#).bind(host_id).bind(&spec.name).bind(&info_text).fetch_one(&self.pool).await?;
+        Ok(rec.try_get::<i64, _>("id")?)
+    }
+    pub async fn get_partition_by_hostid_and_name(
+        &self,
+        hostid: &str,
+        name: &str,
+    ) -> Result<Option<PartitionRecord>> {
+        let row = sqlx::query(
+            r#"
+        SELECT p.*
+        FROM partitions AS p
+        JOIN hosts AS h ON h.id = p.host_id
+        WHERE h.hostid = ?1 AND p.name = ?2
+        LIMIT 1
+    "#,
+        )
+        .bind(hostid)
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(row_to_partition))
+    }
+    pub async fn list_partitions_by_hostid(&self, hostid: &str) -> Result<Vec<PartitionRecord>> {
+        let rows = sqlx::query(
+            r#"
+        SELECT p.*
+        FROM partitions p
+        JOIN hosts h ON h.id = p.host_id
+        WHERE h.hostid = ?1
+        ORDER BY p.name ASC
+    "#,
+        )
+        .bind(hostid)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(rows.into_iter().map(row_to_partition).collect())
+    }
+    pub async fn replace_partitions_by_hostid(
+        &self,
+        hostid: &str,
+        parts: &[PartitionSpec],
+    ) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+
+        let host_id = self
+            .find_id_by_hostid(hostid)
+            .await?
+            .ok_or_else(|| HostStoreError::HostNotFound(hostid.to_string()))?;
+
+        sqlx::query("DELETE FROM partitions WHERE host_id = ?")
+            .bind(host_id)
+            .execute(&mut *tx)
+            .await?;
+
+        for p in parts {
+            let info_text = p.info.as_ref().map(|v| v.to_string());
+            sqlx::query(
+                r#"
+            INSERT INTO partitions(host_id, name, info)
+            VALUES (?1, ?2, ?3)
+        "#,
+            )
+            .bind(host_id)
+            .bind(&p.name)
+            .bind(info_text)
+            .execute(&mut *tx)
+            .await?;
+        }
+
+        tx.commit().await?;
+        Ok(())
+    }
+    /// fetch a host (by hostid) along with all its partitions
+    pub async fn get_host_with_partitions_by_hostid(
+        &self,
+        hostid: &str,
+    ) -> Result<Option<(HostRecord, Vec<PartitionRecord>)>> {
+        let host = self.get_by_hostid(hostid).await?;
+        let Some(host) = host else { return Ok(None) };
+        let parts = self.list_partitions_by_hostid(hostid).await?;
+        Ok(Some((host, parts)))
+    }
 }
 
-// --- Helpers ---
+// -- helpers
 
 fn now_rfc3339() -> String {
     OffsetDateTime::now_utc()
@@ -536,6 +680,20 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
         updated_at: row.try_get("updated_at").unwrap(),
         port: row.try_get("port").unwrap(),
         identity_path: row.try_get("identity_path").unwrap(),
+    }
+}
+
+fn row_to_partition(row: sqlx::sqlite::SqliteRow) -> PartitionRecord {
+    let info_text: Option<String> = row.try_get("info").ok().flatten();
+    let info = info_text.and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+    PartitionRecord {
+        id: row.try_get("id").unwrap(),
+        host_id: row.try_get("host_id").unwrap(),
+        name: row.try_get("name").unwrap(),
+        info,
+        created_at: row.try_get("created_at").unwrap(),
+        updated_at: row.try_get("updated_at").unwrap(),
     }
 }
 
@@ -594,9 +752,7 @@ mod tests {
         assert_eq!(got.kernel_version, "6.1.0-20-amd64");
     }
 
-    // ----------------------
     // Edge cases start here.
-    // ----------------------
 
     #[tokio::test]
     async fn empty_hostid_rejected_on_insert() {
@@ -692,7 +848,7 @@ mod tests {
     async fn ip_roundtrip_and_lookup() {
         let db = HostStore::open_memory().await.unwrap();
         let ip: IpAddr = "2001:db8::1".parse().unwrap();
-        let h = make_host("v6node", "net", Address::Ip(ip));
+        let h = make_host("v6node", "alice", Address::Ip(ip));
         db.insert_host(&h).await.unwrap();
 
         // Lookup by hostid
@@ -704,9 +860,78 @@ mod tests {
 
         // Lookup by (username, ip)
         let got2 = db
-            .get_by_user_and_address("net", &Address::Ip(ip))
+            .get_by_user_and_address("alice", &Address::Ip(ip))
             .await
             .unwrap();
         assert!(got2.is_some());
+    }
+
+    #[tokio::test]
+    async fn insert_and_retrieve_partitions_for_hostid() {
+        let hostid = "gpurig";
+        let db = HostStore::open_memory().await.unwrap();
+        let ip: IpAddr = "2001:db8::1".parse().unwrap();
+        let host = NewHost {
+            hostid: hostid.into(),
+            username: "alice".into(),
+            address: Address::Ip(ip),
+            port: 22,
+            slurm: SlurmVersion {
+                major: 23,
+                minor: 11,
+                patch: 5,
+            },
+            distro: Distro {
+                name: "ubuntu".into(),
+                version: "22.04".into(),
+            },
+            kernel_version: "6.5.0-41-generic".into(),
+            identity_path: Some("/home/alice/.ssh/id_ed25519".to_string()),
+        };
+        db.insert_host(&host).await.unwrap();
+        let mut info_map: HashMap<String, serde_json::Value> = HashMap::new();
+        info_map.insert("MaxTime".into(), serde_json::json!("24:00:00"));
+        info_map.insert("MaxCPUsPerNode".into(), serde_json::json!("UNLIMITED"));
+        info_map.insert("QoS".into(), serde_json::json!(["normal", "high"]));
+        info_map.insert("State".into(), serde_json::json!("UP"));
+        info_map.insert("PriorityTier".into(), serde_json::json!(1));
+        info_map.insert(
+            "TRES".into(),
+            serde_json::json!("cpu=64,mem=990000M,node=2,billing=64,gres/gpu=8"),
+        );
+        let spec = PartitionSpec {
+            name: "gpu".into(),
+            info: Some(serde_json::to_value(&info_map).unwrap()),
+        };
+        let partition_id = db.upsert_partition_by_hostid(hostid, &spec).await.unwrap();
+        let part = db
+            .get_partition_by_hostid_and_name(hostid, "gpu")
+            .await
+            .unwrap()
+            .expect("partition should exist");
+        let obj = part
+            .info
+            .expect("info should be present")
+            .as_object()
+            .cloned()
+            .expect("info should be a JSON object");
+        assert_eq!(obj.get("MaxTime"), Some(&serde_json::json!("24:00:00")));
+        assert_eq!(
+            obj.get("TRES"),
+            Some(&serde_json::json!(
+                "cpu=64,mem=990000M,node=2,billing=64,gres/gpu=8"
+            ))
+        );
+        assert_eq!(obj.get("PriorityTier").and_then(|v| v.as_i64()), Some(1));
+
+        assert_eq!(obj.get("State"), Some(&serde_json::json!("UP")));
+        let qos = obj
+            .get("QoS")
+            .and_then(|v| v.as_array())
+            .expect("qos array");
+        assert_eq!(
+            qos,
+            &vec![serde_json::json!("normal"), serde_json::json!("high")]
+        );
     }
 }

@@ -1471,6 +1471,7 @@ dependencies = [
  "russh-config",
  "russh-sftp",
  "serde",
+ "serde_json",
  "sha2",
  "shellexpand",
  "sqlx",
