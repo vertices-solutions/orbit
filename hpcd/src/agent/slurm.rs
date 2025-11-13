@@ -6,6 +6,8 @@ use crate::state::db::{ParseSlurmVersionError, SlurmVersion};
 
 pub const DETERMINE_SLURM_VERSION_CMD: &str = r#"(scontrol --version 2>/dev/null || srun --version 2>/dev/null || sinfo --version 2>/dev/null || squeue --version 2>/dev/null; )"#;
 
+pub const GATHER_PARTITIONS_SLURM_CMD: &str = "scontrol show partition -o";
+
 // SLURM PARTITION INFO GATHERING
 
 /// Represents a single SLURM partition as parsed from `scontrol show partition -o`.
@@ -23,7 +25,7 @@ pub enum ParseError {
     MissingField(&'static str),
 }
 
-/// Parse the output of `scontrol show partition -o` into a vector of `Partition`s.
+/// Parse the output of `scontrol show partition -o` into a vector of Partitions.
 ///
 /// Each non-empty line is expected to be a series of `key=value` tokens separated by whitespace.
 /// Only the first '=' in a token is considered the key/value delimiter to handle values like
@@ -57,7 +59,6 @@ impl Partition {
     pub fn get(&self, key: &str) -> Option<&str> {
         self.fields.get(key).map(|s| s.as_str())
     }
-
     /// Parse a field that behaves like a boolean: YES/NO, TRUE/FALSE, ON/OFF, 1/0.
     pub fn get_bool(&self, key: &str) -> Option<bool> {
         let s = self.get(key)?.trim().to_ascii_lowercase();
@@ -118,6 +119,15 @@ fn parse_slurm_duration(s: &str) -> Option<Duration> {
         .saturating_add(sec);
 
     Some(Duration::from_secs(total))
+}
+
+// returns a command to be executed on cluster to submit the job
+pub fn path_to_sbatch_command(p: &str, remote_base_path: Option<&str>) -> String {
+    if let Some(chdir_path) = remote_base_path {
+        return format!("sbatch --chdir {} {}", chdir_path, p);
+    } else {
+        return format!("sbatch {}", p);
+    }
 }
 
 #[cfg(test)]

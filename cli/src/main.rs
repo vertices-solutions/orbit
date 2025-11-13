@@ -34,6 +34,7 @@ enum Cmd {
         hostid: String,
         local_path: String,
         remote_path: String,
+        sbatchscript: String,
     },
     AddCluster(AddClusterArgs),
     ListClusters,
@@ -270,6 +271,7 @@ async fn send_submit(
     hostid: &str,
     local_path: &str,
     remote_path: &str,
+    sbatchscript: &str,
 ) -> anyhow::Result<()> {
     // outgoing stream client -> server with MFA answers
     let (tx_ans, rx_ans) = mpsc::channel::<SubmitRequest>(16);
@@ -280,6 +282,7 @@ async fn send_submit(
                 local_path: local_path.to_owned(),
                 remote_path: remote_path.to_owned(),
                 hostid: hostid.to_owned(),
+                sbatchscript: sbatchscript.to_owned(),
             })),
         })
         .await?;
@@ -564,7 +567,17 @@ async fn main() -> anyhow::Result<()> {
             hostid,
             local_path,
             remote_path,
-        } => send_submit(&mut client, &hostid, &local_path, &remote_path).await?,
+            sbatchscript,
+        } => {
+            send_submit(
+                &mut client,
+                &hostid,
+                &local_path,
+                &remote_path,
+                &sbatchscript,
+            )
+            .await?
+        }
         Cmd::AddCluster(add_cluster_args) => {
             send_add_cluster(
                 &mut client,

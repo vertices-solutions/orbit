@@ -29,7 +29,6 @@ mod os;
 mod slurm;
 use std::pin::Pin;
 type OutStream = Pin<Box<dyn Stream<Item = Result<StreamEvent, Status>> + Send + Sync + 'static>>;
-
 #[derive(Debug, PartialEq, Eq, ThisError)]
 pub enum AgentSvcError {
     #[error("unknown hostid")]
@@ -301,8 +300,10 @@ impl Agent for AgentSvc {
             .await
             .map_err(|e| Status::unknown(format!("read error: {e}")))?
             .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
-        let (local_path, remote_path, hostid) = match init.msg {
-            Some(proto::submit_request::Msg::Init(i)) => (i.local_path, i.remote_path, i.hostid),
+        let (local_path, remote_path, hostid, sbatchscript) = match init.msg {
+            Some(proto::submit_request::Msg::Init(i)) => {
+                (i.local_path, i.remote_path, i.hostid, i.sbatchscript)
+            }
             _ => return Err(Status::invalid_argument("first message must be init(path)")),
         };
         log::debug!("transfering data from {} to {}", &local_path, &remote_path);
@@ -339,7 +340,7 @@ impl Agent for AgentSvc {
             },
         };
         tokio::spawn(async move {
-            //if let Err(err) = mgr.sync_dir(&local_path, evt_tx.clone(), mfa_rx).await {
+            //1. Sync data
             if let Err(err) = mgr
                 .sync_dir(
                     &local_path,
@@ -357,7 +358,37 @@ impl Agent for AgentSvc {
                     }))
                     .await;
             };
-            // after syncing all files - submit the job.
+            // 2. figure out remote path to sbatch script
+            let remote_sbatch_script_path =
+                util::remote_path::resolve_relative(&remote_path, sbatchscript)
+                    .to_string_lossy()
+                    .into_owned();
+
+            let sbatch_command =
+                slurm::path_to_sbatch_command(&remote_sbatch_script_path, Some(&remote_path));
+            log::debug!("running remote script {}", &remote_sbatch_script_path);
+            // 3. submit the job
+            let (out, err, code) = match mgr.exec_capture(&sbatch_command).await {
+                Ok(v) => (v.0, v.1, v.2),
+                Err(e) => {
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(e.to_string())),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+            log::debug!(
+                "submitted remote script, received from sbatch code {}, error message: {}",
+                code,
+                String::from_utf8(err).unwrap()
+            );
+            let _ = evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::Stdout(out)),
+                }))
+                .await;
         });
 
         let out: OutStream = Box::pin(receiver_to_stream(evt_rx));
@@ -669,7 +700,22 @@ impl Agent for AgentSvc {
                     return;
                 }
             };
-
+            let (_, err, code) = match sm.exec_capture("sacct 1>/dev/null 2>&1").await {
+                Ok((vo, ve, ec)) => (vo, ve, ec),
+                Err(e) => {
+                    let _ = evt_tx
+                        .send(Err(Status::aborted(format!(
+                            "failed to gather cluster os metadata for {hostid}: {}",
+                            e.to_string()
+                        ))))
+                        .await;
+                    return;
+                }
+            };
+            let accounting_enabled = match code {
+                0 => true,
+                _ => false,
+            };
             let new_host = crate::state::db::NewHost {
                 username: username,
                 hostid: hostid.clone(),
@@ -679,6 +725,7 @@ impl Agent for AgentSvc {
                 slurm: slurm_version,
                 port: port,
                 identity_path: identity_path,
+                accounting_available: accounting_enabled,
             };
             match hs.insert_host(&new_host).await {
                 Ok(v) => {

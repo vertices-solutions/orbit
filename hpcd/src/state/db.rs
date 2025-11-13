@@ -98,6 +98,9 @@ pub struct NewHost {
     pub distro: Distro,
     /// version of kernel on cluster host
     pub kernel_version: String,
+
+    /// availability of accounting (to be used for more fine-grained control over jobs)
+    pub accounting_available: bool,
 }
 
 /// Full stored host record.
@@ -115,6 +118,7 @@ pub struct HostRecord {
     pub kernel_version: String,
     pub created_at: String, // RFC3339
     pub updated_at: String, // RFC3339
+    pub accounting_available: bool,
 }
 
 #[derive(Debug, Error)]
@@ -213,6 +217,7 @@ impl HostStore {
               distro_name TEXT NOT NULL,
               distro_version TEXT NOT NULL,
               kernel_version TEXT NOT NULL,
+              accounting_available INTEGER NOT NULL,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               CHECK (hostname IS NOT NULL OR ip IS NOT NULL)
@@ -326,9 +331,9 @@ impl HostStore {
               hostid,
               username, hostname, ip,
               slurm_major, slurm_minor, slurm_patch,
-              distro_name, distro_version, kernel_version, 
-              port, identity_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              distro_name, distro_version, kernel_version,
+              port, identity_path,accounting_available
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -342,8 +347,9 @@ impl HostStore {
         .bind(&host.distro.name)
         .bind(&host.distro.version)
         .bind(&host.kernel_version)
-        .bind(&host.port)
+        .bind(host.port)
         .bind(&host.identity_path)
+        .bind(host.accounting_available)
         .fetch_one(&self.pool)
         .await?;
 
@@ -546,7 +552,7 @@ impl HostStore {
             .ok_or_else(|| HostStoreError::HostNotFound(hostid.into()))?;
         let info_text = spec.info.as_ref().map(|v| v.to_string());
         let rec = sqlx::query(r#"
-        INSERT INTO partitions(host_id, name, info) 
+        INSERT INTO partitions(host_id, name, info)
         VALUES (?1, ?2, ?3)
         ON CONFLICT (host_id, name)
         DO UPDATE SET
@@ -680,6 +686,7 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
         updated_at: row.try_get("updated_at").unwrap(),
         port: row.try_get("port").unwrap(),
         identity_path: row.try_get("identity_path").unwrap(),
+        accounting_available: row.try_get("accounting_available").unwrap(),
     }
 }
 
@@ -721,6 +728,7 @@ mod tests {
             kernel_version: "6.5.0-41-generic".into(),
             port: 22,
             identity_path: Some("/home/jeff/.ssh/id_ed25519".to_string()),
+            accounting_available: true,
         }
     }
 
@@ -887,6 +895,7 @@ mod tests {
             },
             kernel_version: "6.5.0-41-generic".into(),
             identity_path: Some("/home/alice/.ssh/id_ed25519".to_string()),
+            accounting_available: true,
         };
         db.insert_host(&host).await.unwrap();
         let mut info_map: HashMap<String, serde_json::Value> = HashMap::new();
