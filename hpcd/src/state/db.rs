@@ -719,7 +719,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs
             )
-            select aj.job_id,aj.is_completed,aj.created_at,aj.finished_at,h.hostid
+            select aj.id as id, aj.job_id as job_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,h.hostid as hostid
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -795,9 +795,9 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
     JobRecord {
         id: row.try_get("id").unwrap(),
         job_id: row.try_get("job_id").unwrap(),
-        host_id: row.try_get("host_id").unwrap(),
+        host_id: row.try_get("hostid").unwrap(),
         created_at: row.try_get("created_at").unwrap(),
-        finished_at: row.try_get("finished_at").unwrap(),
+        finished_at: row.try_get("completed_at").unwrap(),
         is_completed: row.try_get("is_completed").unwrap(),
     }
 }

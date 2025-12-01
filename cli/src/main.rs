@@ -2,9 +2,9 @@ use anyhow::bail;
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, ListClustersRequest, MfaAnswer, PingReply, PingRequest,
-    StreamEvent, SubmitRequest, SubmitRequestInit, add_cluster_init, add_cluster_request,
-    stream_event,
+    AddClusterInit, AddClusterRequest, ListClustersRequest, ListJobsRequest, ListJobsResponse,
+    MfaAnswer, PingReply, PingRequest, StreamEvent, SubmitRequest, SubmitRequestInit,
+    add_cluster_init, add_cluster_request, stream_event,
 };
 use serde::Deserialize;
 use std::any::Any;
@@ -39,6 +39,7 @@ enum Cmd {
     AddCluster(AddClusterArgs),
     ListClusters,
     Init(InitProjectArgs),
+    ListJobs(ListJobsArgs),
 }
 #[derive(clap::ValueEnum, Clone, Default, Debug, serde::Serialize, Deserialize)]
 enum WLM {
@@ -77,6 +78,12 @@ struct InitProjectArgs {
 
     #[arg(long)]
     time: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct ListJobsArgs {
+    #[arg(long)]
+    cluster: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -188,6 +195,56 @@ async fn send_list_clusters(client: &mut AgentClient<Channel>, filter: &str) -> 
         println!(
             "{:<12} {:<16} {:<20} {:<4} {:<12}",
             item.username, item.hostid, host_str, item.port, connected_str
+        );
+    }
+
+    Ok(())
+}
+
+async fn send_list_jobs(
+    client: &mut AgentClient<Channel>,
+    cluster: Option<String>,
+) -> anyhow::Result<()> {
+    let list_jobs_request = ListJobsRequest { hostid: cluster };
+    let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await
+    {
+        Ok(Ok(res)) => res.into_inner(),
+        Ok(Err(status)) => match status.code() {
+            tonic::Code::InvalidArgument => {
+                bail!("invalid argument: '{}'", status.message())
+            }
+            tonic::Code::Internal => {
+                bail!("internal error: '{}'", status.message())
+            }
+            _ => {
+                bail!(
+                    "error encountered: {} - '{}'",
+                    status.code(),
+                    status.message()
+                )
+            }
+        },
+        Err(e) => {
+            bail!("operation timed out: {}", e)
+        }
+    };
+    // TODO: go through list of clusters to determine the lengths of fields
+    println!(
+        "{:<12} {:<16} {:<9} {:<20} {:<20}",
+        "job id", "host id", "status", "created", "finished"
+    );
+
+    for ref item in response.jobs.iter() {
+        let job_id = item.job_id.unwrap_or(-1);
+
+        let completed_str = match item.is_completed {
+            true => "completed",
+            false => "running",
+        };
+        let finished_at = item.finished_at.clone().unwrap_or("-".into());
+        println!(
+            "{:<12} {:<16} {:<9} {:<20} {:<20}",
+            job_id, item.hostid, completed_str, item.created_at, finished_at
         );
     }
 
@@ -593,7 +650,17 @@ async fn main() -> anyhow::Result<()> {
         Cmd::ListClusters => {
             send_list_clusters(&mut client, "").await?;
         }
+        Cmd::ListJobs(cluster) => send_list_jobs(&mut client, cluster.cluster).await?,
         Cmd::Init(ref args) => run_init_project(args).await?,
     }
     Ok(())
+}
+
+fn num_digits(mut n: i64) -> u32 {
+    if n == 0 {
+        return 1;
+    }
+
+    n = n.abs(); // handle negatives
+    n.ilog10() + 1
 }
