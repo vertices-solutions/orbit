@@ -369,7 +369,7 @@ impl Agent for AgentSvc {
                 match host_data.default_base_path {
                     Some(v) => {
                         let base_path = std::path::PathBuf::from(v);
-                        let random_str = Uuid::new_v4().to_string();
+                        let random_str = util::random::generate_run_directory_name();
                         base_path.join(random_str).to_string_lossy().into_owned()
                     }
                     None => {
