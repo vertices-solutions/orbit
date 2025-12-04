@@ -862,6 +862,17 @@ sys.stdout.flush()
         }
         Ok(())
     }
+    pub async fn directory_exists(&self, dirname: &str) -> Result<bool, String> {
+        let command = format!("ls {} 1>&2 2>/dev/null", dirname);
+        let (_, _, code) = match self.exec_capture(&command).await {
+            Ok(v) => v,
+            Err(e) => return Err(e.to_string()),
+        };
+        match code {
+            0 => Ok(true),
+            _ => Ok(false),
+        }
+    }
 }
 
 /// Helper to wrap an mpsc receiver as a tonic stream.

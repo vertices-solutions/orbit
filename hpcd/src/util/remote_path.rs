@@ -1,5 +1,7 @@
 use std::path::{Component, Path, PathBuf};
 
+/// takes a base path and a relative path and joins them, additionally normalizing the path,
+/// without local access to those paths.
 pub fn resolve_relative(remote_base: impl AsRef<Path>, relative_path: impl AsRef<Path>) -> PathBuf {
     let base = remote_base.as_ref();
 

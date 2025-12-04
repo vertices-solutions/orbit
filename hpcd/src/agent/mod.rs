@@ -290,6 +290,8 @@ impl Agent for AgentSvc {
         }
         return Ok(ListClustersResponse { clusters: clusters }.into());
     }
+
+    /// Submit job to a cluster. the core of this app.
     async fn submit(
         &self,
         request: tonic::Request<tonic::Streaming<SubmitRequest>>,
@@ -304,14 +306,18 @@ impl Agent for AgentSvc {
             .await
             .map_err(|e| Status::unknown(format!("read error: {e}")))?
             .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+
         let (local_path, remote_path, hostid, sbatchscript) = match init.msg {
             Some(proto::submit_request::Msg::Init(i)) => {
                 (i.local_path, i.remote_path, i.hostid, i.sbatchscript)
             }
             _ => return Err(Status::invalid_argument("first message must be init(path)")),
         };
+
+        // Establish communication queues
         let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
-        let (mfa_tx, mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+
         tokio::spawn(async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::submit_request::Msg::Mfa(ans)) = item.msg {
@@ -340,14 +346,35 @@ impl Agent for AgentSvc {
                 }
             },
         };
+
         let hs = self.hs.clone().write_owned().await;
+
+        // REMOTE PATH handling logic
         // If remote_path is provided and is absolute -  just return it;
         // If provided and is relative - query default_base_path
         // If not provided - query default_base_path,
         //      if it is logged for this cluster in the database -
         //      randomize directory name and deploy to the random subdirectory of default_base_path.
         let remote_path: String = match remote_path {
-            Some(v) => v,
+            Some(v) => {
+                if v.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "remote path can't be empty: either provide non-empty remote path or omit it completely",
+                    ));
+                }
+                if std::path::PathBuf::from(&v).is_absolute() {
+                    //If v is absolute - just use it
+                    v
+                } else {
+                    // If v is not absolute -> it must be relative and thus requires default_base_path
+                    let default_base_path = get_default_base_path(&hs, &hostid).await?;
+                    let base_path = std::path::PathBuf::from(default_base_path);
+                    // resolve_relative instead of just join because remote_path might be not normalized
+                    util::remote_path::resolve_relative(base_path, v)
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            }
             None => {
                 // get host metadata;
                 let host_data = match hs.get_by_hostid(&hostid).await {
@@ -366,28 +393,50 @@ impl Agent for AgentSvc {
                         )));
                     }
                 };
-                match host_data.default_base_path {
-                    Some(v) => {
-                        let base_path = std::path::PathBuf::from(v);
-                        let random_str = util::random::generate_run_directory_name();
-                        base_path.join(random_str).to_string_lossy().into_owned()
-                    }
-                    None => {
-                        return Err(Status::invalid_argument(format!(
-                            "remote_path is not provided and default_base_path is not set for {}",
-                            &hostid,
-                        )));
-                    }
-                }
+                let default_base_path = get_default_base_path(&hs, &hostid).await?;
+                let random_str = util::random::generate_run_directory_name();
+                let base_path = std::path::PathBuf::from(default_base_path);
+
+                base_path.join(random_str).to_string_lossy().into_owned()
             }
         };
+
+        // Pipe the remaining client messages (if any) into MFA answers
+        match mgr.ensure_connected(&evt_tx.clone(), &mut mfa_rx).await {
+            Ok(_) => {}
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "could not establish connection to {}: {}",
+                    &hostid,
+                    e.to_string()
+                )));
+            }
+        };
+
+        let remote_path_exists = match mgr.directory_exists(&remote_path).await {
+            Ok(v) => v,
+            Err(e) => {
+                return Err(Status::internal(format!(
+                    "can't list {} on {}: {}",
+                    &remote_path,
+                    &hostid,
+                    e.to_string()
+                )));
+            }
+        };
+
+        if remote_path_exists {
+            return Err(Status::invalid_argument(format!(
+                "can't use {} as remote path on {}: directory already exists on remote",
+                &remote_path, &hostid
+            )));
+        }
+
         log::debug!(
             "transfering data from {} to {:?}",
             &local_path,
             &remote_path
         );
-
-        // Pipe the remaining client messages (if any) into MFA answers
 
         tokio::spawn(async move {
             //1. Sync data
@@ -932,6 +981,33 @@ impl Agent for AgentSvc {
             .map(|jr: JobRecord| db_job_record_to_api_unit_response(&jr))
             .collect();
         return Ok(tonic::Response::new(ListJobsResponse { jobs: api_jobs }));
+    }
+}
+
+async fn get_default_base_path(hs: &HostStore, hid: &str) -> Result<String, Status> {
+    // TODO: return domain errors and covert
+    let host_data = match hs.get_by_hostid(hid).await {
+        Ok(Some(v)) => v,
+        Ok(None) => {
+            return Err(Status::invalid_argument(format!(
+                "hostid {} is unknown",
+                hid
+            )));
+        }
+        Err(e) => {
+            return Err(Status::internal(format!(
+                "could not retrieve default_base_path for {} from app's db: {}",
+                hid,
+                e.to_string()
+            )));
+        }
+    };
+    match host_data.default_base_path {
+        Some(v) => Ok(v),
+        None => Err(Status::invalid_argument(format!(
+            "default_base_path for {} is not set",
+            hid,
+        ))),
     }
 }
 
