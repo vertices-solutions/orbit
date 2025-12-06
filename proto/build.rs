@@ -1,6 +1,6 @@
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_prost_build::configure()
-        .compile_protos(&["../../proto/agent.proto"], &["../../proto"])
+        .compile_protos(&["./protos/agent.proto"], &["./protos"])
         .expect("failed to compile protos");
     Ok(())
 }

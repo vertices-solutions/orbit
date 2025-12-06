@@ -1,0 +1,126 @@
+syntax = "proto3";
+package  agent.v1;
+
+// A single prompt displayed during keyboard-interactive auth (e.g. "Duo code:").
+message Prompt {
+  string text = 1;
+  bool echo = 2; // Whether the server allows echoing the user's input
+}
+
+// MFA prompt bundle (a single "round" of keyboard-interactive).
+message MfaPrompt {
+  string name = 1;          // e.g. "Duo Security"
+  string instructions = 2;  // Free text instructions
+  repeated Prompt prompts = 3;
+}
+
+// Client's answers to a single MFA prompt round.
+// The number of responses must match the number of `prompts`.
+message MfaAnswer {
+  repeated string responses = 1;
+}
+
+// Server->client stream items while running a command.
+message StreamEvent {
+  oneof event {
+    bytes stdout = 1;        // Chunk from STDOUT
+    bytes stderr = 2;        // Chunk from STDERR
+    int32 exit_code = 3;     // Exit code (emitted once when known)
+    MfaPrompt mfa = 4;       // MFA prompt round
+    string error = 5;        // Fatal error (connection/auth/exec)
+  }
+}
+
+
+
+
+
+
+message SubmitRequestInit {
+  string local_path = 1;  // local project path
+  optional string remote_path = 2; // path to where to locate the remote project
+  string hostid = 3;      // host identifier - should be something easy to remember
+  string sbatchscript = 4;
+}
+
+message AddClusterInit {
+  string hostid = 1;  // memorable host identifier
+  string username = 2; // path to where to locate the remote project
+  oneof host {
+    string hostname = 3;      // host identifier - should be something easy to remember
+    string ipaddr = 4;
+  }
+  optional string identity_path = 5;
+  uint32 port = 6;
+  optional string default_base_path = 7;
+}
+message ListClustersRequest {
+  string filter = 1;
+}
+
+message ListClustersUnitResponse {
+  string username = 1;
+  optional string identity_path = 2;
+  int32 port = 3;
+  oneof host {
+    string hostname = 4;
+    string ipaddr = 5;
+  }
+  bool connected = 6;
+  string hostid = 7;
+}
+
+
+
+
+message ListJobsRequest {
+  optional string hostid = 1;
+}
+
+message ListClustersResponse {
+  repeated ListClustersUnitResponse clusters = 1;
+}
+
+
+
+message ListJobsUnitResponse {
+  string hostid = 1;
+  int64 internalJobId = 2;
+  optional int64 jobId = 3;
+  string created_at = 4;
+  optional string finished_at = 5;
+  bool is_completed = 6;
+}
+
+message ListJobsResponse {
+  repeated ListJobsUnitResponse jobs = 1;
+}
+
+
+// Client -> Server
+message SubmitRequest {
+  oneof msg {
+    SubmitRequestInit init = 1; // Initial file path submission
+    MfaAnswer mfa = 2;
+  }
+}
+message AddClusterRequest {
+  oneof msg {
+    AddClusterInit init = 1;
+    MfaAnswer mfa = 2;
+  }
+}
+
+message PingRequest { string message = 1; }
+
+
+message PingReply { string message = 1; }
+// One bidirectional streaming method keeps MFA + output on a single pipe.
+service Agent {
+  rpc Ping(PingRequest) returns (PingReply);
+  rpc Ls(stream MfaAnswer) returns (stream StreamEvent);
+  rpc Submit(stream SubmitRequest) returns (stream StreamEvent);
+  rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
+  rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+  rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+}

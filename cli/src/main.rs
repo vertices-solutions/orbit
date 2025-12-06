@@ -9,7 +9,8 @@ use proto::{
 use serde::Deserialize;
 use std::any::Any;
 use std::io::Write;
-use std::path::PathBuf;
+use std::ffi::OsStr;
+use std::path::{Path, PathBuf};
 use tokio::io;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc;
@@ -84,7 +85,7 @@ struct ListJobsArgs {
 struct SubmitArgs {
     hostid: String,
     local_path: String,
-    sbatchscript: String,
+    sbatchscript: Option<String>,
     #[arg(long)]
     remote_path: Option<String>,
 }
@@ -618,6 +619,69 @@ async fn prompt_value(prompt: &str, echo: bool) -> anyhow::Result<String> {
     }
 }
 
+fn collect_sbatch_scripts(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    let mut matches = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let entries = std::fs::read_dir(&dir)
+            .map_err(|e| anyhow::anyhow!("failed to read {}: {}", dir.display(), e))?;
+        for entry in entries {
+            let entry = entry?;
+            let path = entry.path();
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                stack.push(path);
+                continue;
+            }
+            if file_type.is_file() && path.extension() == Some(OsStr::new("sbatch")) {
+                matches.push(path);
+            }
+        }
+    }
+
+    matches.sort();
+    Ok(matches)
+}
+
+fn resolve_sbatch_script(local_path: &Path, explicit: Option<&str>) -> anyhow::Result<String> {
+    if let Some(sbatchscript) = explicit {
+        return Ok(sbatchscript.to_string());
+    }
+
+    if !local_path.exists() {
+        bail!("local path '{}' does not exist", local_path.display());
+    }
+    if !local_path.is_dir() {
+        bail!(
+            "local path '{}' must be a directory to auto-detect .sbatch scripts",
+            local_path.display()
+        );
+    }
+
+    let scripts = collect_sbatch_scripts(local_path)?;
+    match scripts.len() {
+        0 => bail!(
+            "no .sbatch files found under '{}'; provide the script path explicitly",
+            local_path.display()
+        ),
+        1 => {
+            let rel = scripts[0].strip_prefix(local_path).unwrap_or(&scripts[0]);
+            Ok(rel.to_string_lossy().into_owned())
+        }
+        _ => {
+            let mut msg = format!(
+                "multiple .sbatch files found under '{}'; specify which one to use:\n",
+                local_path.display()
+            );
+            for script in scripts {
+                msg.push_str(&format!("  - {}\n", script.display()));
+            }
+            bail!("{}", msg.trim_end())
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
@@ -634,6 +698,8 @@ async fn main() -> anyhow::Result<()> {
             remote_path,
             sbatchscript,
         }) => {
+            let local_path_buf = PathBuf::from(&local_path);
+            let sbatchscript = resolve_sbatch_script(&local_path_buf, sbatchscript.as_deref())?;
             send_submit(
                 &mut client,
                 &hostid,
