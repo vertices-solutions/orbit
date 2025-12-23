@@ -573,11 +573,9 @@ impl Agent for AgentSvc {
         Ok(tonic::Response::new(out))
     }
 
-    /// 1. Test if cluster already exists; if it does - return error indicating that cluster exists
-    /// 2. If cluster doesn't exist - create corresponding SessionManager, try to connect and gather
-    ///    information
-    /// 3. If managed to connect and gather the appropriate information - add it to the database and
-    ///    return OK; otherwise - return appropriate error
+    /// 1. Create SessionManager, try to connect and gather information.
+    /// 2. If managed to connect and gather the appropriate information - upsert it in the database
+    ///    and return OK; otherwise - return appropriate error.
     async fn add_cluster(
         &self,
         request: tonic::Request<tonic::Streaming<AddClusterRequest>>,
@@ -952,9 +950,9 @@ impl Agent for AgentSvc {
                     .clone()
                     .map(|v| v.to_string_lossy().into_owned()),
             };
-            match hs.insert_host(&new_host).await {
+            match hs.upsert_host(&new_host).await {
                 Ok(v) => {
-                    log::debug!("successfully inserted host with id {v}")
+                    log::debug!("successfully upserted host with id {v}")
                 }
                 Err(e) => {
                     let _ = evt_tx

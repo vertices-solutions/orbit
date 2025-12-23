@@ -2,12 +2,13 @@ use anyhow::bail;
 use clap::{ArgGroup, Args, Parser, Subcommand};
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, ListClustersRequest, ListJobsRequest, LsRequest,
+    AddClusterInit, AddClusterRequest, ListClustersRequest, ListClustersResponse,
+    ListClustersUnitResponse, ListJobsRequest, ListJobsResponse, ListJobsUnitResponse, LsRequest,
     LsRequestInit, MfaAnswer, MfaPrompt, PingRequest, StreamEvent, SubmitRequest, SubmitRequestInit,
     add_cluster_init, add_cluster_request, stream_event,
 };
 use serde::Deserialize;
-use std::any::Any;
+use serde_json::json;
 use std::future::Future;
 use std::io::Write;
 use std::ffi::OsStr;
@@ -33,10 +34,9 @@ enum Cmd {
     Ping,
     Ls(LsArgs),
     Submit(SubmitArgs),
-    AddCluster(AddClusterArgs),
     Init(InitProjectArgs),
-    #[command(about = "List jobs or clusters")]
-    List(ListArgs),
+    Jobs(JobsArgs),
+    Clusters(ClustersArgs),
 }
 #[derive(clap::ValueEnum, Clone, Default, Debug, serde::Serialize, Deserialize)]
 enum WLM {
@@ -78,28 +78,64 @@ struct InitProjectArgs {
 }
 
 #[derive(Args, Debug)]
-struct ListArgs {
-    /// Resource type to list.
+struct JobsArgs {
     #[command(subcommand)]
-    cmd: ListCmd,
+    cmd: JobsCmd,
 }
 
 #[derive(Subcommand, Debug)]
-enum ListCmd {
+enum JobsCmd {
     /// List jobs.
-    Jobs(ListJobsArgs),
-    /// List clusters.
-    Clusters(ListClustersArgs),
+    List(ListJobsArgs),
+    /// Show job details.
+    Get(JobGetArgs),
+}
+
+#[derive(Args, Debug)]
+struct JobGetArgs {
+    job_id: i64,
+    #[arg(long)]
+    cluster: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
 struct ListJobsArgs {
     #[arg(long)]
     cluster: Option<String>,
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
-struct ListClustersArgs {}
+struct ListClustersArgs {
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct ClustersArgs {
+    #[command(subcommand)]
+    cmd: ClustersCmd,
+}
+
+#[derive(Subcommand, Debug)]
+enum ClustersCmd {
+    /// List clusters.
+    List(ListClustersArgs),
+    /// Show cluster details.
+    Get(ClusterGetArgs),
+    /// Add or update a cluster.
+    Set(AddClusterArgs),
+}
+
+#[derive(Args, Debug)]
+struct ClusterGetArgs {
+    hostid: String,
+    #[arg(long)]
+    json: bool,
+}
 #[derive(Args, Debug)]
 struct LsArgs {
     hostid: String,
@@ -174,7 +210,10 @@ async fn send_ping(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
         v => bail!("invalid response from server: expected 'pong', got '{v}'"),
     }
 }
-async fn send_list_clusters(client: &mut AgentClient<Channel>, filter: &str) -> anyhow::Result<()> {
+async fn fetch_list_clusters(
+    client: &mut AgentClient<Channel>,
+    filter: &str,
+) -> anyhow::Result<ListClustersResponse> {
     let list_clusters_request = ListClustersRequest {
         filter: filter.to_string(),
     };
@@ -204,21 +243,66 @@ async fn send_list_clusters(client: &mut AgentClient<Channel>, filter: &str) -> 
             bail!("operation timed out: {}", e)
         }
     };
+    Ok(response)
+}
+
+fn cluster_host_string(item: &ListClustersUnitResponse) -> String {
+    match item.host {
+        Some(ref v) => match v {
+            proto::list_clusters_unit_response::Host::Hostname(s) => s.to_string(),
+            proto::list_clusters_unit_response::Host::Ipaddr(s) => s.to_string(),
+        },
+        None => "<unknown>".to_string(),
+    }
+}
+
+fn cluster_to_json(item: &ListClustersUnitResponse) -> serde_json::Value {
+    let status = match item.connected {
+        true => "connected",
+        false => "disconnected",
+    };
+    json!({
+        "hostid": item.hostid.as_str(),
+        "username": item.username.as_str(),
+        "address": cluster_host_string(item),
+        "port": item.port,
+        "connected": item.connected,
+        "status": status,
+        "identity_path": item.identity_path.as_deref(),
+    })
+}
+
+fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
+    let status = match item.is_completed {
+        true => "completed",
+        false => "running",
+    };
+    json!({
+        "internal_job_id": item.internal_job_id,
+        "job_id": item.job_id,
+        "hostid": item.hostid.as_str(),
+        "status": status,
+        "is_completed": item.is_completed,
+        "created_at": item.created_at.as_str(),
+        "finished_at": item.finished_at.as_deref(),
+    })
+}
+
+fn emit_json(value: serde_json::Value) -> anyhow::Result<()> {
+    let output = serde_json::to_string_pretty(&value)?;
+    println!("{output}");
+    Ok(())
+}
+
+fn print_clusters_table(clusters: &[ListClustersUnitResponse]) {
     // TODO: go through list of clusters to determine the lengths of fields
     println!(
         "{:<12} {:<16} {:<20} {:<4} {:<12}",
         "username", "hostid", "address", "port", "status"
     );
 
-    for item in response.clusters.iter() {
-        let host_str = match item.host {
-            Some(ref v) => match v {
-                proto::list_clusters_unit_response::Host::Hostname(s) => s,
-                proto::list_clusters_unit_response::Host::Ipaddr(s) => s,
-            },
-            None => "<unknown>",
-        };
-
+    for item in clusters.iter() {
+        let host_str = cluster_host_string(item);
         let connected_str = match item.connected {
             true => "connected",
             false => "disconnected",
@@ -228,14 +312,38 @@ async fn send_list_clusters(client: &mut AgentClient<Channel>, filter: &str) -> 
             item.username, item.hostid, host_str, item.port, connected_str
         );
     }
-
-    Ok(())
 }
 
-async fn send_list_jobs(
+fn print_clusters_json(clusters: &[ListClustersUnitResponse]) -> anyhow::Result<()> {
+    let data: Vec<serde_json::Value> = clusters.iter().map(cluster_to_json).collect();
+    emit_json(serde_json::Value::Array(data))
+}
+
+fn print_cluster_details(item: &ListClustersUnitResponse) {
+    let host_str = cluster_host_string(item);
+    let connected_str = match item.connected {
+        true => "connected",
+        false => "disconnected",
+    };
+    println!("hostid: {}", item.hostid);
+    println!("username: {}", item.username);
+    println!("address: {}", host_str);
+    println!("port: {}", item.port);
+    println!("status: {}", connected_str);
+    println!(
+        "identity_path: {}",
+        item.identity_path.as_deref().unwrap_or("-")
+    );
+}
+
+fn print_cluster_details_json(item: &ListClustersUnitResponse) -> anyhow::Result<()> {
+    emit_json(cluster_to_json(item))
+}
+
+async fn fetch_list_jobs(
     client: &mut AgentClient<Channel>,
     cluster: Option<String>,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ListJobsResponse> {
     let list_jobs_request = ListJobsRequest { hostid: cluster };
     let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await
     {
@@ -259,27 +367,60 @@ async fn send_list_jobs(
             bail!("operation timed out: {}", e)
         }
     };
+    Ok(response)
+}
+
+fn print_jobs_table(jobs: &[ListJobsUnitResponse]) {
     // TODO: go through list of clusters to determine the lengths of fields
     println!(
         "{:<12} {:<16} {:<9} {:<20} {:<20}",
         "job id", "host id", "status", "created", "finished"
     );
 
-    for ref item in response.jobs.iter() {
-        let job_id = item.job_id.unwrap_or(-1);
-
+    for item in jobs.iter() {
+        let job_id = item
+            .job_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_string());
         let completed_str = match item.is_completed {
             true => "completed",
             false => "running",
         };
-        let finished_at = item.finished_at.clone().unwrap_or("-".into());
+        let finished_at = item.finished_at.clone().unwrap_or_else(|| "-".to_string());
         println!(
             "{:<12} {:<16} {:<9} {:<20} {:<20}",
             job_id, item.hostid, completed_str, item.created_at, finished_at
         );
     }
+}
 
-    Ok(())
+fn print_jobs_json(jobs: &[ListJobsUnitResponse]) -> anyhow::Result<()> {
+    let data: Vec<serde_json::Value> = jobs.iter().map(job_to_json).collect();
+    emit_json(serde_json::Value::Array(data))
+}
+
+fn print_job_details(item: &ListJobsUnitResponse) {
+    let job_id = item
+        .job_id
+        .map(|id| id.to_string())
+        .unwrap_or_else(|| "-".to_string());
+    let completed_str = match item.is_completed {
+        true => "completed",
+        false => "running",
+    };
+    println!("internal_id: {}", item.internal_job_id);
+    println!("job_id: {}", job_id);
+    println!("hostid: {}", item.hostid);
+    println!("status: {}", completed_str);
+    println!("created: {}", item.created_at);
+    println!(
+        "finished: {}",
+        item.finished_at.as_deref().unwrap_or("-")
+    );
+}
+
+fn print_job_details_json(item: &ListJobsUnitResponse) -> anyhow::Result<()> {
+    emit_json(job_to_json(item))
 }
 async fn collect_mfa_answers(mfa: &MfaPrompt) -> anyhow::Result<MfaAnswer> {
     eprintln!();
@@ -663,30 +804,93 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Cmd::AddCluster(add_cluster_args) => {
+        Cmd::Init(ref args) => run_init_project(args).await?,
+        Cmd::Jobs(jobs_args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            send_add_cluster(
-                &mut client,
-                &add_cluster_args.hostid,
-                &add_cluster_args.username,
-                &add_cluster_args.hostname,
-                &add_cluster_args.ip,
-                &add_cluster_args.identity_path,
-                add_cluster_args.port,
-                &add_cluster_args.default_base_path,
-            )
-            .await?
-        }
-        Cmd::List(list_args) => {
-            let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            match list_args.cmd {
-                ListCmd::Clusters(_) => {
-                    send_list_clusters(&mut client, "").await?;
+            match jobs_args.cmd {
+                JobsCmd::List(args) => {
+                    let response = fetch_list_jobs(&mut client, args.cluster).await?;
+                    if args.json {
+                        print_jobs_json(&response.jobs)?;
+                    } else {
+                        print_jobs_table(&response.jobs);
+                    }
                 }
-                ListCmd::Jobs(args) => send_list_jobs(&mut client, args.cluster).await?,
+                JobsCmd::Get(args) => {
+                    let response = fetch_list_jobs(&mut client, args.cluster.clone()).await?;
+                    let matches: Vec<&ListJobsUnitResponse> = response
+                        .jobs
+                        .iter()
+                        .filter(|job| job.job_id == Some(args.job_id))
+                        .collect();
+                    match matches.as_slice() {
+                        [] => {
+                            if let Some(cluster) = args.cluster.as_deref() {
+                                bail!("job {} not found in cluster '{}'", args.job_id, cluster);
+                            }
+                            bail!("job {} not found", args.job_id);
+                        }
+                        [job] => {
+                            if args.json {
+                                print_job_details_json(job)?;
+                            } else {
+                                print_job_details(job);
+                            }
+                        }
+                        _ => {
+                            if args.cluster.is_some() {
+                                bail!("multiple jobs matched job id {}", args.job_id);
+                            }
+                            bail!(
+                                "job id {} matched multiple clusters; use --cluster",
+                                args.job_id
+                            );
+                        }
+                    }
+                }
             }
         }
-        Cmd::Init(ref args) => run_init_project(args).await?,
+        Cmd::Clusters(clusters_args) => {
+            let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
+            match clusters_args.cmd {
+                ClustersCmd::List(args) => {
+                    let response = fetch_list_clusters(&mut client, "").await?;
+                    if args.json {
+                        print_clusters_json(&response.clusters)?;
+                    } else {
+                        print_clusters_table(&response.clusters);
+                    }
+                }
+                ClustersCmd::Get(args) => {
+                    let response = fetch_list_clusters(&mut client, "").await?;
+                    let Some(cluster) = response
+                        .clusters
+                        .iter()
+                        .find(|cluster| cluster.hostid == args.hostid)
+                    else {
+                        bail!("cluster '{}' not found", args.hostid);
+                    };
+                    if args.json {
+                        print_cluster_details_json(cluster)?;
+                    } else {
+                        print_cluster_details(cluster);
+                    }
+                }
+                ClustersCmd::Set(args) => {
+                    send_add_cluster(
+                        &mut client,
+                        &args.hostid,
+                        &args.username,
+                        &args.hostname,
+                        &args.ip,
+                        &args.identity_path,
+                        args.port,
+                        &args.default_base_path,
+                    )
+                    .await?
+                }
+            }
+        }
     }
     Ok(())
 }

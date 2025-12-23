@@ -513,6 +513,7 @@ dependencies = [
  "log",
  "proto",
  "serde",
+ "serde_json",
  "shellexpand",
  "tera",
  "thiserror 2.0.17",
