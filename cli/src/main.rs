@@ -126,7 +126,9 @@ enum ClustersCmd {
     List(ListClustersArgs),
     /// Show cluster details.
     Get(ClusterGetArgs),
-    /// Add or update a cluster.
+    /// Add a new cluster.
+    Add(AddClusterArgs),
+    /// Update cluster parameters.
     Set(AddClusterArgs),
 }
 
@@ -987,7 +989,54 @@ async fn main() -> anyhow::Result<()> {
                         print_cluster_details(cluster);
                     }
                 }
+                ClustersCmd::Add(args) => {
+                    let response = fetch_list_clusters(&mut client, "").await?;
+                    if response
+                        .clusters
+                        .iter()
+                        .any(|cluster| cluster.hostid == args.hostid)
+                    {
+                        bail!(
+                            "cluster '{}' already exists; use 'clusters set' to update it",
+                            args.hostid
+                        );
+                    }
+                    if let Some(host) = args.hostname.as_deref().or(args.ip.as_deref()) {
+                        if response.clusters.iter().any(|cluster| {
+                            cluster.username == args.username
+                                && cluster_host_string(cluster) == host
+                        }) {
+                            bail!(
+                                "cluster '{}' with address '{}' already exists; use 'clusters set' to update it",
+                                args.username,
+                                host
+                            );
+                        }
+                    }
+                    send_add_cluster(
+                        &mut client,
+                        &args.hostid,
+                        &args.username,
+                        &args.hostname,
+                        &args.ip,
+                        &args.identity_path,
+                        args.port,
+                        &args.default_base_path,
+                    )
+                    .await?
+                }
                 ClustersCmd::Set(args) => {
+                    let response = fetch_list_clusters(&mut client, "").await?;
+                    if !response
+                        .clusters
+                        .iter()
+                        .any(|cluster| cluster.hostid == args.hostid)
+                    {
+                        bail!(
+                            "cluster '{}' not found; use 'clusters add' to create it",
+                            args.hostid
+                        );
+                    }
                     send_add_cluster(
                         &mut client,
                         &args.hostid,
