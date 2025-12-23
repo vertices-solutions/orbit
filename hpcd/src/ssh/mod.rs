@@ -948,7 +948,7 @@ fn join_remote(base: &str, rel: &Path) -> String {
 }
 
 /// Very small, safe-ish shell escaper for paths.
-fn sh_escape(p: &str) -> String {
+pub(crate) fn sh_escape(p: &str) -> String {
     let mut out = String::from("'");
     out.push_str(&p.replace('\'', r"'\''"));
     out.push('\'');

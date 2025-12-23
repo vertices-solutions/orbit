@@ -3,11 +3,12 @@ use clap::{ArgGroup, Args, Parser, Subcommand};
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, ListClustersRequest, ListJobsRequest, ListJobsResponse,
-    MfaAnswer, PingReply, PingRequest, StreamEvent, SubmitRequest, SubmitRequestInit,
-    add_cluster_init, add_cluster_request, stream_event,
+    LsRequest, LsRequestInit, MfaAnswer, MfaPrompt, PingReply, PingRequest, StreamEvent,
+    SubmitRequest, SubmitRequestInit, add_cluster_init, add_cluster_request, stream_event,
 };
 use serde::Deserialize;
 use std::any::Any;
+use std::future::Future;
 use std::io::Write;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -30,7 +31,7 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     Ping,
-    Ls,
+    Ls(LsArgs),
     Submit(SubmitArgs),
     AddCluster(AddClusterArgs),
     ListClusters,
@@ -80,6 +81,11 @@ struct InitProjectArgs {
 struct ListJobsArgs {
     #[arg(long)]
     cluster: Option<String>,
+}
+#[derive(Args, Debug)]
+struct LsArgs {
+    hostid: String,
+    path: Option<String>,
 }
 #[derive(Args, Debug)]
 struct SubmitArgs {
@@ -257,20 +263,39 @@ async fn send_list_jobs(
 
     Ok(())
 }
-async fn send_ls(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
-    // outgoing stream client -> server with MFA answers
-    let (tx_ans, rx_ans) = mpsc::channel::<MfaAnswer>(16);
-    let outbound = ReceiverStream::new(rx_ans);
+async fn collect_mfa_answers(mfa: &MfaPrompt) -> anyhow::Result<MfaAnswer> {
+    eprintln!();
+    if !mfa.name.is_empty() {
+        eprintln!("MFA: {}", mfa.name);
+    }
+    if !mfa.instructions.is_empty() {
+        eprintln!("{}", mfa.instructions);
+    }
 
-    // Start LS RPC
-    let response = client.ls(Request::new(outbound)).await?;
-    let mut inbound = response.into_inner();
+    let mut responses = Vec::with_capacity(mfa.prompts.len());
+    for p in &mfa.prompts {
+        let ans = prompt_value(&p.text, p.echo).await?;
+        responses.push(ans);
+    }
+
+    Ok(MfaAnswer { responses })
+}
+
+async fn handle_stream_events<S, F, Fut>(
+    mut inbound: S,
+    mut send_mfa: F,
+) -> anyhow::Result<Option<i32>>
+where
+    S: Stream<Item = Result<StreamEvent, Status>> + Unpin,
+    F: FnMut(MfaAnswer) -> Fut,
+    Fut: Future<Output = anyhow::Result<()>>,
+{
     let mut exit_code: Option<i32> = None;
     while let Some(item) = inbound.next().await {
         match item {
             Ok(StreamEvent { event: Some(ev) }) => match ev {
                 stream_event::Event::Stdout(bytes) => {
-                    write_all(&mut std::io::stdout(), &bytes);
+                    write_all(&mut std::io::stdout(), &bytes)?;
                 }
                 stream_event::Event::Stderr(bytes) => {
                     write_all(&mut std::io::stderr(), &bytes)?;
@@ -280,30 +305,14 @@ async fn send_ls(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
                     break;
                 }
                 stream_event::Event::Mfa(mfa) => {
-                    // Prompt for all answers in this round
-                    eprintln!();
-                    if !mfa.name.is_empty() {
-                        eprintln!("MFA: {}", mfa.name);
-                    }
-                    if !mfa.instructions.is_empty() {
-                        eprintln!("{}", mfa.instructions);
-                    }
-
-                    let mut responses = Vec::with_capacity(mfa.prompts.len());
-                    for p in &mfa.prompts {
-                        let ans = prompt_value(&p.text, p.echo).await?;
-                        responses.push(ans);
-                    }
-
-                    // Send the answers back
-                    if tx_ans.send(MfaAnswer { responses }).await.is_err() {
-                        eprintln!("server closed while sending MFA answers");
+                    let answers = collect_mfa_answers(&mfa).await?;
+                    if let Err(err) = send_mfa(answers).await {
+                        eprintln!("server closed while sending MFA answers: {err}");
+                        exit_code = Some(1);
                         break;
                     }
                 }
                 stream_event::Event::Error(err) => {
-                    // "command not allowed" goes here
-                    // "SSH connect failed also goes here"
                     eprintln!("server error: {err}");
                     exit_code = Some(1);
                     break;
@@ -317,17 +326,51 @@ async fn send_ls(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
             }
         }
     }
-    match exit_code {
-        Some(num) => {
-            if num != 0 {
-                bail!("received exit code {num}");
-            }
-            return Ok(());
-        }
-        None => {
-            return Ok(());
+
+    Ok(exit_code)
+}
+
+fn ensure_exit_code(exit_code: Option<i32>, context: &str) -> anyhow::Result<()> {
+    if let Some(num) = exit_code {
+        if num != 0 {
+            bail!("{context} {num}");
         }
     }
+    Ok(())
+}
+
+async fn send_ls(
+    client: &mut AgentClient<Channel>,
+    hostid: &str,
+    path: &Option<String>,
+) -> anyhow::Result<()> {
+    let (tx_ans, rx_ans) = mpsc::channel::<LsRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(LsRequest {
+            msg: Some(proto::ls_request::Msg::Init(LsRequestInit {
+                hostid: hostid.to_owned(),
+                path: path.to_owned(),
+            })),
+        })
+        .await?;
+
+    let response = client.ls(Request::new(outbound)).await?;
+    let inbound = response.into_inner();
+    let tx_mfa = tx_ans.clone();
+    let exit_code = handle_stream_events(inbound, move |answers| {
+        let tx_mfa = tx_mfa.clone();
+        async move {
+            tx_mfa
+                .send(LsRequest {
+                    msg: Some(proto::ls_request::Msg::Mfa(answers)),
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
+        }
+    })
+    .await?;
+    ensure_exit_code(exit_code, "received exit code")
 }
 
 async fn send_submit(
@@ -350,78 +393,23 @@ async fn send_submit(
             })),
         })
         .await?;
-    // Start LS RPC
+    // Start Submit RPC
     let response = client.submit(Request::new(outbound)).await?;
-    let mut inbound = response.into_inner();
-    let mut exit_code: Option<i32> = None;
-    while let Some(item) = inbound.next().await {
-        match item {
-            Ok(StreamEvent { event: Some(ev) }) => match ev {
-                stream_event::Event::Stdout(bytes) => {
-                    write_all(&mut std::io::stdout(), &bytes);
-                }
-                stream_event::Event::Stderr(bytes) => {
-                    write_all(&mut std::io::stderr(), &bytes)?;
-                }
-                stream_event::Event::ExitCode(code) => {
-                    exit_code = Some(code);
-                    break;
-                }
-                stream_event::Event::Mfa(mfa) => {
-                    // Prompt for all answers in this round
-                    eprintln!();
-                    if !mfa.name.is_empty() {
-                        eprintln!("MFA: {}", mfa.name);
-                    }
-                    if !mfa.instructions.is_empty() {
-                        eprintln!("{}", mfa.instructions);
-                    }
-
-                    let mut responses = Vec::with_capacity(mfa.prompts.len());
-                    for p in &mfa.prompts {
-                        let ans = prompt_value(&p.text, p.echo).await?;
-                        responses.push(ans);
-                    }
-
-                    // Send the answers back
-                    if tx_ans
-                        .send(SubmitRequest {
-                            msg: Some(proto::submit_request::Msg::Mfa(MfaAnswer { responses })),
-                        })
-                        .await
-                        .is_err()
-                    {
-                        eprintln!("server closed while sending MFA answers");
-                        break;
-                    }
-                }
-                stream_event::Event::Error(err) => {
-                    // "command not allowed" goes here
-                    // "SSH connect failed also goes here"
-                    eprintln!("server error: {err}");
-                    exit_code = Some(1);
-                    break;
-                }
-            },
-            Ok(StreamEvent { event: None }) => log::info!("received empty event"),
-            Err(status) => {
-                eprintln!("stream error: {}", status);
-                exit_code = Some(1);
-                break;
-            }
+    let inbound = response.into_inner();
+    let tx_mfa = tx_ans.clone();
+    let exit_code = handle_stream_events(inbound, move |answers| {
+        let tx_mfa = tx_mfa.clone();
+        async move {
+            tx_mfa
+                .send(SubmitRequest {
+                    msg: Some(proto::submit_request::Msg::Mfa(answers)),
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
         }
-    }
-    match exit_code {
-        Some(num) => {
-            if num != 0 {
-                bail!("on client side: received exit code {num}");
-            }
-            return Ok(());
-        }
-        None => {
-            return Ok(());
-        }
-    }
+    })
+    .await?;
+    ensure_exit_code(exit_code, "on client side: received exit code")
 }
 
 async fn send_add_cluster(
@@ -457,81 +445,23 @@ async fn send_add_cluster(
         msg: Some(add_cluster_request::Msg::Init(init)),
     };
     tx_ans.send(acr).await?;
-    // Start LS RPC
+    // Start AddCluster RPC
     let response = client.add_cluster(Request::new(outbound)).await?;
-    let mut inbound = response.into_inner();
-    let mut exit_code: Option<i32> = None;
-    // TODO: put MFA-handling logic in a separate function
-    while let Some(item) = inbound.next().await {
-        match item {
-            Ok(StreamEvent { event: Some(ev) }) => match ev {
-                stream_event::Event::Stdout(bytes) => {
-                    write_all(&mut std::io::stdout(), &bytes);
-                }
-                stream_event::Event::Stderr(bytes) => {
-                    write_all(&mut std::io::stderr(), &bytes)?;
-                }
-                stream_event::Event::ExitCode(code) => {
-                    exit_code = Some(code);
-                    break;
-                }
-                stream_event::Event::Mfa(mfa) => {
-                    // Prompt for all answers in this round
-                    eprintln!();
-                    if !mfa.name.is_empty() {
-                        eprintln!("MFA: {}", mfa.name);
-                    }
-                    if !mfa.instructions.is_empty() {
-                        eprintln!("{}", mfa.instructions);
-                    }
-
-                    let mut responses = Vec::with_capacity(mfa.prompts.len());
-                    for p in &mfa.prompts {
-                        let ans = prompt_value(&p.text, p.echo).await?;
-                        responses.push(ans);
-                    }
-
-                    // Send the answers back
-                    if tx_ans
-                        .send(AddClusterRequest {
-                            msg: Some(proto::add_cluster_request::Msg::Mfa(MfaAnswer {
-                                responses,
-                            })),
-                        })
-                        .await
-                        .is_err()
-                    {
-                        eprintln!("server closed while sending MFA answers");
-                        break;
-                    }
-                }
-                stream_event::Event::Error(err) => {
-                    // "command not allowed" goes here
-                    // "SSH connect failed also goes here"
-                    eprintln!("server error: {err}");
-                    exit_code = Some(1);
-                    break;
-                }
-            },
-            Ok(StreamEvent { event: None }) => log::info!("received empty event"),
-            Err(status) => {
-                eprintln!("stream error: {}", status);
-                exit_code = Some(1);
-                break;
-            }
+    let inbound = response.into_inner();
+    let tx_mfa = tx_ans.clone();
+    let exit_code = handle_stream_events(inbound, move |answers| {
+        let tx_mfa = tx_mfa.clone();
+        async move {
+            tx_mfa
+                .send(AddClusterRequest {
+                    msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
         }
-    }
-    match exit_code {
-        Some(num) => {
-            if num != 0 {
-                bail!("on client side: received exit code {num}");
-            }
-            return Ok(());
-        }
-        None => {
-            return Ok(());
-        }
-    }
+    })
+    .await?;
+    ensure_exit_code(exit_code, "on client side: received exit code")
 }
 
 async fn run_init_project(args: &InitProjectArgs) -> anyhow::Result<()> {
@@ -691,7 +621,7 @@ async fn main() -> anyhow::Result<()> {
             Ok(()) => println!("pong"),
             Err(e) => bail!(e),
         },
-        Cmd::Ls => send_ls(&mut client).await?,
+        Cmd::Ls(args) => send_ls(&mut client, &args.hostid, &args.path).await?,
         Cmd::Submit(SubmitArgs {
             hostid,
             local_path,

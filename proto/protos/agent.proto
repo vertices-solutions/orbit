@@ -31,6 +31,19 @@ message StreamEvent {
   }
 }
 
+message LsRequestInit {
+  string hostid = 1;       // host identifier
+  optional string path = 2; // path to list (absolute or relative to default_base_path)
+}
+
+// Client -> Server
+message LsRequest {
+  oneof msg {
+    LsRequestInit init = 1;
+    MfaAnswer mfa = 2;
+  }
+}
+
 
 
 
@@ -118,7 +131,7 @@ message PingReply { string message = 1; }
 // One bidirectional streaming method keeps MFA + output on a single pipe.
 service Agent {
   rpc Ping(PingRequest) returns (PingReply);
-  rpc Ls(stream MfaAnswer) returns (stream StreamEvent);
+  rpc Ls(stream LsRequest) returns (stream StreamEvent);
   rpc Submit(stream SubmitRequest) returns (stream StreamEvent);
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);

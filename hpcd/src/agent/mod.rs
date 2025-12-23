@@ -1,6 +1,7 @@
 use crate::ssh::SessionManager;
 use crate::ssh::SshParams;
 use crate::ssh::receiver_to_stream;
+use crate::ssh::sh_escape;
 use crate::state::db::HostRecord;
 use crate::state::db::HostStore;
 use crate::state::db::HostStoreError;
@@ -15,8 +16,8 @@ use proto::ListClustersUnitResponse;
 use proto::agent_server::{Agent, AgentServer};
 use proto::list_clusters_unit_response;
 use proto::{
-    AddClusterRequest, ListJobsRequest, ListJobsResponse, ListJobsUnitResponse, MfaAnswer,
-    MfaPrompt, PingReply, PingRequest, StreamEvent, SubmitRequest, agent_client, stream_event,
+    AddClusterRequest, ListJobsRequest, ListJobsResponse, ListJobsUnitResponse, LsRequest,
+    LsRequestInit, MfaAnswer, PingReply, PingRequest, StreamEvent, SubmitRequest, stream_event,
 };
 use std::any::Any;
 use std::collections::HashMap;
@@ -25,7 +26,7 @@ use std::sync::Arc;
 use thiserror::Error as ThisError;
 use tokio::sync::Mutex;
 use tokio::sync::RwLock;
-use tokio_stream::{Stream, StreamExt};
+use tokio_stream::Stream;
 use tonic::Status;
 use uuid::Uuid;
 mod managers;
@@ -148,32 +149,12 @@ impl AgentSvc {
     }
     async fn run_command(
         &self,
-        command: &str,
+        command: String,
         hostid: &str,
-        req: tonic::Request<tonic::Streaming<MfaAnswer>>,
+        mfa_rx: tokio::sync::mpsc::Receiver<MfaAnswer>,
     ) -> Result<tonic::Response<OutStream>, Status> {
         // Outbound stream server -> client
         let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
-
-        // Setting up inbound stream (client -> server) carrying MFA answers from client to mfa_tx
-        let mut inbound = req.into_inner();
-        let (mfa_tx, mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
-            while let Some(item) = inbound.next().await {
-                match item {
-                    Ok(ans) => {
-                        if mfa_tx.send(ans).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(_) => {
-                        break;
-                    }
-                }
-            }
-        });
-
-        // execute command over SSH
 
         // get mgr from mapping
         let mgr = match self.get_sessionmanager(&hostid).await {
@@ -194,7 +175,7 @@ impl AgentSvc {
                 }
             },
         };
-        let cmd = command.to_string();
+        let cmd = command;
         tokio::spawn(async move {
             if let Err(err) = mgr.exec(&cmd, evt_tx.clone(), mfa_rx).await {
                 let _ = evt_tx
@@ -239,9 +220,59 @@ impl Agent for AgentSvc {
     }
     async fn ls(
         &self,
-        request: tonic::Request<tonic::Streaming<MfaAnswer>>,
+        request: tonic::Request<tonic::Streaming<LsRequest>>,
     ) -> Result<tonic::Response<Self::LsStream>, Status> {
-        self.run_command("ls", "winery", request).await
+        let mut inbound = request.into_inner();
+
+        let init = inbound
+            .message()
+            .await
+            .map_err(|e| Status::unknown(format!("read error: {e}")))?
+            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+
+        let (hostid, path) = match init.msg {
+            Some(proto::ls_request::Msg::Init(LsRequestInit { hostid, path })) => {
+                (hostid, path)
+            }
+            _ => return Err(Status::invalid_argument("first message must be init(hostid)")),
+        };
+
+        let (mfa_tx, mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        tokio::spawn(async move {
+            while let Ok(Some(item)) = inbound.message().await {
+                if let Some(proto::ls_request::Msg::Mfa(ans)) = item.msg {
+                    if mfa_tx.send(ans).await.is_err() {
+                        break;
+                    }
+                }
+            }
+        });
+
+        let hs = self.hs.clone().read_owned().await;
+        let list_path = match path {
+            Some(v) => {
+                if v.is_empty() {
+                    return Err(Status::invalid_argument(
+                        "path can't be empty: provide a path or omit it completely",
+                    ));
+                }
+                if std::path::PathBuf::from(&v).is_absolute() {
+                    normalize_path(v).to_string_lossy().into_owned()
+                } else {
+                    let default_base_path = get_default_base_path(&hs, &hostid).await?;
+                    let base_path = std::path::PathBuf::from(default_base_path);
+                    util::remote_path::resolve_relative(base_path, v)
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            }
+            None => normalize_path(get_default_base_path(&hs, &hostid).await?)
+                .to_string_lossy()
+                .into_owned(),
+        };
+
+        let command = format!("ls -- {}", sh_escape(&list_path));
+        self.run_command(command, &hostid, mfa_rx).await
     }
     async fn list_clusters(
         &self,
