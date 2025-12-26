@@ -28,7 +28,20 @@ message StreamEvent {
     int32 exit_code = 3;     // Exit code (emitted once when known)
     MfaPrompt mfa = 4;       // MFA prompt round
     string error = 5;        // Fatal error (connection/auth/exec)
+    SubmitStatus submit_status = 6; // Submit progress updates
   }
+}
+
+message SubmitStatus {
+  enum Phase {
+    PHASE_UNSPECIFIED = 0;
+    RESOLVED = 1;
+    TRANSFER_START = 2;
+    TRANSFER_DONE = 3;
+  }
+  string hostid = 1;
+  string remote_path = 2;
+  Phase phase = 3;
 }
 
 message LsRequestInit {

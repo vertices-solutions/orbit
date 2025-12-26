@@ -17,7 +17,8 @@ use proto::agent_server::{Agent, AgentServer};
 use proto::list_clusters_unit_response;
 use proto::{
     AddClusterRequest, ListJobsRequest, ListJobsResponse, ListJobsUnitResponse, LsRequest,
-    LsRequestInit, MfaAnswer, PingReply, PingRequest, StreamEvent, SubmitRequest, stream_event,
+    LsRequestInit, MfaAnswer, PingReply, PingRequest, StreamEvent, SubmitRequest, SubmitStatus,
+    stream_event, submit_status,
 };
 use std::any::Any;
 use std::collections::HashMap;
@@ -487,6 +488,7 @@ impl Agent for AgentSvc {
         // Establish communication queues
         let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
         tokio::spawn(async move {
             while let Ok(Some(item)) = inbound.message().await {
@@ -496,6 +498,7 @@ impl Agent for AgentSvc {
                     }
                 }
             }
+            let _ = cancel_tx.send(true);
         });
 
         let mgr = match self.get_sessionmanager(&hostid).await {
@@ -571,6 +574,24 @@ impl Agent for AgentSvc {
             }
         };
 
+        if evt_tx
+            .send(Ok(StreamEvent {
+                event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                    hostid: hostid.clone(),
+                    remote_path: remote_path.clone(),
+                    phase: submit_status::Phase::Resolved as i32,
+                })),
+            }))
+            .await
+            .is_err()
+        {
+            return Err(Status::cancelled("client disconnected"));
+        }
+
+        if *cancel_rx.borrow() {
+            return Err(Status::cancelled("client disconnected"));
+        }
+
         // Pipe the remaining client messages (if any) into MFA answers
         match mgr.ensure_connected(&evt_tx.clone(), &mut mfa_rx).await {
             Ok(_) => {}
@@ -608,25 +629,62 @@ impl Agent for AgentSvc {
             &remote_path
         );
 
+        let mut cancel_rx = cancel_rx.clone();
         tokio::spawn(async move {
+            if evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                        hostid: hostid.clone(),
+                        remote_path: remote_path.clone(),
+                        phase: submit_status::Phase::TransferStart as i32,
+                    })),
+                }))
+                .await
+                .is_err()
+            {
+                return;
+            }
             //1. Sync data
-            if let Err(err) = mgr
-                .sync_dir(
+            let sync_result = tokio::select! {
+                res = mgr.sync_dir(
                     &local_path,
                     &remote_path,
                     Some(1024 * 1024), // TODO: this should be adjustable, and done per-file. Probably sqrt(file size in bytes) will be a good start.
                     None,
-                    &evt_tx.clone(),
+                    &evt_tx,
                     mfa_rx,
-                )
-                .await
-            {
+                ) => res,
+                _ = evt_tx.closed() => {
+                    return;
+                }
+                _ = cancel_rx.changed() => {
+                    return;
+                }
+            };
+            if let Err(err) = sync_result {
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
                         event: Some(stream_event::Event::Error(err.to_string())),
                     }))
                     .await;
+                return;
             };
+            if evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                        hostid: hostid.clone(),
+                        remote_path: remote_path.clone(),
+                        phase: submit_status::Phase::TransferDone as i32,
+                    })),
+                }))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if evt_tx.is_closed() || *cancel_rx.borrow() {
+                return;
+            }
             // 2. figure out remote path to sbatch script
             let remote_sbatch_script_path =
                 util::remote_path::resolve_relative(&remote_path, sbatchscript)
@@ -637,7 +695,16 @@ impl Agent for AgentSvc {
                 slurm::path_to_sbatch_command(&remote_sbatch_script_path, Some(&remote_path));
             log::debug!("running remote script {}", &remote_sbatch_script_path);
             // 3. submit the job
-            let (out, err, code) = match mgr.exec_capture(&sbatch_command).await {
+            let exec_result = tokio::select! {
+                res = mgr.exec_capture(&sbatch_command) => res,
+                _ = evt_tx.closed() => {
+                    return;
+                }
+                _ = cancel_rx.changed() => {
+                    return;
+                }
+            };
+            let (out, err, code) = match exec_result {
                 Ok(v) => (v.0, v.1, v.2),
                 Err(e) => {
                     let _ = evt_tx
