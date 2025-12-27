@@ -1,5 +1,13 @@
 use anyhow::bail;
 use clap::{ArgGroup, Args, Parser, Subcommand};
+use crossterm::{
+    cursor,
+    event::{self, Event, KeyCode},
+    execute,
+    queue,
+    style::{Color, ResetColor, SetForegroundColor},
+    terminal::{self, ClearType},
+};
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, ListClustersRequest, ListClustersResponse,
@@ -10,7 +18,7 @@ use proto::{
 use serde::Deserialize;
 use serde_json::json;
 use std::future::Future;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tokio::io;
@@ -148,6 +156,8 @@ struct SubmitArgs {
     hostid: String,
     local_path: String,
     sbatchscript: Option<String>,
+    #[arg(long)]
+    headless: bool,
     #[arg(long)]
     remote_path: Option<String>,
 }
@@ -1020,7 +1030,108 @@ fn collect_sbatch_scripts(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
     Ok(matches)
 }
 
-fn resolve_sbatch_script(local_path: &Path, explicit: Option<&str>) -> anyhow::Result<String> {
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> anyhow::Result<Self> {
+        if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+            bail!("interactive picker requires a TTY; pass --headless and specify --sbatchscript");
+        }
+        terminal::enable_raw_mode()?;
+        let mut stdout = std::io::stdout();
+        if let Err(err) = execute!(stdout, terminal::EnterAlternateScreen, cursor::Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(err.into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let mut stdout = std::io::stdout();
+        let _ = execute!(stdout, cursor::Show, terminal::LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+fn render_sbatch_picker<W: Write>(
+    w: &mut W,
+    scripts: &[String],
+    selected: usize,
+) -> anyhow::Result<()> {
+    queue!(w, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
+    queue!(
+        w,
+        cursor::MoveTo(0, 0),
+        terminal::Clear(ClearType::CurrentLine)
+    )?;
+    write!(
+        w,
+        "Multiple .sbatch files found. Use Up/Down to choose, Enter to select:"
+    )?;
+    for (idx, script) in scripts.iter().enumerate() {
+        let row = (idx + 1) as u16;
+        let color = if idx == selected {
+            Color::Magenta
+        } else {
+            Color::Rgb {
+                r: 128,
+                g: 0,
+                b: 128,
+            }
+        };
+        queue!(
+            w,
+            cursor::MoveTo(0, row),
+            terminal::Clear(ClearType::CurrentLine),
+            SetForegroundColor(color)
+        )?;
+        write!(w, "{}", script)?;
+        queue!(w, ResetColor)?;
+    }
+    w.flush()?;
+    Ok(())
+}
+
+fn pick_sbatch_script(scripts: &[String]) -> anyhow::Result<String> {
+    let _guard = TerminalGuard::enter()?;
+    let mut stdout = std::io::stdout();
+    let mut selected = 0usize;
+
+    loop {
+        render_sbatch_picker(&mut stdout, scripts, selected)?;
+        match event::read()? {
+            Event::Key(key) => match key.code {
+                KeyCode::Up => {
+                    if selected > 0 {
+                        selected -= 1;
+                    }
+                }
+                KeyCode::Down => {
+                    if selected + 1 < scripts.len() {
+                        selected += 1;
+                    }
+                }
+                KeyCode::Enter => return Ok(scripts[selected].clone()),
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    bail!("sbatch selection canceled")
+                }
+                KeyCode::Char('c') if key.modifiers.contains(event::KeyModifiers::CONTROL) => {
+                    bail!("sbatch selection canceled")
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+    }
+}
+
+fn resolve_sbatch_script(
+    local_path: &Path,
+    explicit: Option<&str>,
+    headless: bool,
+) -> anyhow::Result<String> {
     if let Some(sbatchscript) = explicit {
         return Ok(sbatchscript.to_string());
     }
@@ -1036,24 +1147,34 @@ fn resolve_sbatch_script(local_path: &Path, explicit: Option<&str>) -> anyhow::R
     }
 
     let scripts = collect_sbatch_scripts(local_path)?;
-    match scripts.len() {
+    let relative_scripts: Vec<String> = scripts
+        .iter()
+        .map(|path| {
+            let rel = path.strip_prefix(local_path).unwrap_or(path);
+            rel.to_string_lossy().into_owned()
+        })
+        .collect();
+
+    match relative_scripts.len() {
         0 => bail!(
             "no .sbatch files found under '{}'; provide the script path explicitly",
             local_path.display()
         ),
         1 => {
-            let rel = scripts[0].strip_prefix(local_path).unwrap_or(&scripts[0]);
-            Ok(rel.to_string_lossy().into_owned())
+            Ok(relative_scripts[0].clone())
         }
         _ => {
-            let mut msg = format!(
-                "multiple .sbatch files found under '{}'; specify which one to use:\n",
-                local_path.display()
-            );
-            for script in scripts {
-                msg.push_str(&format!("  - {}\n", script.display()));
+            if headless {
+                let mut msg = format!(
+                    "multiple .sbatch files found under '{}' while running in headless mode; specify which one to use with --sbatchscript:\n",
+                    local_path.display()
+                );
+                for script in &relative_scripts {
+                    msg.push_str(&format!("  - {}\n", script));
+                }
+                bail!("{}", msg.trim_end())
             }
-            bail!("{}", msg.trim_end())
+            pick_sbatch_script(&relative_scripts)
         }
     }
 }
@@ -1078,10 +1199,12 @@ async fn main() -> anyhow::Result<()> {
             local_path,
             remote_path,
             sbatchscript,
+            headless,
         }) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
             let local_path_buf = PathBuf::from(&local_path);
-            let sbatchscript = resolve_sbatch_script(&local_path_buf, sbatchscript.as_deref())?;
+            let sbatchscript =
+                resolve_sbatch_script(&local_path_buf, sbatchscript.as_deref(), headless)?;
             send_submit(
                 &mut client,
                 &hostid,
