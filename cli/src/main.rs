@@ -4,9 +4,7 @@ use crossterm::{
     cursor,
     event::{self, Event, KeyCode},
     execute,
-    queue,
-    style::{Color, ResetColor, SetForegroundColor},
-    terminal::{self, ClearType},
+    terminal,
 };
 use proto::agent_client::AgentClient;
 use proto::{
@@ -15,6 +13,14 @@ use proto::{
     LsRequestInit, MfaAnswer, MfaPrompt, PingRequest, RetrieveJobRequest, RetrieveJobRequestInit,
     StreamEvent, SubmitPathFilterAction, SubmitPathFilterRule, SubmitRequest, add_cluster_init,
     add_cluster_request, stream_event, submit_status,
+};
+use ratatui::{
+    Terminal,
+    backend::CrosstermBackend,
+    layout::{Constraint, Direction, Layout},
+    style::{Color, Modifier, Style},
+    symbols::braille,
+    widgets::{Block, Borders, List, ListItem, ListState, Paragraph},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -611,14 +617,38 @@ struct Spinner {
     handle: tokio::task::JoinHandle<()>,
 }
 
+fn braille_spinner_frames() -> [char; 6] {
+    let all_mask = braille::DOTS
+        .iter()
+        .take(3)
+        .flatten()
+        .fold(0u16, |acc, mask| acc | mask);
+    let order = [
+        (0usize, 0usize),
+        (0, 1),
+        (1, 1),
+        (2, 1),
+        (2, 0),
+        (1, 0),
+    ];
+    let mut frames = [' '; 6];
+    for (idx, (row, col)) in order.iter().enumerate() {
+        let mask = braille::DOTS[*row][*col];
+        let codepoint = u32::from(braille::BLANK | (all_mask & !mask));
+        frames[idx] = char::from_u32(codepoint).unwrap_or(' ');
+    }
+    frames
+}
+
 impl Spinner {
     fn start(message: &str) -> Self {
         let message = message.to_string();
+        let frames = braille_spinner_frames();
         let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
         let handle = tokio::spawn({
             let message = message.clone();
+            let frames = frames;
             async move {
-                let frames = ["|", "/", "-", "\\"];
                 let mut interval = tokio::time::interval(Duration::from_millis(120));
                 let mut i = 0usize;
                 tokio::pin!(stop_rx);
@@ -1182,52 +1212,50 @@ impl Drop for TerminalGuard {
     }
 }
 
-fn render_sbatch_picker<W: Write>(
-    w: &mut W,
+type RatatuiTerminal = Terminal<CrosstermBackend<std::io::Stdout>>;
+
+fn render_sbatch_picker(
+    terminal: &mut RatatuiTerminal,
     scripts: &[String],
     selected: usize,
 ) -> anyhow::Result<()> {
-    queue!(w, cursor::MoveTo(0, 0), terminal::Clear(ClearType::All))?;
-    queue!(
-        w,
-        cursor::MoveTo(0, 0),
-        terminal::Clear(ClearType::CurrentLine)
-    )?;
-    write!(
-        w,
-        "Multiple .sbatch files found. Use Up/Down to choose, Enter to select:"
-    )?;
-    for (idx, script) in scripts.iter().enumerate() {
-        let row = (idx + 1) as u16;
-        let color = if idx == selected {
-            Color::Magenta
-        } else {
-            Color::Rgb {
-                r: 128,
-                g: 0,
-                b: 128,
-            }
-        };
-        queue!(
-            w,
-            cursor::MoveTo(0, row),
-            terminal::Clear(ClearType::CurrentLine),
-            SetForegroundColor(color)
-        )?;
-        write!(w, "{}", script)?;
-        queue!(w, ResetColor)?;
-    }
-    w.flush()?;
+    let items: Vec<ListItem> = scripts
+        .iter()
+        .map(|script| ListItem::new(script.as_str()))
+        .collect();
+    let mut state = ListState::default();
+    state.select(Some(selected));
+
+    terminal.draw(|frame| {
+        let layout = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(2), Constraint::Min(1)])
+            .margin(1)
+            .split(frame.size());
+        let header = Paragraph::new(
+            "Multiple .sbatch files found. Use Up/Down to choose, Enter to select:",
+        )
+        .style(Style::default().fg(Color::Magenta));
+        frame.render_widget(header, layout[0]);
+
+        let list = List::new(items)
+            .block(Block::default().borders(Borders::ALL))
+            .style(Style::default().fg(Color::Rgb(128, 0, 128)))
+            .highlight_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+            .highlight_symbol("> ");
+        frame.render_stateful_widget(list, layout[1], &mut state);
+    })?;
     Ok(())
 }
 
 fn pick_sbatch_script(scripts: &[String]) -> anyhow::Result<String> {
     let _guard = TerminalGuard::enter()?;
-    let mut stdout = std::io::stdout();
+    let mut terminal = Terminal::new(CrosstermBackend::new(std::io::stdout()))?;
+    terminal.clear()?;
     let mut selected = 0usize;
 
     loop {
-        render_sbatch_picker(&mut stdout, scripts, selected)?;
+        render_sbatch_picker(&mut terminal, scripts, selected)?;
         match event::read()? {
             Event::Key(key) => match key.code {
                 KeyCode::Up => {
