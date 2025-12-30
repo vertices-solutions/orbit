@@ -1,31 +1,29 @@
 use anyhow::{Context, Result, anyhow};
-use blake3::Hasher as Blake3;
-use futures::stream::StreamExt;
-use globset::{GlobBuilder, GlobMatcher};
-use log;
+use futures_util::StreamExt;
 use proto::{MfaAnswer, MfaPrompt, Prompt, StreamEvent, stream_event};
 use rand::{Rng, distr::Alphanumeric};
 use russh::ChannelMsg;
 use russh::client::Config;
 use russh::client::{Handler, KeyboardInteractiveAuthResponse};
 use russh::keys::PrivateKeyWithHashAlg;
-use russh::keys::ssh_key::private::Ed25519PrivateKey;
-use russh::{Channel, ChannelId};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use sha2::{Digest, Sha256};
-use std::fs::OpenOptions;
+use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::pin::Pin;
+use std::time::UNIX_EPOCH;
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::fs as tokiofs;
 use tokio::io::AsyncReadExt;
-use tokio::io::{AsyncSeek, AsyncSeekExt, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::{Mutex, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
-use walkdir::WalkDir;
+mod sync_plan;
+
+use sync_plan::build_sync_plan;
 /// Minimal russh client handler. We rely on default implementations.
-/// You could extend this to verify host keys or log events.
+/// TODO: add actual server key verification
 #[derive(Clone, Debug, Default)]
 pub struct ClientHandler;
 
@@ -33,9 +31,9 @@ impl Handler for ClientHandler {
     type Error = anyhow::Error;
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::ssh_key::PublicKey,
+        _server_public_key: &russh::keys::ssh_key::PublicKey,
     ) -> std::result::Result<bool, Self::Error> {
-        return Ok(true);
+        Ok(true)
     }
 }
 
@@ -63,116 +61,50 @@ pub struct SyncFilterRule {
     pub pattern: String,
 }
 
-#[derive(Debug)]
-struct CompiledFilterRule {
-    action: SyncFilterAction,
-    matcher: GlobMatcher,
-    only_dir: bool,
-    match_basename: bool,
+#[derive(Clone, Copy, Debug)]
+pub struct SyncOptions<'a> {
+    pub block_size: Option<usize>,
+    pub parallelism: Option<usize>,
+    pub filters: &'a [SyncFilterRule],
 }
 
-#[derive(Debug)]
-struct PathFilter {
-    rules: Vec<CompiledFilterRule>,
+type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// Abstraction over the remote side of the sync so it can be mocked in tests.
+pub(crate) trait SyncExecutor: Sync {
+    /// Ensure the remote connection is established and MFA prompts can flow.
+    fn ensure_connected<'a>(
+        &'a self,
+        evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
+    ) -> BoxFuture<'a, Result<()>>;
+
+    /// Ensure the given remote directory exists.
+    fn ensure_remote_dir<'a>(&'a self, remote_dir: &'a str) -> BoxFuture<'a, Result<()>>;
+
+    /// Sync one local file to its remote destination.
+    fn sync_one_file<'a>(
+        &'a self,
+        local_path: &'a Path,
+        remote_path: &'a str,
+        session_id: &'a str,
+        block_size: usize,
+    ) -> BoxFuture<'a, Result<()>>;
 }
 
-impl PathFilter {
-    fn new(rules: &[SyncFilterRule]) -> Result<Self> {
-        let mut compiled = Vec::with_capacity(rules.len());
-        for rule in rules {
-            compiled.push(CompiledFilterRule::compile(rule)?);
-        }
-        Ok(Self { rules: compiled })
-    }
-
-    fn is_empty(&self) -> bool {
-        self.rules.is_empty()
-    }
-
-    fn should_include(&self, rel_path: &Path, is_dir: bool) -> bool {
-        if self.rules.is_empty() {
-            return true;
-        }
-        let rel_str = rel_path_to_slash(rel_path);
-        let basename = rel_path
-            .file_name()
-            .map(|s| s.to_string_lossy())
-            .unwrap_or_default();
-        for rule in &self.rules {
-            if rule.matches(&rel_str, &basename, is_dir) {
-                return matches!(rule.action, SyncFilterAction::Include);
-            }
-        }
-        true
-    }
-}
-
-impl CompiledFilterRule {
-    fn compile(rule: &SyncFilterRule) -> Result<Self> {
-        let mut pattern = rule.pattern.trim().to_string();
-        if pattern.is_empty() {
-            anyhow::bail!("filter pattern cannot be empty");
-        }
-
-        let mut only_dir = false;
-        if pattern.ends_with('/') {
-            only_dir = true;
-            while pattern.ends_with('/') {
-                pattern.pop();
-            }
-        }
-        if pattern.is_empty() {
-            anyhow::bail!("filter pattern cannot be empty");
-        }
-
-        let anchored = pattern.starts_with('/');
-        if anchored {
-            pattern = pattern.trim_start_matches('/').to_string();
-        }
-
-        let has_slash = pattern.contains('/');
-        let match_basename = !has_slash && !anchored;
-        if has_slash && !anchored && !pattern.starts_with("**/") {
-            pattern = format!("**/{}", pattern);
-        }
-
-        let mut builder = GlobBuilder::new(&pattern);
-        builder.literal_separator(true);
-        let matcher = builder
-            .build()
-            .with_context(|| format!("invalid filter pattern '{}'", rule.pattern))?
-            .compile_matcher();
-        Ok(Self {
-            action: rule.action,
-            matcher,
-            only_dir,
-            match_basename,
-        })
-    }
-
-    fn matches(&self, rel_path: &str, basename: &str, is_dir: bool) -> bool {
-        if self.only_dir && !is_dir {
-            return false;
-        }
-        if self.match_basename {
-            self.matcher.is_match(basename)
-        } else {
-            self.matcher.is_match(rel_path)
-        }
-    }
-}
-
-fn rel_path_to_slash(path: &Path) -> String {
-    let mut out = String::new();
-    for comp in path.components() {
-        if let std::path::Component::Normal(os) = comp {
-            if !out.is_empty() {
-                out.push('/');
-            }
-            out.push_str(&os.to_string_lossy());
-        }
-    }
-    out
+#[cfg(test)]
+struct SessionManagerTestHooks {
+    ensure_connected: Arc<
+        dyn Fn(
+                &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+                &mut mpsc::Receiver<MfaAnswer>,
+            ) -> BoxFuture<'static, Result<()>>
+            + Send
+            + Sync,
+    >,
+    ensure_remote_dir: Arc<dyn Fn(&str) -> BoxFuture<'static, Result<()>> + Send + Sync>,
+    sync_one_file:
+        Arc<dyn Fn(&Path, &str, &str, usize) -> BoxFuture<'static, Result<()>> + Send + Sync>,
 }
 
 /// Manager that owns a single long-lived SSH connection.
@@ -183,35 +115,41 @@ pub struct SessionManager {
     handle: Arc<Mutex<Option<russh::client::Handle<ClientHandler>>>>,
     // Background keepalive task
     keepalive_task_handle: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
+    #[cfg(test)]
+    test_hooks: Option<SessionManagerTestHooks>,
 }
 
 impl SessionManager {
     pub fn new(params: SshParams) -> Self {
-        let mut cfg = Config::default();
-        cfg.inactivity_timeout = Some(Duration::from_secs(30));
-        cfg.keepalive_interval = Some(Duration::from_secs(params.keepalive_secs));
-        // reasonable channel buffer and window sizes for streaming
-        cfg.channel_buffer_size = 64;
-        cfg.window_size = 1024 * 1024;
+        let cfg = Config {
+            inactivity_timeout: Some(Duration::from_secs(30)),
+            keepalive_interval: Some(Duration::from_secs(params.keepalive_secs)),
+            // reasonable channel buffer and window sizes for streaming
+            channel_buffer_size: 64,
+            window_size: 1024 * 1024,
+            ..Default::default()
+        };
         Self {
             params,
             config: Arc::new(cfg),
             handle: Arc::new(Mutex::new(None)),
             keepalive_task_handle: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            test_hooks: None,
         }
     }
 
     #[cfg(test)]
-    pub fn test_params(&self) -> &SshParams {
-        &self.params
+    fn set_test_hooks(&mut self, hooks: SessionManagerTestHooks) {
+        self.test_hooks = Some(hooks);
     }
     pub async fn needs_connect(&self) -> bool {
         let handle_field = self.handle.lock().await;
-        return match handle_field.as_ref() {
+        match handle_field.as_ref() {
             None => true,
             Some(h) if h.is_closed() => true,
             Some(_) => false,
-        };
+        }
     }
     /// Ensure we have a connected & authenticated handle.
     /// Streams any keyboard-interactive MFA prompts to `evt_tx`
@@ -237,7 +175,7 @@ impl SessionManager {
                 &self.params.addr
             );
             // Establish TCP + SSH
-            let handler = ClientHandler::default();
+            let handler = ClientHandler;
             let mut handle = russh::client::connect(self.config.clone(), self.params.addr, handler)
                 .await
                 .context("SSH connect failed")?;
@@ -299,26 +237,19 @@ impl SessionManager {
                     let mut ticker = tokio::time::interval(interval / 2);
                     loop {
                         ticker.tick().await;
-                        if let Some(ref h) = *handle_clone.lock().await {
-                            if h.is_closed() {
-                                log::debug!("keepalive handle is closed");
-                                break;
-                            }
-                        }
-                        // Ignore errors; connection may be closing.
-                        let _ = match *handle_clone.lock().await {
-                            Some(ref v) => {
-                                match v.send_keepalive(want_reply).await {
-                                    Err(e) => {
-                                        log::debug!("error when sending a keepalive: {}", e);
-                                    }
-                                    Ok(_) => {
-                                        log::debug!("successfully sent a keepalive message");
-                                    }
-                                };
-                            }
-                            None => {}
+                        let guard = handle_clone.lock().await;
+                        let Some(handle) = guard.as_ref() else {
+                            continue;
                         };
+                        if handle.is_closed() {
+                            log::debug!("keepalive handle is closed");
+                            break;
+                        }
+                        if let Err(e) = handle.send_keepalive(want_reply).await {
+                            log::debug!("error when sending a keepalive: {}", e);
+                        } else {
+                            log::debug!("successfully sent a keepalive message");
+                        }
                     }
                 });
 
@@ -333,6 +264,18 @@ impl SessionManager {
         }
 
         Ok(())
+    }
+
+    async fn ensure_connected_for_sync(
+        &self,
+        evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            return (hooks.ensure_connected)(evt_tx, mfa_rx).await;
+        }
+        self.ensure_connected(evt_tx, mfa_rx).await
     }
 
     /// Runs the keyboard-interactive auth loop, streaming prompts out
@@ -406,7 +349,7 @@ impl SessionManager {
     async fn exec_simple(&self, cmd: &str) -> Result<i32> {
         // Executes a command with "dummy" channels.
         // TODO: Refactor cases when this is needed.
-        let mut guard = self.handle.lock().await;
+        let guard = self.handle.lock().await;
         let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
         let mut chan = handle.channel_open_session().await?;
         chan.exec(true, cmd).await?;
@@ -426,7 +369,7 @@ impl SessionManager {
 
     // Execute command over SSH, retrieving stdout, stderr and exit code as output
     pub async fn exec_capture(&self, cmd: &str) -> Result<(Vec<u8>, Vec<u8>, i32)> {
-        let mut guard = self.handle.lock().await;
+        let guard = self.handle.lock().await;
         let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
         let mut chan = handle.channel_open_session().await?;
         let actual_command = cmd;
@@ -445,10 +388,10 @@ impl SessionManager {
             };
             match msg {
                 ChannelMsg::Data { ref data } => {
-                    out.extend_from_slice(&data.to_vec());
+                    out.extend_from_slice(data);
                 }
-                ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
-                    err.extend_from_slice(&data)
+                ChannelMsg::ExtendedData { ref data, ext: 1 } => {
+                    err.extend_from_slice(data)
                 }
                 ChannelMsg::ExitStatus { exit_status } => code = exit_status as i32,
 
@@ -478,7 +421,7 @@ impl SessionManager {
         self.ensure_connected(&evt_tx, &mut mfa_rx).await?;
 
         // From here on, hold the handle lock for the duration of the command
-        let mut guard = self.handle.lock().await;
+        let guard = self.handle.lock().await;
         let handle = guard
             .as_ref()
             .ok_or_else(|| anyhow!("SSH handle lost after connect"))?;
@@ -542,12 +485,25 @@ impl SessionManager {
         let handle = guard
             .as_ref()
             .ok_or_else(|| anyhow!("SSH handle lost before opening SFTP"))?;
-        let channel = handle.clone().channel_open_session().await?;
+        let channel = handle.channel_open_session().await?;
         channel.request_subsystem(true, "sftp").await?;
         let sftp = SftpSession::new(channel.into_stream()).await?;
         Ok(sftp)
     }
-    async fn ensure_remote_dir(&self, sftp_session: &SftpSession, remote_dir: &str) -> Result<()> {
+
+    async fn ensure_remote_dir_for_sync(&self, remote_dir: &str) -> Result<()> {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            return (hooks.ensure_remote_dir)(remote_dir).await;
+        }
+        let sftp = self.sftp().await?;
+        self.ensure_remote_dir_with_sftp(&sftp, remote_dir).await
+    }
+    async fn ensure_remote_dir_with_sftp(
+        &self,
+        sftp_session: &SftpSession,
+        remote_dir: &str,
+    ) -> Result<()> {
         // Normalize to components and create incrementally
         let mut cur = String::from("");
         log::debug!("remote dir: {remote_dir}");
@@ -581,9 +537,11 @@ impl SessionManager {
                 }
                 Err(e) => {
                     log::debug!("got error when retrieving metadata: {}", e);
-                    let mut attrs = FileAttributes::default();
-                    attrs.permissions = Some(0o700);
-                    let _ = sftp_session
+                    let attrs = FileAttributes {
+                        permissions: Some(0o700),
+                        ..Default::default()
+                    };
+                    sftp_session
                         .create_dir(&cur)
                         .await
                         .context(format!("creating path {}", &cur))?;
@@ -620,8 +578,10 @@ impl SessionManager {
         }
         // Create & write
         let flags = OpenFlags::WRITE.union(OpenFlags::CREATE);
-        let mut attrs = FileAttributes::default();
-        attrs.permissions = Some(0o700);
+        let attrs = FileAttributes {
+            permissions: Some(0o700),
+            ..Default::default()
+        };
         let mut f = sftp
             .open_with_flags_and_attributes(&path, flags, attrs)
             .await
@@ -643,6 +603,8 @@ impl SessionManager {
         session_id: &str,
         block_size: usize,
     ) -> Result<Vec<String>> {
+        let escaped_path = remote_path.replace("\\", "\\\\").replace("'", "\\'");
+        let quoted_path = format!("'{escaped_path}'");
         let py_script = format!(
             r#"#!/usr/bin/env python3
 import sys, os, hashlib
@@ -663,10 +625,7 @@ with open(path, 'rb') as f:
         off += len(b)
 sys.stdout.flush()
 "#,
-            rp = format!(
-                "'{}'",
-                remote_path.replace("\\", "\\\\").replace("'", "\\'")
-            ),
+            rp = quoted_path,
             bs = block_size
         );
         // TODO: ensure_remote_path_exe can be run once per transfer, no need to do this for every
@@ -707,7 +666,7 @@ sys.stdout.flush()
     }
     /// Syncs a single file from source to destination.
     /// Is kinda stable, but definitely needs more testing.
-    async fn sync_one_file(
+    async fn sync_one_file_with_sftp(
         &self,
         sftp: &SftpSession,
         local_path: &Path,
@@ -852,7 +811,7 @@ sys.stdout.flush()
                         .seek(std::io::SeekFrom::Start(offset))
                         .await
                         .context(format!("seeking in remote file at offset {offset}"))?;
-                    let written = rfile
+                    rfile
                         .write(&buf[..n])
                         .await
                         .with_context(|| format!("writing block @{} to {}", offset, remote_path))?;
@@ -888,6 +847,22 @@ sys.stdout.flush()
         Ok(())
     }
 
+    async fn sync_one_file_for_sync(
+        &self,
+        local_path: &Path,
+        remote_path: &str,
+        session_id: &str,
+        block_size: usize,
+    ) -> Result<()> {
+        #[cfg(test)]
+        if let Some(hooks) = &self.test_hooks {
+            return (hooks.sync_one_file)(local_path, remote_path, session_id, block_size).await;
+        }
+        let sftp = self.sftp().await?;
+        self.sync_one_file_with_sftp(&sftp, local_path, remote_path, session_id, block_size)
+            .await
+    }
+
     /// Sync an entire local directory tree into a remote directory.
     /// - Creates remote directories as needed
     /// - Skips files where remote mtime >= local mtime
@@ -896,127 +871,19 @@ sys.stdout.flush()
         &self,
         local_dir: P,
         remote_dir: &str,
-        block_size: Option<usize>,
-        parallelism: Option<usize>,
-        filters: &[SyncFilterRule],
+        options: SyncOptions<'_>,
         evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
-        mut mfa_rx: mpsc::Receiver<MfaAnswer>,
+        mfa_rx: mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
-        let block_size = match block_size {
-            Some(v) => v,
-            None => 1024 * 1024, // 1 MiB block size
-        };
-        let parallelism = match parallelism {
-            Some(v) => v,
-            None => 8,
-        };
-
-        self.ensure_connected(evt_tx, &mut mfa_rx).await?;
-        let local_dir = local_dir.as_ref().canonicalize()?;
-        let path_filter = PathFilter::new(filters)?;
-        let use_filter = !path_filter.is_empty();
-
-        let sftp = self.sftp().await?;
-        log::info!("making sure the remote directory exists");
-        self.ensure_remote_dir(&sftp, remote_dir).await?;
-
-        let session_id: String = rand::rng()
-            .sample_iter(&Alphanumeric)
-            .take(10)
-            .map(char::from)
-            .collect();
-
-        let mut work: Vec<(PathBuf, String)> = Vec::new();
-
-        let follow_links = false;
-        let sftp_for_dirs = self.sftp().await?;
-        for entry in WalkDir::new(&local_dir)
-            .follow_links(follow_links)
-            .into_iter()
-            .filter_entry(|entry| {
-                if !use_filter || entry.depth() == 0 {
-                    return true;
-                }
-                if !entry.file_type().is_dir() {
-                    return true;
-                }
-                match entry.path().strip_prefix(&local_dir) {
-                    Ok(rel) => path_filter.should_include(rel, true),
-                    Err(_) => true,
-                }
-            })
-        {
-            let direntry = match entry {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!("encountered error when enumerating local files: {:?}", e);
-                    continue;
-                }
-            };
-            if !direntry.file_type().is_file() {
-                // We skip directories - creating them is handled by file creation logic
-                log::debug!(
-                    "encountered directory {:?}, continuing",
-                    direntry.into_path()
-                );
-                continue;
-            }
-            let path_local = direntry.path().to_path_buf();
-            let rel = match path_local.strip_prefix(&local_dir) {
-                Ok(v) => v.to_path_buf(),
-                Err(_) => {
-                    log::warn!(
-                        "failed computing relative path for {:?} from {:?}",
-                        path_local,
-                        local_dir
-                    );
-                    continue;
-                }
-            };
-            if use_filter && !path_filter.should_include(&rel, false) {
-                continue;
-            }
-            let remote_path = join_remote(remote_dir, &rel);
-            if let Some(parent_rel) = rel.parent() {
-                let remote_parent = join_remote(remote_dir, parent_rel);
-                self.ensure_remote_dir(&sftp, &remote_parent).await?;
-            }
-            work.push((path_local, remote_path));
-        }
-        drop(sftp_for_dirs);
-        let results = futures::stream::iter(work.into_iter().map(|(local_path, remote_path)| {
-            let session_id_clone = session_id.clone();
-            async move {
-                let sftp = self.sftp().await?;
-                self.sync_one_file(
-                    &sftp,
-                    &local_path,
-                    &remote_path,
-                    &session_id_clone,
-                    block_size,
-                )
-                .await
-            }
-        }))
-        .buffer_unordered(parallelism)
-        .collect::<Vec<_>>()
-        .await;
-        let mut errs = Vec::new();
-        for res in results {
-            if let Err(e) = res {
-                errs.push(e);
-            }
-        }
-        if !errs.is_empty() {
-            // Build a helpful combined error message.
-            use std::fmt::Write as _;
-            let mut msg = String::new();
-            for (i, e) in errs.iter().enumerate() {
-                let _ = writeln!(&mut msg, "[{}] {:#}", i + 1, e);
-            }
-            anyhow::bail!("sync_dir encountered {} error(s):\n{}", errs.len(), msg);
-        }
-        Ok(())
+        sync_dir_with_executor(
+            self,
+            local_dir,
+            remote_dir,
+            options,
+            evt_tx,
+            mfa_rx,
+        )
+        .await
     }
     pub async fn retrieve_path(&self, remote_path: &str, local_path: &Path) -> Result<()> {
         let sftp = self.sftp().await?;
@@ -1040,6 +907,97 @@ sys.stdout.flush()
     }
 }
 
+async fn sync_dir_with_executor<E, P>(
+    executor: &E,
+    local_dir: P,
+    remote_dir: &str,
+    options: SyncOptions<'_>,
+    evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+    mut mfa_rx: mpsc::Receiver<MfaAnswer>,
+) -> Result<()>
+where
+    E: SyncExecutor + ?Sized,
+    P: AsRef<Path>,
+{
+    let block_size = options.block_size.unwrap_or(1024 * 1024); // 1 MiB block size
+    let parallelism = options.parallelism.unwrap_or(8);
+
+    executor.ensure_connected(evt_tx, &mut mfa_rx).await?;
+    let plan = build_sync_plan(local_dir, remote_dir, options.filters)?;
+
+    log::info!("making sure the remote directory exists");
+    executor.ensure_remote_dir(remote_dir).await?;
+    for remote_dir in &plan.remote_dirs {
+        executor.ensure_remote_dir(remote_dir).await?;
+    }
+
+    let session_id: String = rand::rng()
+        .sample_iter(&Alphanumeric)
+        .take(10)
+        .map(char::from)
+        .collect();
+
+    let results = futures::stream::iter(plan.items.into_iter().map(|item| {
+        let session_id_clone = session_id.clone();
+        async move {
+            executor
+                .sync_one_file(
+                    &item.local_path,
+                    &item.remote_path,
+                    &session_id_clone,
+                    block_size,
+                )
+                .await
+        }
+    }))
+    .buffer_unordered(parallelism)
+    .collect::<Vec<_>>()
+    .await;
+    let mut errs = Vec::new();
+    for res in results {
+        if let Err(e) = res {
+            errs.push(e);
+        }
+    }
+    if !errs.is_empty() {
+        // Build a helpful combined error message.
+        use std::fmt::Write as _;
+        let mut msg = String::new();
+        for (i, e) in errs.iter().enumerate() {
+            let _ = writeln!(&mut msg, "[{}] {:#}", i + 1, e);
+        }
+        anyhow::bail!("sync_dir encountered {} error(s):\n{}", errs.len(), msg);
+    }
+    Ok(())
+}
+
+impl SyncExecutor for SessionManager {
+    fn ensure_connected<'a>(
+        &'a self,
+        evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.ensure_connected_for_sync(evt_tx, mfa_rx).await })
+    }
+
+    fn ensure_remote_dir<'a>(&'a self, remote_dir: &'a str) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move { self.ensure_remote_dir_for_sync(remote_dir).await })
+    }
+
+    fn sync_one_file<'a>(
+        &'a self,
+        local_path: &'a Path,
+        remote_path: &'a str,
+        session_id: &'a str,
+        block_size: usize,
+    ) -> BoxFuture<'a, Result<()>> {
+        Box::pin(async move {
+            self.sync_one_file_for_sync(local_path, remote_path, session_id, block_size)
+                .await
+        })
+    }
+}
+
 /// Helper to wrap an mpsc receiver as a tonic stream.
 pub fn receiver_to_stream(
     rx: mpsc::Receiver<Result<StreamEvent, tonic::Status>>,
@@ -1051,8 +1009,8 @@ pub fn receiver_to_stream(
 async fn local_block_hashes(path: &Path, block_size: usize) -> Result<Vec<String>> {
     let mut f = tokiofs::File::open(path).await?;
     let size = f.metadata().await?.len();
-    let mut out = Vec::with_capacity(((size + block_size as u64 - 1) / block_size as u64) as usize);
-    let mut offset = 0u64;
+    let capacity = size.div_ceil(block_size as u64) as usize;
+    let mut out = Vec::with_capacity(capacity);
     let mut buf = vec![0u8; block_size];
     loop {
         let n = f.read(&mut buf).await?;
@@ -1064,47 +1022,8 @@ async fn local_block_hashes(path: &Path, block_size: usize) -> Result<Vec<String
         let hash = h.finalize();
         // 16 bytes (similar to remote B2b-128) to keep lines small
         out.push(format!("{:x}", hash));
-        offset += n as u64;
     }
     Ok(out)
-}
-
-/// Convert bytes to lowercase hex
-fn hex16(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for &b in bytes {
-        s.push(HEX[(b >> 4) as usize] as char);
-        s.push(HEX[(b & 0x0f) as usize] as char);
-    }
-    s
-}
-
-/// Helper: return mtime (seconds) from std metadata across platforms.
-fn filetime_secs(meta: &std::fs::Metadata) -> Result<i64> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        Ok(meta.mtime())
-    }
-    #[cfg(not(unix))]
-    {
-        use std::time::{SystemTime, UNIX_EPOCH};
-        let mt = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        Ok(mt.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64)
-    }
-}
-
-/// Build a remote path by appending a relative path to a remote directory.
-fn join_remote(base: &str, rel: &Path) -> String {
-    let mut s = base.trim_end_matches('/').to_string();
-    for comp in rel.components() {
-        if let std::path::Component::Normal(os) = comp {
-            s.push('/');
-            s.push_str(&os.to_string_lossy());
-        }
-    }
-    s
 }
 
 /// Very small, safe-ish shell escaper for paths.
@@ -1160,8 +1079,10 @@ async fn download_file(sftp: &SftpSession, remote_path: &str, local_path: &Path)
 }
 
 async fn download_dir(sftp: &SftpSession, remote_dir: &str, local_dir: &Path) -> Result<()> {
-    let mut stack: Vec<(String, PathBuf)> =
-        vec![(remote_dir.trim_end_matches('/').to_string(), local_dir.to_path_buf())];
+    let mut stack: Vec<(String, PathBuf)> = vec![(
+        remote_dir.trim_end_matches('/').to_string(),
+        local_dir.to_path_buf(),
+    )];
 
     while let Some((remote_base, local_base)) = stack.pop() {
         tokiofs::create_dir_all(&local_base).await?;
@@ -1182,9 +1103,82 @@ async fn download_dir(sftp: &SftpSession, remote_dir: &str, local_dir: &Path) ->
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{PathFilter, SyncFilterAction, SyncFilterRule};
+mod executor_tests {
+    use super::{
+        MfaAnswer, StreamEvent, SyncExecutor, SyncFilterAction, SyncFilterRule, SyncOptions,
+        sync_dir_with_executor,
+    };
+    use anyhow::{Result, anyhow};
+    use std::collections::HashSet;
+    use std::fs;
     use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    #[derive(Clone, Default)]
+    struct FakeExecutor {
+        calls: Arc<Mutex<Vec<String>>>,
+        fail_on: HashSet<String>,
+    }
+
+    impl FakeExecutor {
+        fn new(fail_on: &[&str]) -> Self {
+            Self {
+                calls: Arc::new(Mutex::new(Vec::new())),
+                fail_on: fail_on.iter().map(|s| s.to_string()).collect(),
+            }
+        }
+
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
+    }
+
+    impl SyncExecutor for FakeExecutor {
+        fn ensure_connected<'a>(
+            &'a self,
+            _evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+            _mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
+        ) -> super::BoxFuture<'a, Result<()>> {
+            let calls = Arc::clone(&self.calls);
+            Box::pin(async move {
+                calls.lock().unwrap().push("connect".to_string());
+                Ok(())
+            })
+        }
+
+        fn ensure_remote_dir<'a>(
+            &'a self,
+            remote_dir: &'a str,
+        ) -> super::BoxFuture<'a, Result<()>> {
+            let calls = Arc::clone(&self.calls);
+            let remote_dir = remote_dir.to_string();
+            Box::pin(async move {
+                calls.lock().unwrap().push(format!("mkdir:{remote_dir}"));
+                Ok(())
+            })
+        }
+
+        fn sync_one_file<'a>(
+            &'a self,
+            _local_path: &'a Path,
+            remote_path: &'a str,
+            _session_id: &'a str,
+            _block_size: usize,
+        ) -> super::BoxFuture<'a, Result<()>> {
+            let calls = Arc::clone(&self.calls);
+            let remote_path = remote_path.to_string();
+            let fail_on = self.fail_on.clone();
+            Box::pin(async move {
+                calls.lock().unwrap().push(format!("sync:{remote_path}"));
+                if fail_on.contains(&remote_path) {
+                    return Err(anyhow!("forced error for {remote_path}"));
+                }
+                Ok(())
+            })
+        }
+    }
 
     fn rule(action: SyncFilterAction, pattern: &str) -> SyncFilterRule {
         SyncFilterRule {
@@ -1193,54 +1187,186 @@ mod tests {
         }
     }
 
-    #[test]
-    fn filter_order_first_match_wins() {
-        let filter = PathFilter::new(&[
-            rule(SyncFilterAction::Include, "*.rs"),
-            rule(SyncFilterAction::Exclude, "*"),
-        ])
-        .unwrap();
-        assert!(filter.should_include(Path::new("src/lib.rs"), false));
-        assert!(!filter.should_include(Path::new("Cargo.toml"), false));
+    #[tokio::test]
+    async fn sync_dir_calls_remote_dirs_before_sync() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
 
-        let filter = PathFilter::new(&[
-            rule(SyncFilterAction::Exclude, "*.rs"),
-            rule(SyncFilterAction::Include, "*.rs"),
-        ])
+        fs::create_dir_all(root.join("src/bin")).unwrap();
+        fs::write(root.join("README.md"), "readme").unwrap();
+        fs::write(root.join("src/lib.rs"), "lib").unwrap();
+        fs::write(root.join("src/bin/main.rs"), "bin").unwrap();
+
+        let executor = FakeExecutor::default();
+        let (evt_tx, _evt_rx) = mpsc::channel::<Result<StreamEvent, tonic::Status>>(1);
+        let (_mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(1);
+        let filters = [rule(SyncFilterAction::Exclude, "target/")];
+        let options = SyncOptions {
+            block_size: None,
+            parallelism: Some(1),
+            filters: &filters,
+        };
+
+        sync_dir_with_executor(
+            &executor,
+            root,
+            "/remote",
+            options,
+            &evt_tx,
+            mfa_rx,
+        )
+        .await
         .unwrap();
-        assert!(!filter.should_include(Path::new("src/lib.rs"), false));
+
+        let calls = executor.calls();
+        let expected_prefix = vec![
+            "connect",
+            "mkdir:/remote",
+            "mkdir:/remote/src",
+            "mkdir:/remote/src/bin",
+        ];
+        assert!(calls.len() >= expected_prefix.len());
+        assert_eq!(calls[..expected_prefix.len()], expected_prefix);
     }
 
-    #[test]
-    fn filter_matches_basename_and_paths() {
-        let filter = PathFilter::new(&[
-            rule(SyncFilterAction::Include, "src/*.rs"),
-            rule(SyncFilterAction::Exclude, "*"),
-        ])
-        .unwrap();
-        assert!(filter.should_include(Path::new("src/lib.rs"), false));
-        assert!(!filter.should_include(Path::new("lib.rs"), false));
+    #[tokio::test]
+    async fn sync_dir_aggregates_sync_errors() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
 
-        let filter = PathFilter::new(&[
-            rule(SyncFilterAction::Include, "*.rs"),
-            rule(SyncFilterAction::Exclude, "*"),
-        ])
-        .unwrap();
-        assert!(filter.should_include(Path::new("src/lib.rs"), false));
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "lib").unwrap();
+        fs::write(root.join("src/extra.rs"), "extra").unwrap();
+
+        let executor = FakeExecutor::new(&["/remote/src/lib.rs"]);
+        let (evt_tx, _evt_rx) = mpsc::channel::<Result<StreamEvent, tonic::Status>>(1);
+        let (_mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(1);
+        let options = SyncOptions {
+            block_size: None,
+            parallelism: Some(1),
+            filters: &[],
+        };
+
+        let err = sync_dir_with_executor(
+            &executor,
+            root,
+            "/remote",
+            options,
+            &evt_tx,
+            mfa_rx,
+        )
+        .await
+        .unwrap_err();
+
+        let msg = format!("{err:#}");
+        assert!(msg.contains("sync_dir encountered 1 error(s):"));
+        assert!(msg.contains("forced error for /remote/src/lib.rs"));
     }
+}
 
-    #[test]
-    fn filter_respects_anchor_and_directory_only() {
-        let filter = PathFilter::new(&[
-            rule(SyncFilterAction::Include, "/src/*.rs"),
-            rule(SyncFilterAction::Exclude, "*"),
-        ])
+#[cfg(test)]
+mod session_manager_executor_tests {
+    use super::{
+        MfaAnswer, SessionManager, SessionManagerTestHooks, StreamEvent, SyncFilterRule, SyncOptions,
+        sync_dir_with_executor,
+    };
+    use anyhow::Result;
+    use std::fs;
+    use std::net::SocketAddr;
+    use std::path::Path;
+    use std::sync::{Arc, Mutex};
+    use tempfile::tempdir;
+    use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn session_manager_executor_uses_test_hooks() {
+        let tmp = tempdir().unwrap();
+        let root = tmp.path();
+
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/lib.rs"), "lib").unwrap();
+
+        let calls: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+
+        let connect_calls = Arc::clone(&calls);
+        let ensure_connected = Arc::new(
+            move |_: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+                  _: &mut mpsc::Receiver<MfaAnswer>| {
+                let connect_calls = Arc::clone(&connect_calls);
+                let fut: super::BoxFuture<'static, Result<()>> = Box::pin(async move {
+                    connect_calls.lock().unwrap().push("connect".to_string());
+                    Ok(())
+                });
+                fut
+            },
+        );
+
+        let mkdir_calls = Arc::clone(&calls);
+        let ensure_remote_dir = Arc::new(move |remote_dir: &str| {
+            let mkdir_calls = Arc::clone(&mkdir_calls);
+            let remote_dir = remote_dir.to_string();
+            let fut: super::BoxFuture<'static, Result<()>> = Box::pin(async move {
+                mkdir_calls
+                    .lock()
+                    .unwrap()
+                    .push(format!("mkdir:{remote_dir}"));
+                Ok(())
+            });
+            fut
+        });
+
+        let sync_calls = Arc::clone(&calls);
+        let sync_one_file = Arc::new(
+            move |_local: &Path, remote: &str, _session_id: &str, _block_size: usize| {
+                let sync_calls = Arc::clone(&sync_calls);
+                let remote = remote.to_string();
+                let fut: super::BoxFuture<'static, Result<()>> = Box::pin(async move {
+                    sync_calls.lock().unwrap().push(format!("sync:{remote}"));
+                    Ok(())
+                });
+                fut
+            },
+        );
+
+        let hooks = SessionManagerTestHooks {
+            ensure_connected,
+            ensure_remote_dir,
+            sync_one_file,
+        };
+
+        let params = super::SshParams {
+            addr: "127.0.0.1:22".parse::<SocketAddr>().unwrap(),
+            username: "test".to_string(),
+            identity_path: None,
+            ki_submethods: None,
+            keepalive_secs: 1,
+        };
+        let mut manager = SessionManager::new(params);
+        manager.set_test_hooks(hooks);
+
+        let (evt_tx, _evt_rx) = mpsc::channel::<Result<StreamEvent, tonic::Status>>(1);
+        let (_mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(1);
+        let options = SyncOptions {
+            block_size: None,
+            parallelism: Some(1),
+            filters: &[] as &[SyncFilterRule],
+        };
+
+        sync_dir_with_executor(
+            &manager,
+            root,
+            "/remote",
+            options,
+            &evt_tx,
+            mfa_rx,
+        )
+        .await
         .unwrap();
-        assert!(filter.should_include(Path::new("src/lib.rs"), false));
-        assert!(!filter.should_include(Path::new("foo/src/lib.rs"), false));
 
-        let filter = PathFilter::new(&[rule(SyncFilterAction::Exclude, "target/")]).unwrap();
-        assert!(!filter.should_include(Path::new("target"), true));
-        assert!(filter.should_include(Path::new("target"), false));
+        let calls = calls.lock().unwrap().clone();
+        assert!(calls.contains(&"connect".to_string()));
+        assert!(calls.contains(&"mkdir:/remote".to_string()));
+        assert!(calls.contains(&"mkdir:/remote/src".to_string()));
+        assert!(calls.contains(&"sync:/remote/src/lib.rs".to_string()));
     }
 }

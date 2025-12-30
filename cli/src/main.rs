@@ -3,8 +3,7 @@ use clap::{ArgGroup, Args, CommandFactory, FromArgMatches, Parser, Subcommand};
 use crossterm::{
     cursor,
     event::{self, Event, KeyCode},
-    execute,
-    terminal,
+    execute, terminal,
 };
 use proto::agent_client::AgentClient;
 use proto::{
@@ -15,9 +14,7 @@ use proto::{
     add_cluster_request, stream_event, submit_status,
 };
 use ratatui::{
-    Terminal,
-    TerminalOptions,
-    Viewport,
+    Terminal, TerminalOptions, Viewport,
     backend::{Backend, ClearType, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Position},
     prelude::Frame,
@@ -27,9 +24,9 @@ use ratatui::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::ffi::OsStr;
 use std::future::Future;
 use std::io::{IsTerminal, Write};
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use tokio::io;
 use tokio::io::AsyncWriteExt;
@@ -39,7 +36,6 @@ use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tonic::{Request, Response, Status, transport::Channel};
 use tonic_types::StatusExt;
 
-mod project;
 #[derive(Parser)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -52,7 +48,6 @@ enum Cmd {
     Ping,
     Ls(LsArgs),
     Submit(SubmitArgs),
-    Init(InitProjectArgs),
     Jobs(JobsArgs),
     Clusters(ClustersArgs),
 }
@@ -68,31 +63,6 @@ impl ToString for WLM {
             Self::Slurm => "slurm".to_owned(),
         }
     }
-}
-
-#[derive(Args, Debug)]
-struct InitProjectArgs {
-    // path to project to be initialized
-    projectpath: PathBuf,
-    // Workload Manager to use
-    #[arg(long, default_value_t=WLM::Slurm)]
-    manager: WLM,
-    // force init project: ignore directory if exists, make sure that all directories within the
-    // path
-    #[arg(long)]
-    force: bool,
-
-    #[arg(long)]
-    mem: Option<crate::project::hpcfile::Bytes>,
-
-    #[arg(long)]
-    cpus: Option<u32>,
-
-    #[arg(long)]
-    account: Option<String>,
-
-    #[arg(long)]
-    time: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -354,7 +324,14 @@ fn str_width(value: &str) -> usize {
 }
 
 fn print_clusters_table(clusters: &[ListClustersUnitResponse]) {
-    let headers = ["username", "hostid", "address", "port", "status", "accounting"];
+    let headers = [
+        "username",
+        "hostid",
+        "address",
+        "port",
+        "status",
+        "accounting",
+    ];
     let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
 
     for item in clusters.iter() {
@@ -491,7 +468,9 @@ async fn fetch_list_jobs(
 }
 
 fn print_jobs_table(jobs: &[ListJobsUnitResponse]) {
-    let headers = ["job id", "slurm id", "host id", "status", "created", "finished"];
+    let headers = [
+        "job id", "slurm id", "host id", "status", "created", "finished",
+    ];
     let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
 
     for item in jobs.iter() {
@@ -584,10 +563,7 @@ fn print_job_details(item: &ListJobsUnitResponse) {
         item.terminal_state.as_deref().unwrap_or("-")
     );
     println!("created: {}", item.created_at);
-    println!(
-        "finished: {}",
-        item.finished_at.as_deref().unwrap_or("-")
-    );
+    println!("finished: {}", item.finished_at.as_deref().unwrap_or("-"));
 }
 
 fn print_job_details_json(item: &ListJobsUnitResponse) -> anyhow::Result<()> {
@@ -633,14 +609,7 @@ fn braille_spinner_frames() -> [char; 6] {
         .take(3)
         .flatten()
         .fold(0u16, |acc, mask| acc | mask);
-    let order = [
-        (0usize, 0usize),
-        (0, 1),
-        (1, 1),
-        (2, 1),
-        (2, 0),
-        (1, 0),
-    ];
+    let order = [(0usize, 0usize), (0, 1), (1, 1), (2, 1), (2, 0), (1, 0)];
     let mut frames = [' '; 6];
     for (idx, (row, col)) in order.iter().enumerate() {
         let mask = braille::DOTS[*row][*col];
@@ -1085,58 +1054,6 @@ async fn send_add_cluster(
     ensure_exit_code(exit_code, "on client side: received exit code")
 }
 
-async fn run_init_project(args: &InitProjectArgs) -> anyhow::Result<()> {
-    let project_path = &args.projectpath;
-    let force = args.force;
-    if project_path.exists() {
-        if !project_path.is_dir() {
-            bail!("{} is not a directory", project_path.to_string_lossy());
-        }
-        if !force {
-            bail!(
-                "{} exists - use --force to overwrite that instead",
-                project_path.to_string_lossy()
-            )
-        }
-    }
-
-    if !project_path.exists() {
-        if force {
-            tokio::fs::create_dir_all(&project_path).await?;
-        } else {
-            tokio::fs::create_dir(&project_path).await?;
-        }
-    }
-
-    let hpcfile_path = project_path.join("Hpcfile");
-    if hpcfile_path.exists() & !force {
-        bail!(
-            "{} exists, can't init it - use --force if you want overwrite it",
-            hpcfile_path.to_string_lossy()
-        );
-    }
-    // TODO: add more customization options for this; templates also live at this level.
-    let mut hpcfile_config = project::hpcfile::Hpcfile::default();
-
-    let slurm_config = project::hpcfile::SlurmConfig::new(
-        args.time.clone(),
-        args.account.clone(),
-        args.cpus.clone(),
-        args.mem.clone(),
-        "python3 main.py".into(),
-    );
-
-    let batch_script_path = project_path.join("batch_script.sh");
-    tokio::fs::write(&batch_script_path, &slurm_config.to_sbatch_script()).await?;
-
-    hpcfile_config.batch_script = Some(batch_script_path);
-    let hpcfile_content = toml::to_string(&hpcfile_config)?;
-
-    tokio::fs::write(&hpcfile_path, &hpcfile_content.into_bytes()).await?;
-
-    Ok(())
-}
-
 fn write_all<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
     w.write_all(buf)?;
     w.flush()?;
@@ -1306,7 +1223,11 @@ impl SbatchPicker {
             .map(|script| ListItem::new(script.as_str()))
             .collect();
         let list = List::new(items)
-            .highlight_style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD))
+            .highlight_style(
+                Style::default()
+                    .fg(Color::Magenta)
+                    .add_modifier(Modifier::BOLD),
+            )
             .highlight_symbol("> ");
 
         let list_area = if area.height >= 3 {
@@ -1322,8 +1243,11 @@ impl SbatchPicker {
             let header = Paragraph::new("Select sbatch script");
             frame.render_widget(header, layout[0]);
 
-            let footer = Paragraph::new("Up/Down to move, Enter to select, Esc to cancel")
-                .style(Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM));
+            let footer = Paragraph::new("Up/Down to move, Enter to select, Esc to cancel").style(
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .add_modifier(Modifier::DIM),
+            );
             frame.render_widget(footer, layout[2]);
             layout[1]
         } else if area.height == 2 {
@@ -1353,10 +1277,11 @@ impl SbatchPicker {
 
     fn clear(&mut self, terminal: &mut RatatuiTerminal, start: Position) -> anyhow::Result<()> {
         terminal.backend_mut().set_cursor_position(start)?;
-        terminal.backend_mut().clear_region(ClearType::AfterCursor)?;
+        terminal
+            .backend_mut()
+            .clear_region(ClearType::AfterCursor)?;
         Ok(())
     }
-
 }
 
 fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
@@ -1427,9 +1352,7 @@ fn resolve_sbatch_script(
             "no .sbatch files found under '{}'; provide the script path explicitly",
             local_path.display()
         ),
-        1 => {
-            Ok(relative_scripts[0].clone())
-        }
+        1 => Ok(relative_scripts[0].clone()),
         _ => {
             if headless {
                 let mut msg = format!(
@@ -1489,7 +1412,6 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Cmd::Init(ref args) => run_init_project(args).await?,
         Cmd::Jobs(jobs_args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
             match jobs_args.cmd {
@@ -1511,11 +1433,7 @@ async fn main() -> anyhow::Result<()> {
                     match matches.as_slice() {
                         [] => {
                             if let Some(cluster) = args.cluster.as_deref() {
-                                bail!(
-                                    "job id {} not found in cluster '{}'",
-                                    args.job_id,
-                                    cluster
-                                );
+                                bail!("job id {} not found in cluster '{}'", args.job_id, cluster);
                             }
                             bail!("job id {} not found", args.job_id);
                         }
@@ -1528,10 +1446,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                         _ => {
                             if args.cluster.is_some() {
-                                bail!(
-                                    "multiple jobs matched job id {}",
-                                    args.job_id
-                                );
+                                bail!("multiple jobs matched job id {}", args.job_id);
                             }
                             bail!(
                                 "job id {} matched multiple clusters; use --cluster",
