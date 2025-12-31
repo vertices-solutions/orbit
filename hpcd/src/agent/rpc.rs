@@ -591,8 +591,8 @@ impl Agent for AgentSvc {
                     let _ = evt_tx
                         .send(Ok(StreamEvent {
                             event: Some(stream_event::Event::Error(format!(
-                                "Successfully submitted sbatch script with slurm id {:?}, failed to create job record: {}",
-                                slurm_id, e
+                                "Successfully submitted sbatch script, failed to create job record: {}",
+                                e
                             ))),
                         }))
                         .await;

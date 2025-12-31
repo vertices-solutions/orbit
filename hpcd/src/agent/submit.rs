@@ -36,16 +36,8 @@ pub fn resolve_remote_sbatch_path(remote_root: &str, sbatchscript: &str) -> Stri
 }
 
 pub fn format_submit_success(slurm_id: Option<i64>, job_id: i64) -> String {
-    match slurm_id {
-        Some(v) => format!(
-            "Successfully submitted sbatch script with slurm id {} , job id {}",
-            v, job_id
-        ),
-        None => format!(
-            "Successfully submitted sbatch script, did not receive a valid slurm id from system; job id {}",
-            job_id
-        ),
-    }
+    let _ = slurm_id;
+    format!("Successfully submitted sbatch script; job id {}\n", job_id)
 }
 
 #[cfg(test)]
@@ -76,11 +68,11 @@ mod tests {
     #[test]
     fn format_submit_success_formats_messages() {
         let msg = format_submit_success(Some(42), 7);
-        assert!(msg.contains("slurm id 42"));
         assert!(msg.contains("job id 7"));
+        assert!(msg.ends_with('\n'));
 
         let msg = format_submit_success(None, 7);
-        assert!(msg.contains("did not receive a valid slurm id"));
         assert!(msg.contains("job id 7"));
+        assert!(msg.ends_with('\n'));
     }
 }

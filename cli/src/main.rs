@@ -15,8 +15,15 @@ use cli::interactive::resolve_add_cluster_args;
 use cli::sbatch::resolve_sbatch_script;
 use proto::ListJobsUnitResponse;
 use proto::agent_client::AgentClient;
-use std::io::Write;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+
+const BANNER: &str = r#"██╗  ██╗██████╗  ██████╗
+██║  ██║██╔══██╗██╔════╝
+███████║██████╔╝██║
+██╔══██║██╔═══╝ ██║
+██║  ██║██║     ╚██████╗
+╚═╝  ╚═╝╚═╝      ╚═════╝"#;
 
 const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗
 ██║  ██║██╔══██╗██╔════╝
@@ -29,6 +36,20 @@ const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██
 
 {all-args}{after-help}
 "#;
+
+fn print_banner() {
+    println!("{BANNER}\n");
+}
+
+fn print_banner_if_interactive(headless: bool) {
+    if headless {
+        return;
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return;
+    }
+    print_banner();
+}
 
 fn apply_help_template_recursively(cmd: &mut clap::Command) {
     let mut owned = std::mem::take(cmd);
@@ -66,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
             headless,
             ..
         }) => {
+            print_banner_if_interactive(headless);
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
             let local_path_buf = PathBuf::from(&local_path);
             println!("Submitting job...");
@@ -170,6 +192,8 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 ClusterCmd::Add(args) => {
+                    print_banner_if_interactive(args.headless);
+                    println!("Adding new cluster...");
                     let resolved = resolve_add_cluster_args(args)?;
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if response
@@ -204,9 +228,11 @@ async fn main() -> anyhow::Result<()> {
                         resolved.port,
                         &resolved.default_base_path,
                     )
-                    .await?
+                    .await?;
+                    println!("Cluster {} added successfully!", resolved.hostid);
                 }
                 ClusterCmd::Set(args) => {
+                    print_banner_if_interactive(args.headless);
                     let resolved = resolve_add_cluster_args(args)?;
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if !response

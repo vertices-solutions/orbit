@@ -232,7 +232,6 @@ pub async fn send_submit(
     match outcome {
         SubmitStreamOutcome::Completed(exit_code) => {
             ensure_exit_code(exit_code, "on client side: received exit code")?;
-            println!("Submission complete.");
             Ok(())
         }
         SubmitStreamOutcome::Canceled => bail!("submission canceled"),
