@@ -1,6 +1,6 @@
 use super::{SessionManager, SessionManagerTestHooks};
-use anyhow::Result;
 use crate::ssh::sync::{SyncFilterRule, SyncOptions, sync_dir_with_executor};
+use anyhow::Result;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -20,7 +20,7 @@ async fn session_manager_executor_uses_test_hooks() {
 
     let connect_calls = Arc::clone(&calls);
     let ensure_connected = Arc::new(
-        move |_: &mpsc::Sender<Result<proto::StreamEvent, tonic::Status>>,
+        move |_: &mpsc::Sender<Result<proto::SubmitStreamEvent, tonic::Status>>,
               _: &mut mpsc::Receiver<proto::MfaAnswer>| {
             let connect_calls = Arc::clone(&connect_calls);
             let fut: crate::ssh::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
@@ -74,7 +74,7 @@ async fn session_manager_executor_uses_test_hooks() {
     let mut manager = SessionManager::new(params);
     manager.set_test_hooks(hooks);
 
-    let (evt_tx, _evt_rx) = mpsc::channel::<Result<proto::StreamEvent, tonic::Status>>(1);
+    let (evt_tx, _evt_rx) = mpsc::channel::<Result<proto::SubmitStreamEvent, tonic::Status>>(1);
     let (_mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
     let options = SyncOptions {
         block_size: None,

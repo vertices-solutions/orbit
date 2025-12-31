@@ -1,21 +1,29 @@
 use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
-use cli::args::{Cli, ClustersCmd, Cmd, JobsCmd, SubmitArgs};
+use cli::args::{Cli, ClusterCmd, Cmd, JobCmd, SubmitArgs};
 use cli::client::{
-    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_job_retrieve, send_ls,
-    send_ping, send_submit,
+    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_job_retrieve, send_ls, send_ping,
+    send_submit,
 };
 use cli::filters::submit_filters_from_matches;
 use cli::format::{
-    cluster_host_string, format_cluster_details, format_cluster_details_json,
-    format_clusters_json, format_clusters_table, format_job_details, format_job_details_json,
-    format_jobs_json, format_jobs_table,
+    cluster_host_string, format_cluster_details, format_cluster_details_json, format_clusters_json,
+    format_clusters_table, format_job_details, format_job_details_json, format_jobs_json,
+    format_jobs_table,
 };
+use cli::interactive::resolve_add_cluster_args;
 use cli::sbatch::resolve_sbatch_script;
-use proto::agent_client::AgentClient;
 use proto::ListJobsUnitResponse;
-use std::io::Write;
+use proto::agent_client::AgentClient;
+use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
+
+const BANNER: &str = r#"██╗  ██╗██████╗  ██████╗
+██║  ██║██╔══██╗██╔════╝
+███████║██████╔╝██║
+██╔══██║██╔═══╝ ██║
+██║  ██║██║     ╚██████╗
+╚═╝  ╚═╝╚═╝      ╚═════╝"#;
 
 const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗
 ██║  ██║██╔══██╗██╔════╝
@@ -28,6 +36,20 @@ const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██
 
 {all-args}{after-help}
 "#;
+
+fn print_banner() {
+    println!("{BANNER}\n");
+}
+
+fn print_banner_if_interactive(headless: bool) {
+    if headless {
+        return;
+    }
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        return;
+    }
+    print_banner();
+}
 
 fn apply_help_template_recursively(cmd: &mut clap::Command) {
     let mut owned = std::mem::take(cmd);
@@ -65,6 +87,7 @@ async fn main() -> anyhow::Result<()> {
             headless,
             ..
         }) => {
+            print_banner_if_interactive(headless);
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
             let local_path_buf = PathBuf::from(&local_path);
             println!("Submitting job...");
@@ -83,10 +106,10 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Cmd::Jobs(jobs_args) => {
+        Cmd::Job(job_args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            match jobs_args.cmd {
-                JobsCmd::List(args) => {
+            match job_args.cmd {
+                JobCmd::List(args) => {
                     let response = fetch_list_jobs(&mut client, args.cluster).await?;
                     if args.json {
                         let output = format_jobs_json(&response.jobs)?;
@@ -95,7 +118,7 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_jobs_table(&response.jobs));
                     }
                 }
-                JobsCmd::Get(args) => {
+                JobCmd::Get(args) => {
                     let response = fetch_list_jobs(&mut client, args.cluster.clone()).await?;
                     let matches: Vec<&ListJobsUnitResponse> = response
                         .jobs
@@ -128,7 +151,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                JobsCmd::Retrieve(args) => {
+                JobCmd::Retrieve(args) => {
                     send_job_retrieve(
                         &mut client,
                         args.job_id,
@@ -140,10 +163,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Cmd::Clusters(clusters_args) => {
+        Cmd::Cluster(cluster_args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            match clusters_args.cmd {
-                ClustersCmd::List(args) => {
+            match cluster_args.cmd {
+                ClusterCmd::List(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if args.json {
                         let output = format_clusters_json(&response.clusters)?;
@@ -152,7 +175,7 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_clusters_table(&response.clusters));
                     }
                 }
-                ClustersCmd::Get(args) => {
+                ClusterCmd::Get(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let Some(cluster) = response
                         .clusters
@@ -168,63 +191,103 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_cluster_details(cluster));
                     }
                 }
-                ClustersCmd::Add(args) => {
+                ClusterCmd::Add(args) => {
+                    print_banner_if_interactive(args.headless);
+                    println!("Adding new cluster...");
+                    let resolved = resolve_add_cluster_args(args)?;
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.hostid == args.hostid)
+                        .any(|cluster| cluster.hostid == resolved.hostid)
                     {
                         bail!(
-                            "cluster '{}' already exists; use 'clusters set' to update it",
-                            args.hostid
+                            "cluster '{}' already exists; use 'cluster set' to update it",
+                            resolved.hostid
                         );
                     }
-                    if let Some(host) = args.hostname.as_deref().or(args.ip.as_deref()) {
+                    if let Some(host) = resolved.hostname.as_deref().or(resolved.ip.as_deref()) {
                         if response.clusters.iter().any(|cluster| {
-                            cluster.username == args.username
+                            cluster.username == resolved.username
                                 && cluster_host_string(cluster) == host
                         }) {
                             bail!(
-                                "cluster '{}' with address '{}' already exists; use 'clusters set' to update it",
-                                args.username,
+                                "cluster '{}' with address '{}' already exists; use 'cluster set' to update it",
+                                resolved.username,
                                 host
                             );
                         }
                     }
                     send_add_cluster(
                         &mut client,
-                        &args.hostid,
-                        &args.username,
-                        &args.hostname,
-                        &args.ip,
-                        &args.identity_path,
-                        args.port,
-                        &args.default_base_path,
+                        &resolved.hostid,
+                        &resolved.username,
+                        &resolved.hostname,
+                        &resolved.ip,
+                        Some(resolved.identity_path.as_str()),
+                        resolved.port,
+                        &resolved.default_base_path,
                     )
-                    .await?
+                    .await?;
+                    println!("Cluster {} added successfully!", resolved.hostid);
                 }
-                ClustersCmd::Set(args) => {
+                ClusterCmd::Set(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
-                    if !response
+                    let Some(cluster) = response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.hostid == args.hostid)
-                    {
+                        .find(|cluster| cluster.hostid == args.hostid)
+                    else {
                         bail!(
-                            "cluster '{}' not found; use 'clusters add' to create it",
+                            "cluster '{}' not found; use 'cluster add' to create it",
                             args.hostid
                         );
-                    }
+                    };
+                    let (hostname, ip) = match args.ip.as_ref() {
+                        Some(ip) => (None, Some(ip.clone())),
+                        None => match &cluster.host {
+                            Some(proto::list_clusters_unit_response::Host::Hostname(host)) => {
+                                (Some(host.clone()), None)
+                            }
+                            Some(proto::list_clusters_unit_response::Host::Ipaddr(host)) => {
+                                (None, Some(host.clone()))
+                            }
+                            None => {
+                                bail!(
+                                    "cluster '{}' has no address; pass --ip to update it",
+                                    args.hostid
+                                );
+                            }
+                        },
+                    };
+                    let port = match args.port {
+                        Some(port) => port,
+                        None => match u32::try_from(cluster.port) {
+                            Ok(port) => port,
+                            Err(_) => bail!(
+                                "cluster '{}' has invalid port '{}'",
+                                args.hostid,
+                                cluster.port
+                            ),
+                        },
+                    };
+                    let identity_path = args
+                        .identity_path
+                        .clone()
+                        .or_else(|| cluster.identity_path.clone());
+                    let default_base_path = args
+                        .default_base_path
+                        .clone()
+                        .or_else(|| cluster.default_base_path.clone());
                     send_add_cluster(
                         &mut client,
-                        &args.hostid,
-                        &args.username,
-                        &args.hostname,
-                        &args.ip,
-                        &args.identity_path,
-                        args.port,
-                        &args.default_base_path,
+                        &cluster.hostid,
+                        &cluster.username,
+                        &hostname,
+                        &ip,
+                        identity_path.as_deref(),
+                        port,
+                        &default_base_path,
                     )
                     .await?
                 }

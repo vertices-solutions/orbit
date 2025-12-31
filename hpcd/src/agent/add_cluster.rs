@@ -6,9 +6,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use tonic::Status;
 
-pub fn parse_add_cluster_host(
-    host: Option<add_cluster_init::Host>,
-) -> Result<Address, Status> {
+pub fn parse_add_cluster_host(host: Option<add_cluster_init::Host>) -> Result<Address, Status> {
     let host = match host {
         Some(v) => v,
         None => return Err(Status::invalid_argument("empty host in initial message")),
@@ -59,10 +57,7 @@ pub fn normalize_default_base_path(
     }
 }
 
-pub async fn resolve_host_addr(
-    addr: &Address,
-    port: u16,
-) -> Result<SocketAddr, Status> {
+pub async fn resolve_host_addr(addr: &Address, port: u16) -> Result<SocketAddr, Status> {
     match addr {
         Address::Ip(v) => Ok((*v, port).into()),
         Address::Hostname(hostname) => match net::lookup_first_addr(hostname, port).await {
@@ -74,12 +69,12 @@ pub async fn resolve_host_addr(
 
 pub fn map_net_error(hostname: &str, err: net::NetError) -> Status {
     match err {
-        net::NetError::DnsNotFound(_) => Status::invalid_argument(format!(
-            "hostname {hostname} could not be resolved"
-        )),
-        net::NetError::NoAddrs(_) => Status::invalid_argument(format!(
-            "couldn't find any IP addresses for {hostname}"
-        )),
+        net::NetError::DnsNotFound(_) => {
+            Status::invalid_argument(format!("hostname {hostname} could not be resolved"))
+        }
+        net::NetError::NoAddrs(_) => {
+            Status::invalid_argument(format!("couldn't find any IP addresses for {hostname}"))
+        }
         net::NetError::Resolve(h) => {
             Status::internal(format!("encountered error when resolving {hostname}: {h}"))
         }
@@ -110,7 +105,10 @@ mod tests {
             "not-an-ip".to_string(),
         )))
         .unwrap_err();
-        assert!(err.message().contains("could not parse not-an-ip into ip address"));
+        assert!(
+            err.message()
+                .contains("could not parse not-an-ip into ip address")
+        );
     }
 
     #[test]
@@ -148,6 +146,9 @@ mod tests {
 
         let io_err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
         let err = map_net_error("example.com", net::NetError::Resolve(io_err));
-        assert!(err.message().contains("encountered error when resolving example.com"));
+        assert!(
+            err.message()
+                .contains("encountered error when resolving example.com")
+        );
     }
 }

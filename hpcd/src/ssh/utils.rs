@@ -1,5 +1,4 @@
 use anyhow::Result;
-use proto::StreamEvent;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use tokio::fs as tokiofs;
@@ -8,9 +7,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 /// Helper to wrap an mpsc receiver as a tonic stream.
-pub fn receiver_to_stream(
-    rx: mpsc::Receiver<Result<StreamEvent, tonic::Status>>,
-) -> ReceiverStream<Result<StreamEvent, tonic::Status>> {
+pub fn receiver_to_stream<T>(
+    rx: mpsc::Receiver<Result<T, tonic::Status>>,
+) -> ReceiverStream<Result<T, tonic::Status>> {
     ReceiverStream::new(rx)
 }
 

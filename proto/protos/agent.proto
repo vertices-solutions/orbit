@@ -28,7 +28,6 @@ message StreamEvent {
     int32 exit_code = 3;     // Exit code (emitted once when known)
     MfaPrompt mfa = 4;       // MFA prompt round
     string error = 5;        // Fatal error (connection/auth/exec)
-    SubmitStatus submit_status = 6; // Submit progress updates
   }
 }
 
@@ -42,6 +41,30 @@ message SubmitStatus {
   string hostid = 1;
   string remote_path = 2;
   Phase phase = 3;
+}
+
+message SubmitResult {
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    SUBMITTED = 1;
+    FAILED = 2;
+  }
+  Status status = 1;
+  optional int64 job_id = 2;
+  string detail = 3;
+}
+
+// Server->client stream items while submitting a job.
+message SubmitStreamEvent {
+  oneof event {
+    bytes stdout = 1;        // Chunk from STDOUT
+    bytes stderr = 2;        // Chunk from STDERR
+    int32 exit_code = 3;     // Exit code (emitted once when known)
+    MfaPrompt mfa = 4;       // MFA prompt round
+    string error = 5;        // Fatal error (connection/auth/exec)
+    SubmitStatus submit_status = 6; // Submit progress updates
+    SubmitResult submit_result = 7; // Submit final status
+  }
 }
 
 message LsRequestInit {
@@ -121,6 +144,7 @@ message ListClustersUnitResponse {
   bool connected = 6;
   string hostid = 7;
   bool accounting_available = 8;
+  optional string default_base_path = 9;
 }
 
 
@@ -174,7 +198,7 @@ service Agent {
   rpc Ping(PingRequest) returns (PingReply);
   rpc Ls(stream LsRequest) returns (stream StreamEvent);
   rpc RetrieveJob(stream RetrieveJobRequest) returns (stream StreamEvent);
-  rpc Submit(stream SubmitRequest) returns (stream StreamEvent);
+  rpc Submit(stream SubmitRequest) returns (stream SubmitStreamEvent);
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);

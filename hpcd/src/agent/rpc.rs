@@ -6,10 +6,8 @@ use crate::agent::helpers::{
     get_default_base_path,
 };
 use crate::agent::service::AgentSvc;
-use crate::agent::submit::{
-    format_submit_success, resolve_remote_sbatch_path, resolve_submit_remote_path,
-};
-use crate::agent::types::{AgentSvcError, OutStream};
+use crate::agent::submit::{resolve_remote_sbatch_path, resolve_submit_remote_path};
+use crate::agent::types::{AgentSvcError, OutStream, SubmitOutStream};
 use crate::ssh::sh_escape;
 use crate::state::db::HostStoreError;
 use crate::util;
@@ -18,8 +16,9 @@ use proto::agent_server::Agent;
 use proto::{
     AddClusterRequest, ListClustersRequest, ListClustersResponse, ListClustersUnitResponse,
     ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit, MfaAnswer, PingReply, PingRequest,
-    RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest, SubmitStatus,
-    stream_event, submit_status,
+    RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest, SubmitResult,
+    SubmitStatus, SubmitStreamEvent, stream_event, submit_result, submit_status,
+    submit_stream_event,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,7 +28,7 @@ use tonic::Status;
 impl Agent for AgentSvc {
     type LsStream = OutStream;
     type RetrieveJobStream = OutStream;
-    type SubmitStream = OutStream;
+    type SubmitStream = SubmitOutStream;
     type AddClusterStream = OutStream;
 
     async fn ping(
@@ -348,7 +347,8 @@ impl Agent for AgentSvc {
         };
         let filters = build_sync_filters(filters)?;
 
-        let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
+        let (evt_tx, evt_rx) =
+            tokio::sync::mpsc::channel::<Result<SubmitStreamEvent, Status>>(64);
         let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
@@ -373,9 +373,7 @@ impl Agent for AgentSvc {
                     return Err(Status::internal(format!("network error: {e}")));
                 }
                 other_error => {
-                    return Err(Status::internal(format!(
-                        "unexpected error: {other_error}"
-                    )));
+                    return Err(Status::internal(format!("unexpected error: {other_error}")));
                 }
             },
         };
@@ -393,8 +391,8 @@ impl Agent for AgentSvc {
         };
 
         if evt_tx
-            .send(Ok(StreamEvent {
-                event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+            .send(Ok(SubmitStreamEvent {
+                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
                     hostid: hostid.clone(),
                     remote_path: remote_path.clone(),
                     phase: submit_status::Phase::Resolved as i32,
@@ -410,13 +408,12 @@ impl Agent for AgentSvc {
             return Err(Status::cancelled("client disconnected"));
         }
 
-        match mgr.ensure_connected(&evt_tx.clone(), &mut mfa_rx).await {
+        match mgr.ensure_connected_submit(&evt_tx.clone(), &mut mfa_rx).await {
             Ok(_) => {}
             Err(e) => {
                 return Err(Status::internal(format!(
                     "could not establish connection to {}: {}",
-                    &hostid,
-                    e
+                    &hostid, e
                 )));
             }
         };
@@ -426,9 +423,7 @@ impl Agent for AgentSvc {
             Err(e) => {
                 return Err(Status::internal(format!(
                     "can't list {} on {}: {}",
-                    &remote_path,
-                    &hostid,
-                    e
+                    &remote_path, &hostid, e
                 )));
             }
         };
@@ -450,8 +445,8 @@ impl Agent for AgentSvc {
         let hs = hs.clone();
         tokio::spawn(async move {
             if evt_tx
-                .send(Ok(StreamEvent {
-                    event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                .send(Ok(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
                         hostid: hostid.clone(),
                         remote_path: remote_path.clone(),
                         phase: submit_status::Phase::TransferStart as i32,
@@ -484,15 +479,19 @@ impl Agent for AgentSvc {
             };
             if let Err(err) = sync_result {
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(err.to_string())),
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Failed as i32,
+                            job_id: None,
+                            detail: err.to_string(),
+                        })),
                     }))
                     .await;
                 return;
             };
             if evt_tx
-                .send(Ok(StreamEvent {
-                    event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                .send(Ok(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
                         hostid: hostid.clone(),
                         remote_path: remote_path.clone(),
                         phase: submit_status::Phase::TransferDone as i32,
@@ -506,8 +505,7 @@ impl Agent for AgentSvc {
             if evt_tx.is_closed() || *cancel_rx.borrow() {
                 return;
             }
-            let remote_sbatch_script_path =
-                resolve_remote_sbatch_path(&remote_path, &sbatchscript);
+            let remote_sbatch_script_path = resolve_remote_sbatch_path(&remote_path, &sbatchscript);
 
             let sbatch_command = crate::agent::slurm::path_to_sbatch_command(
                 &remote_sbatch_script_path,
@@ -527,8 +525,12 @@ impl Agent for AgentSvc {
                 Ok(v) => (v.0, v.1, v.2),
                 Err(e) => {
                     let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Error(e.to_string())),
+                        .send(Ok(SubmitStreamEvent {
+                            event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                                status: submit_result::Status::Failed as i32,
+                                job_id: None,
+                                detail: e.to_string(),
+                            })),
                         }))
                         .await;
                     return;
@@ -553,25 +555,39 @@ impl Agent for AgentSvc {
                     err_message.trim()
                 };
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(format!(
-                            "sbatch failed with exit code {}: {}",
-                            code, detail
-                        ))),
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Failed as i32,
+                            job_id: None,
+                            detail: format!("sbatch failed with exit code {}: {}", code, detail),
+                        })),
                     }))
                     .await;
                 return;
             }
             let out_string = String::from_utf8_lossy(&out);
             let slurm_id = crate::agent::slurm::parse_job_id(&out_string);
+            if slurm_id.is_none() {
+                let _ = evt_tx
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Failed as i32,
+                            job_id: None,
+                            detail: "sbatch did not return a job id".to_string(),
+                        })),
+                    }))
+                    .await;
+                return;
+            }
 
             let Ok(Some(hr)) = hs.get_by_hostid(&hostid).await else {
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(format!(
-                            "Could not resolve hostid '{}'",
-                            hostid
-                        ))),
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Failed as i32,
+                            job_id: None,
+                            detail: format!("unknown hostid '{}'", hostid),
+                        })),
                     }))
                     .await;
                 return;
@@ -586,27 +602,30 @@ impl Agent for AgentSvc {
             match hs.insert_job(&nj).await {
                 Ok(job_id) => {
                     let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Stdout(
-                                format_submit_success(slurm_id, job_id).into(),
-                            )),
+                        .send(Ok(SubmitStreamEvent {
+                            event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                                status: submit_result::Status::Submitted as i32,
+                                job_id: Some(job_id),
+                                detail: String::new(),
+                            })),
                         }))
                         .await;
                 }
                 Err(e) => {
                     let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Error(format!(
-                                "Successfully submitted sbatch script with slurm id {:?}, failed to create job record: {}",
-                                slurm_id, e
-                            ))),
+                        .send(Ok(SubmitStreamEvent {
+                            event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                                status: submit_result::Status::Failed as i32,
+                                job_id: None,
+                                detail: format!("failed to create job record: {}", e),
+                            })),
                         }))
                         .await;
                 }
             }
         });
 
-        let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
+        let out: SubmitOutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
         Ok(tonic::Response::new(out))
     }
 
@@ -883,14 +902,14 @@ impl Agent for AgentSvc {
                 false
             });
 
-            let normalized_default_base_path =
-                match normalize_default_base_path(default_base_path) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = evt_tx.send(Err(e)).await;
-                        return;
-                    }
-                };
+            let normalized_default_base_path = match normalize_default_base_path(default_base_path)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = evt_tx.send(Err(e)).await;
+                    return;
+                }
+            };
             if let Some(ref dbp) = normalized_default_base_path {
                 let command = format!("mkdir -p {}", dbp.to_string_lossy());
                 let (_, err, code) = match sm.exec_capture(&command).await {
@@ -899,9 +918,7 @@ impl Agent for AgentSvc {
                         let _ = evt_tx
                             .send(Err(Status::internal(format!(
                                 "failed to execute command `{}` on {}: {}",
-                                command,
-                                hostid,
-                                e
+                                command, hostid, e
                             ))))
                             .await;
                         return;

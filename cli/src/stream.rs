@@ -1,6 +1,9 @@
 use crate::mfa::collect_mfa_answers;
 use anyhow::bail;
-use proto::{MfaAnswer, StreamEvent, stream_event, submit_status};
+use proto::{
+    MfaAnswer, StreamEvent, SubmitStreamEvent, stream_event, submit_result, submit_status,
+    submit_stream_event,
+};
 use ratatui::symbols::braille;
 use std::future::Future;
 use std::io::Write;
@@ -109,9 +112,6 @@ where
                     exit_code = Some(1);
                     break;
                 }
-                stream_event::Event::SubmitStatus(_) => {
-                    // submit-specific events are handled in a different stream handler
-                }
             },
             Ok(StreamEvent { event: None }) => log::info!("received empty event"),
             Err(status) => {
@@ -135,7 +135,7 @@ pub async fn handle_submit_stream_events<S, F, Fut>(
     mut send_mfa: F,
 ) -> anyhow::Result<SubmitStreamOutcome>
 where
-    S: Stream<Item = Result<StreamEvent, Status>> + Unpin,
+    S: Stream<Item = Result<SubmitStreamEvent, Status>> + Unpin,
     F: FnMut(MfaAnswer) -> Fut,
     Fut: Future<Output = anyhow::Result<()>>,
 {
@@ -159,24 +159,24 @@ where
             break;
         };
         match item {
-            Ok(StreamEvent { event: Some(ev) }) => match ev {
-                stream_event::Event::Stdout(bytes) => {
+            Ok(SubmitStreamEvent { event: Some(ev) }) => match ev {
+                submit_stream_event::Event::Stdout(bytes) => {
                     if let Some(spinner) = spinner.take() {
                         spinner.stop(None).await;
                     }
                     write_all(&mut std::io::stdout(), &bytes)?;
                 }
-                stream_event::Event::Stderr(bytes) => {
+                submit_stream_event::Event::Stderr(bytes) => {
                     if let Some(spinner) = spinner.take() {
                         spinner.stop(None).await;
                     }
                     write_all(&mut std::io::stderr(), &bytes)?;
                 }
-                stream_event::Event::ExitCode(code) => {
+                submit_stream_event::Event::ExitCode(code) => {
                     exit_code = Some(code);
                     break;
                 }
-                stream_event::Event::Mfa(mfa) => {
+                submit_stream_event::Event::Mfa(mfa) => {
                     if let Some(spinner) = spinner.take() {
                         spinner.stop(None).await;
                     }
@@ -187,7 +187,7 @@ where
                         break;
                     }
                 }
-                stream_event::Event::Error(err) => {
+                submit_stream_event::Event::Error(err) => {
                     if let Some(spinner) = spinner.take() {
                         spinner.stop(None).await;
                     }
@@ -195,7 +195,7 @@ where
                     exit_code = Some(1);
                     break;
                 }
-                stream_event::Event::SubmitStatus(status) => {
+                submit_stream_event::Event::SubmitStatus(status) => {
                     let phase = submit_status::Phase::try_from(status.phase)
                         .unwrap_or(submit_status::Phase::Unspecified);
                     match phase {
@@ -218,8 +218,39 @@ where
                         submit_status::Phase::Unspecified => {}
                     }
                 }
+                submit_stream_event::Event::SubmitResult(result) => {
+                    if let Some(spinner) = spinner.take() {
+                        spinner.stop(None).await;
+                    }
+                    let status = submit_result::Status::try_from(result.status)
+                        .unwrap_or(submit_result::Status::Unspecified);
+                    match status {
+                        submit_result::Status::Submitted => {
+                            if let Some(job_id) = result.job_id {
+                                println!("Successfully submitted sbatch script; job id {job_id}");
+                            } else {
+                                println!("Successfully submitted sbatch script.");
+                            }
+                            exit_code = Some(0);
+                        }
+                        submit_result::Status::Failed => {
+                            let detail = result.detail.trim();
+                            if detail.is_empty() {
+                                eprintln!("failed");
+                            } else {
+                                eprintln!("failed: {detail}");
+                            }
+                            exit_code = Some(1);
+                        }
+                        submit_result::Status::Unspecified => {
+                            eprintln!("failed: submit result missing status");
+                            exit_code = Some(1);
+                        }
+                    }
+                    break;
+                }
             },
-            Ok(StreamEvent { event: None }) => log::info!("received empty event"),
+            Ok(SubmitStreamEvent { event: None }) => log::info!("received empty event"),
             Err(status) => {
                 if let Some(spinner) = spinner.take() {
                     spinner.stop(None).await;

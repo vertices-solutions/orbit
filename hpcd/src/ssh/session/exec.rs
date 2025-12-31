@@ -204,7 +204,9 @@ mod tests {
         };
         let (event, should_break) = handle_exec_message(&msg);
         assert!(!should_break);
-        let Some(event) = event else { panic!("expected event") };
+        let Some(event) = event else {
+            panic!("expected event")
+        };
         assert!(matches!(
             event.event,
             Some(stream_event::Event::Stdout(bytes)) if bytes == b"hi"
@@ -216,7 +218,9 @@ mod tests {
         };
         let (event, should_break) = handle_exec_message(&msg);
         assert!(!should_break);
-        let Some(event) = event else { panic!("expected event") };
+        let Some(event) = event else {
+            panic!("expected event")
+        };
         assert!(matches!(
             event.event,
             Some(stream_event::Event::Stderr(bytes)) if bytes == b"err"
@@ -225,8 +229,13 @@ mod tests {
         let msg = ChannelMsg::ExitStatus { exit_status: 7 };
         let (event, should_break) = handle_exec_message(&msg);
         assert!(!should_break);
-        let Some(event) = event else { panic!("expected event") };
-        assert!(matches!(event.event, Some(stream_event::Event::ExitCode(7))));
+        let Some(event) = event else {
+            panic!("expected event")
+        };
+        assert!(matches!(
+            event.event,
+            Some(stream_event::Event::ExitCode(7))
+        ));
 
         let msg = ChannelMsg::ExtendedData {
             data: CryptoVec::from_slice(b"skip"),

@@ -14,8 +14,8 @@ pub enum Cmd {
     Ping,
     Ls(LsArgs),
     Submit(SubmitArgs),
-    Jobs(JobsArgs),
-    Clusters(ClustersArgs),
+    Job(JobArgs),
+    Cluster(ClusterArgs),
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, Deserialize)]
@@ -33,13 +33,13 @@ impl ToString for WLM {
 }
 
 #[derive(Args, Debug)]
-pub struct JobsArgs {
+pub struct JobArgs {
     #[command(subcommand)]
-    pub cmd: JobsCmd,
+    pub cmd: JobCmd,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum JobsCmd {
+pub enum JobCmd {
     /// List jobs.
     List(ListJobsArgs),
     /// Show job details.
@@ -84,13 +84,13 @@ pub struct ListClustersArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ClustersArgs {
+pub struct ClusterArgs {
     #[command(subcommand)]
-    pub cmd: ClustersCmd,
+    pub cmd: ClusterCmd,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ClustersCmd {
+pub enum ClusterCmd {
     /// List clusters.
     List(ListClustersArgs),
     /// Show cluster details.
@@ -98,7 +98,7 @@ pub enum ClustersCmd {
     /// Add a new cluster.
     Add(AddClusterArgs),
     /// Update cluster parameters.
-    Set(AddClusterArgs),
+    Set(SetClusterArgs),
 }
 
 #[derive(Args, Debug)]
@@ -106,6 +106,24 @@ pub struct ClusterGetArgs {
     pub hostid: String,
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SetClusterArgs {
+    pub hostid: String,
+
+    /// Use a remote IP address as input
+    #[arg(long, value_name = "IP")]
+    pub ip: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u32>,
+
+    #[arg(long)]
+    pub identity_path: Option<String>,
+
+    #[arg(long)]
+    pub default_base_path: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -149,31 +167,40 @@ pub struct SubmitArgs {
 #[command(
     group(
         ArgGroup::new("addcluster")
-            .required(true)      // at least one is required...
-            .multiple(false)     // ...and they are mutually exclusive
-            .args(&["hostname", "ip"])
+            .multiple(false)
+            .args(&["destination", "hostname", "ip"])
     )
 )]
 pub struct AddClusterArgs {
+    /// Destination in ssh format: [user@]host[:port]
+    #[arg(value_name = "DESTINATION")]
+    pub destination: Option<String>,
+
     #[arg(long, value_name = "HOSTNAME")]
     pub hostname: Option<String>,
 
-    /// Use a remote URL as input
+    /// Use a remote IP address as input
     #[arg(long, value_name = "IP")]
     pub ip: Option<String>,
 
     #[arg(long)]
-    pub username: String,
+    pub username: Option<String>,
 
     #[arg(long)]
-    pub hostid: String,
+    pub hostid: Option<String>,
 
-    #[arg(long, default_value_t = 22)]
-    pub port: u32,
+    /// Defaults to 22.
+    #[arg(long)]
+    pub port: Option<u32>,
 
-    #[arg(long, default_value = "~/.ssh/id_ed25519")]
-    pub identity_path: String,
+    /// Defaults to ~/.ssh/id_ed25519.
+    #[arg(long)]
+    pub identity_path: Option<String>,
 
     #[arg(long)]
     pub default_base_path: Option<String>,
+
+    /// Disable prompts; missing values must have defaults or the command will fail.
+    #[arg(long)]
+    pub headless: bool,
 }

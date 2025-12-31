@@ -35,19 +35,6 @@ pub fn resolve_remote_sbatch_path(remote_root: &str, sbatchscript: &str) -> Stri
         .into_owned()
 }
 
-pub fn format_submit_success(slurm_id: Option<i64>, job_id: i64) -> String {
-    match slurm_id {
-        Some(v) => format!(
-            "Successfully submitted sbatch script with slurm id {} , job id {}",
-            v, job_id
-        ),
-        None => format!(
-            "Successfully submitted sbatch script, did not receive a valid slurm id from system; job id {}",
-            job_id
-        ),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,15 +42,12 @@ mod tests {
     #[test]
     fn resolve_submit_remote_path_handles_variants() {
         let err = resolve_submit_remote_path(Some(""), "/base", "run").unwrap_err();
-        assert!(err
-            .message()
-            .contains("remote path can't be empty"));
+        assert!(err.message().contains("remote path can't be empty"));
 
         let absolute = resolve_submit_remote_path(Some("/abs/path"), "/base", "run").unwrap();
         assert_eq!(absolute, "/abs/path");
 
-        let relative =
-            resolve_submit_remote_path(Some("jobs/run"), "/base", "run").unwrap();
+        let relative = resolve_submit_remote_path(Some("jobs/run"), "/base", "run").unwrap();
         assert_eq!(relative, "/base/jobs/run");
 
         let generated = resolve_submit_remote_path(None, "/base", "run").unwrap();
@@ -76,14 +60,5 @@ mod tests {
         assert_eq!(path, "/base/run/scripts/job.sbatch");
     }
 
-    #[test]
-    fn format_submit_success_formats_messages() {
-        let msg = format_submit_success(Some(42), 7);
-        assert!(msg.contains("slurm id 42"));
-        assert!(msg.contains("job id 7"));
-
-        let msg = format_submit_success(None, 7);
-        assert!(msg.contains("did not receive a valid slurm id"));
-        assert!(msg.contains("job id 7"));
-    }
+    // No submit success formatter tests; the final submit result is encoded in RPC events.
 }

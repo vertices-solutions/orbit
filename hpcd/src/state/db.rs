@@ -19,8 +19,8 @@ pub enum Address {
 
 #[derive(Debug)]
 pub enum ParseSlurmVersionError {
-    WrongFormat,              // not exactly 3 dot-separated parts
-    NotANumber, // one part isn’t an integer
+    WrongFormat, // not exactly 3 dot-separated parts
+    NotANumber,  // one part isn’t an integer
 }
 
 /// Slurm version triplet.
@@ -61,7 +61,11 @@ impl FromStr for SlurmVersion {
         if parts.next().is_some() {
             return Err(ParseSlurmVersionError::WrongFormat);
         }
-        Ok(SlurmVersion { major, minor, patch })
+        Ok(SlurmVersion {
+            major,
+            minor,
+            patch,
+        })
     }
 }
 /// Linux distribution info.
