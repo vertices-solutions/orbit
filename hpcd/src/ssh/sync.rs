@@ -1,6 +1,6 @@
 use anyhow::Result;
 use futures_util::StreamExt;
-use proto::{MfaAnswer, StreamEvent};
+use proto::{MfaAnswer, SubmitStreamEvent};
 use rand::{Rng, distr::Alphanumeric};
 use std::future::Future;
 use std::path::Path;
@@ -35,7 +35,7 @@ pub(crate) trait SyncExecutor: Sync {
     /// Ensure the remote connection is established and MFA prompts can flow.
     fn ensure_connected<'a>(
         &'a self,
-        evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        evt_tx: &'a mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
         mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
     ) -> BoxFuture<'a, Result<()>>;
 
@@ -57,7 +57,7 @@ pub(crate) async fn sync_dir_with_executor<E, P>(
     local_dir: P,
     remote_dir: &str,
     options: SyncOptions<'_>,
-    evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+    evt_tx: &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
     mut mfa_rx: mpsc::Receiver<MfaAnswer>,
 ) -> Result<()>
 where
@@ -119,7 +119,7 @@ where
 #[cfg(test)]
 mod executor_tests {
     use super::{
-        MfaAnswer, StreamEvent, SyncExecutor, SyncFilterAction, SyncFilterRule, SyncOptions,
+        MfaAnswer, SubmitStreamEvent, SyncExecutor, SyncFilterAction, SyncFilterRule, SyncOptions,
         sync_dir_with_executor,
     };
     use anyhow::{Result, anyhow};
@@ -152,7 +152,7 @@ mod executor_tests {
     impl SyncExecutor for FakeExecutor {
         fn ensure_connected<'a>(
             &'a self,
-            _evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+            _evt_tx: &'a mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
             _mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
         ) -> super::BoxFuture<'a, Result<()>> {
             let calls = Arc::clone(&self.calls);
@@ -212,7 +212,7 @@ mod executor_tests {
         fs::write(root.join("src/bin/main.rs"), "bin").unwrap();
 
         let executor = FakeExecutor::default();
-        let (evt_tx, _evt_rx) = mpsc::channel::<Result<StreamEvent, tonic::Status>>(1);
+        let (evt_tx, _evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, tonic::Status>>(1);
         let (_mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(1);
         let filters = [rule(SyncFilterAction::Exclude, "target/")];
         let options = SyncOptions {
@@ -246,7 +246,7 @@ mod executor_tests {
         fs::write(root.join("src/extra.rs"), "extra").unwrap();
 
         let executor = FakeExecutor::new(&["/remote/src/lib.rs"]);
-        let (evt_tx, _evt_rx) = mpsc::channel::<Result<StreamEvent, tonic::Status>>(1);
+        let (evt_tx, _evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, tonic::Status>>(1);
         let (_mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(1);
         let options = SyncOptions {
             block_size: None,
@@ -267,7 +267,8 @@ mod executor_tests {
 #[cfg(test)]
 mod sync_option_tests {
     use super::{
-        MfaAnswer, StreamEvent, SyncExecutor, SyncFilterRule, SyncOptions, sync_dir_with_executor,
+        MfaAnswer, SubmitStreamEvent, SyncExecutor, SyncFilterRule, SyncOptions,
+        sync_dir_with_executor,
     };
     use anyhow::Result;
     use std::fs;
@@ -290,7 +291,7 @@ mod sync_option_tests {
     impl SyncExecutor for BlockSizeExecutor {
         fn ensure_connected<'a>(
             &'a self,
-            _evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+            _evt_tx: &'a mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
             _mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
         ) -> super::BoxFuture<'a, Result<()>> {
             Box::pin(async move { Ok(()) })
@@ -327,7 +328,7 @@ mod sync_option_tests {
         fs::write(root.join("src/lib.rs"), "lib").unwrap();
 
         let executor = BlockSizeExecutor::default();
-        let (evt_tx, _evt_rx) = mpsc::channel::<Result<StreamEvent, tonic::Status>>(1);
+        let (evt_tx, _evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, tonic::Status>>(1);
         let (_mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(1);
         let options = SyncOptions {
             block_size: None,

@@ -7,7 +7,7 @@ use crate::agent::helpers::{
 };
 use crate::agent::service::AgentSvc;
 use crate::agent::submit::{resolve_remote_sbatch_path, resolve_submit_remote_path};
-use crate::agent::types::{AgentSvcError, OutStream};
+use crate::agent::types::{AgentSvcError, OutStream, SubmitOutStream};
 use crate::ssh::sh_escape;
 use crate::state::db::HostStoreError;
 use crate::util;
@@ -17,7 +17,8 @@ use proto::{
     AddClusterRequest, ListClustersRequest, ListClustersResponse, ListClustersUnitResponse,
     ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit, MfaAnswer, PingReply, PingRequest,
     RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest, SubmitResult,
-    SubmitStatus, stream_event, submit_result, submit_status,
+    SubmitStatus, SubmitStreamEvent, stream_event, submit_result, submit_status,
+    submit_stream_event,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,7 +28,7 @@ use tonic::Status;
 impl Agent for AgentSvc {
     type LsStream = OutStream;
     type RetrieveJobStream = OutStream;
-    type SubmitStream = OutStream;
+    type SubmitStream = SubmitOutStream;
     type AddClusterStream = OutStream;
 
     async fn ping(
@@ -346,7 +347,8 @@ impl Agent for AgentSvc {
         };
         let filters = build_sync_filters(filters)?;
 
-        let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
+        let (evt_tx, evt_rx) =
+            tokio::sync::mpsc::channel::<Result<SubmitStreamEvent, Status>>(64);
         let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
@@ -389,8 +391,8 @@ impl Agent for AgentSvc {
         };
 
         if evt_tx
-            .send(Ok(StreamEvent {
-                event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+            .send(Ok(SubmitStreamEvent {
+                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
                     hostid: hostid.clone(),
                     remote_path: remote_path.clone(),
                     phase: submit_status::Phase::Resolved as i32,
@@ -406,7 +408,7 @@ impl Agent for AgentSvc {
             return Err(Status::cancelled("client disconnected"));
         }
 
-        match mgr.ensure_connected(&evt_tx.clone(), &mut mfa_rx).await {
+        match mgr.ensure_connected_submit(&evt_tx.clone(), &mut mfa_rx).await {
             Ok(_) => {}
             Err(e) => {
                 return Err(Status::internal(format!(
@@ -443,8 +445,8 @@ impl Agent for AgentSvc {
         let hs = hs.clone();
         tokio::spawn(async move {
             if evt_tx
-                .send(Ok(StreamEvent {
-                    event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                .send(Ok(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
                         hostid: hostid.clone(),
                         remote_path: remote_path.clone(),
                         phase: submit_status::Phase::TransferStart as i32,
@@ -477,8 +479,8 @@ impl Agent for AgentSvc {
             };
             if let Err(err) = sync_result {
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
                             detail: err.to_string(),
@@ -488,8 +490,8 @@ impl Agent for AgentSvc {
                 return;
             };
             if evt_tx
-                .send(Ok(StreamEvent {
-                    event: Some(stream_event::Event::SubmitStatus(SubmitStatus {
+                .send(Ok(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
                         hostid: hostid.clone(),
                         remote_path: remote_path.clone(),
                         phase: submit_status::Phase::TransferDone as i32,
@@ -523,8 +525,8 @@ impl Agent for AgentSvc {
                 Ok(v) => (v.0, v.1, v.2),
                 Err(e) => {
                     let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                        .send(Ok(SubmitStreamEvent {
+                            event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                                 status: submit_result::Status::Failed as i32,
                                 job_id: None,
                                 detail: e.to_string(),
@@ -553,8 +555,8 @@ impl Agent for AgentSvc {
                     err_message.trim()
                 };
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
                             detail: format!("sbatch failed with exit code {}: {}", code, detail),
@@ -567,8 +569,8 @@ impl Agent for AgentSvc {
             let slurm_id = crate::agent::slurm::parse_job_id(&out_string);
             if slurm_id.is_none() {
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
                             detail: "sbatch did not return a job id".to_string(),
@@ -580,8 +582,8 @@ impl Agent for AgentSvc {
 
             let Ok(Some(hr)) = hs.get_by_hostid(&hostid).await else {
                 let _ = evt_tx
-                    .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                    .send(Ok(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
                             detail: format!("unknown hostid '{}'", hostid),
@@ -600,8 +602,8 @@ impl Agent for AgentSvc {
             match hs.insert_job(&nj).await {
                 Ok(job_id) => {
                     let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                        .send(Ok(SubmitStreamEvent {
+                            event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                                 status: submit_result::Status::Submitted as i32,
                                 job_id: Some(job_id),
                                 detail: String::new(),
@@ -611,8 +613,8 @@ impl Agent for AgentSvc {
                 }
                 Err(e) => {
                     let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::SubmitResult(SubmitResult {
+                        .send(Ok(SubmitStreamEvent {
+                            event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                                 status: submit_result::Status::Failed as i32,
                                 job_id: None,
                                 detail: format!("failed to create job record: {}", e),
@@ -623,7 +625,7 @@ impl Agent for AgentSvc {
             }
         });
 
-        let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
+        let out: SubmitOutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
         Ok(tonic::Response::new(out))
     }
 

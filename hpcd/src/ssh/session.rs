@@ -1,5 +1,5 @@
 use anyhow::Result;
-use proto::{MfaAnswer, StreamEvent};
+use proto::{MfaAnswer, SubmitStreamEvent};
 use russh::client::Config;
 use std::net::SocketAddr;
 use std::path::Path;
@@ -47,7 +47,7 @@ pub struct SshParams {
 pub(crate) struct SessionManagerTestHooks {
     ensure_connected: Arc<
         dyn Fn(
-                &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+                &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
                 &mut mpsc::Receiver<MfaAnswer>,
             ) -> BoxFuture<'static, Result<()>>
             + Send

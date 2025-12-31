@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, anyhow};
-use proto::{MfaAnswer, StreamEvent};
+use proto::{MfaAnswer, SubmitStreamEvent};
 use russh_sftp::client::SftpSession;
 use russh_sftp::protocol::{FileAttributes, OpenFlags};
 use std::path::{Path, PathBuf};
@@ -339,7 +339,7 @@ impl SessionManager {
         local_dir: P,
         remote_dir: &str,
         options: SyncOptions<'_>,
-        evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        evt_tx: &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
         mfa_rx: mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         sync_dir_with_executor(self, local_dir, remote_dir, options, evt_tx, mfa_rx).await
@@ -359,7 +359,7 @@ impl SessionManager {
 impl SyncExecutor for SessionManager {
     fn ensure_connected<'a>(
         &'a self,
-        evt_tx: &'a mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        evt_tx: &'a mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
         mfa_rx: &'a mut mpsc::Receiver<MfaAnswer>,
     ) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move { self.ensure_connected_for_sync(evt_tx, mfa_rx).await })

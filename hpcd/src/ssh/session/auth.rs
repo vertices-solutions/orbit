@@ -1,5 +1,8 @@
 use anyhow::{Context, Result, anyhow};
-use proto::{MfaAnswer, MfaPrompt, Prompt, StreamEvent, stream_event};
+use proto::{
+    MfaAnswer, MfaPrompt, Prompt, StreamEvent, SubmitStreamEvent, stream_event,
+    submit_stream_event,
+};
 use russh::client::{AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::PrivateKeyWithHashAlg;
 use std::sync::Arc;
@@ -11,6 +14,26 @@ enum AuthDecision {
     Success,
     KeyboardInteractive,
     Failure { msg: String },
+}
+
+trait MfaEvent {
+    fn from_prompt(prompt: MfaPrompt) -> Self;
+}
+
+impl MfaEvent for StreamEvent {
+    fn from_prompt(prompt: MfaPrompt) -> Self {
+        StreamEvent {
+            event: Some(stream_event::Event::Mfa(prompt)),
+        }
+    }
+}
+
+impl MfaEvent for SubmitStreamEvent {
+    fn from_prompt(prompt: MfaPrompt) -> Self {
+        SubmitStreamEvent {
+            event: Some(submit_stream_event::Event::Mfa(prompt)),
+        }
+    }
 }
 
 fn auth_decision(result: AuthResult) -> AuthDecision {
@@ -43,6 +66,22 @@ impl SessionManager {
     pub async fn ensure_connected(
         &self,
         evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
+    ) -> Result<()> {
+        self.ensure_connected_with(evt_tx, mfa_rx).await
+    }
+
+    pub async fn ensure_connected_submit(
+        &self,
+        evt_tx: &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
+        mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
+    ) -> Result<()> {
+        self.ensure_connected_with(evt_tx, mfa_rx).await
+    }
+
+    async fn ensure_connected_with<E: MfaEvent>(
+        &self,
+        evt_tx: &mpsc::Sender<Result<E, tonic::Status>>,
         mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         let mut handle_field = self.handle.lock().await;
@@ -140,22 +179,22 @@ impl SessionManager {
 
     pub(crate) async fn ensure_connected_for_sync(
         &self,
-        evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        evt_tx: &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
         mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         #[cfg(test)]
         if let Some(hooks) = &self.test_hooks {
             return (hooks.ensure_connected)(evt_tx, mfa_rx).await;
         }
-        self.ensure_connected(evt_tx, mfa_rx).await
+        self.ensure_connected_submit(evt_tx, mfa_rx).await
     }
 
     /// Runs the keyboard-interactive auth loop, streaming prompts out
     /// and consuming answers from mfa_rx until Success/Failure.
-    async fn do_keyboard_interactive(
+    async fn do_keyboard_interactive<E: MfaEvent>(
         &self,
         handle: &mut russh::client::Handle<ClientHandler>,
-        evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
+        evt_tx: &mpsc::Sender<Result<E, tonic::Status>>,
         mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         let mut ki = handle
@@ -197,11 +236,7 @@ impl SessionManager {
                             })
                             .collect(),
                     };
-                    let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Mfa(prompt_msg)),
-                        }))
-                        .await;
+                    let _ = evt_tx.send(Ok(E::from_prompt(prompt_msg))).await;
 
                     // Wait for client answers
                     let answers = mfa_rx
