@@ -1,6 +1,6 @@
 use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
-use cli::args::{Cli, ClustersCmd, Cmd, JobsCmd, SubmitArgs};
+use cli::args::{Cli, ClusterCmd, Cmd, JobCmd, SubmitArgs};
 use cli::client::{
     fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_job_retrieve, send_ls,
     send_ping, send_submit,
@@ -83,10 +83,10 @@ async fn main() -> anyhow::Result<()> {
             )
             .await?
         }
-        Cmd::Jobs(jobs_args) => {
+        Cmd::Job(job_args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            match jobs_args.cmd {
-                JobsCmd::List(args) => {
+            match job_args.cmd {
+                JobCmd::List(args) => {
                     let response = fetch_list_jobs(&mut client, args.cluster).await?;
                     if args.json {
                         let output = format_jobs_json(&response.jobs)?;
@@ -95,7 +95,7 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_jobs_table(&response.jobs));
                     }
                 }
-                JobsCmd::Get(args) => {
+                JobCmd::Get(args) => {
                     let response = fetch_list_jobs(&mut client, args.cluster.clone()).await?;
                     let matches: Vec<&ListJobsUnitResponse> = response
                         .jobs
@@ -128,7 +128,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                 }
-                JobsCmd::Retrieve(args) => {
+                JobCmd::Retrieve(args) => {
                     send_job_retrieve(
                         &mut client,
                         args.job_id,
@@ -140,10 +140,10 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Cmd::Clusters(clusters_args) => {
+        Cmd::Cluster(cluster_args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            match clusters_args.cmd {
-                ClustersCmd::List(args) => {
+            match cluster_args.cmd {
+                ClusterCmd::List(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if args.json {
                         let output = format_clusters_json(&response.clusters)?;
@@ -152,7 +152,7 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_clusters_table(&response.clusters));
                     }
                 }
-                ClustersCmd::Get(args) => {
+                ClusterCmd::Get(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let Some(cluster) = response
                         .clusters
@@ -168,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_cluster_details(cluster));
                     }
                 }
-                ClustersCmd::Add(args) => {
+                ClusterCmd::Add(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if response
                         .clusters
@@ -176,7 +176,7 @@ async fn main() -> anyhow::Result<()> {
                         .any(|cluster| cluster.hostid == args.hostid)
                     {
                         bail!(
-                            "cluster '{}' already exists; use 'clusters set' to update it",
+                            "cluster '{}' already exists; use 'cluster set' to update it",
                             args.hostid
                         );
                     }
@@ -186,7 +186,7 @@ async fn main() -> anyhow::Result<()> {
                                 && cluster_host_string(cluster) == host
                         }) {
                             bail!(
-                                "cluster '{}' with address '{}' already exists; use 'clusters set' to update it",
+                                "cluster '{}' with address '{}' already exists; use 'cluster set' to update it",
                                 args.username,
                                 host
                             );
@@ -204,7 +204,7 @@ async fn main() -> anyhow::Result<()> {
                     )
                     .await?
                 }
-                ClustersCmd::Set(args) => {
+                ClusterCmd::Set(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if !response
                         .clusters
@@ -212,7 +212,7 @@ async fn main() -> anyhow::Result<()> {
                         .any(|cluster| cluster.hostid == args.hostid)
                     {
                         bail!(
-                            "cluster '{}' not found; use 'clusters add' to create it",
+                            "cluster '{}' not found; use 'cluster add' to create it",
                             args.hostid
                         );
                     }

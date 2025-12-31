@@ -14,8 +14,8 @@ pub enum Cmd {
     Ping,
     Ls(LsArgs),
     Submit(SubmitArgs),
-    Jobs(JobsArgs),
-    Clusters(ClustersArgs),
+    Job(JobArgs),
+    Cluster(ClusterArgs),
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, Deserialize)]
@@ -33,13 +33,13 @@ impl ToString for WLM {
 }
 
 #[derive(Args, Debug)]
-pub struct JobsArgs {
+pub struct JobArgs {
     #[command(subcommand)]
-    pub cmd: JobsCmd,
+    pub cmd: JobCmd,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum JobsCmd {
+pub enum JobCmd {
     /// List jobs.
     List(ListJobsArgs),
     /// Show job details.
@@ -84,13 +84,13 @@ pub struct ListClustersArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ClustersArgs {
+pub struct ClusterArgs {
     #[command(subcommand)]
-    pub cmd: ClustersCmd,
+    pub cmd: ClusterCmd,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ClustersCmd {
+pub enum ClusterCmd {
     /// List clusters.
     List(ListClustersArgs),
     /// Show cluster details.

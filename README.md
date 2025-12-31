@@ -55,7 +55,7 @@ hpcd --database-path ./hpc.db
 You can use `--hostname` or `--ip` (exactly one is required). `--default-base-path` is where run folders will be created by default.
 
 ```bash
-hpc clusters add \
+hpc cluster add \
   --hostid mycluster \
   --username alice \
   --hostname login.example.edu \
