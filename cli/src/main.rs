@@ -224,7 +224,7 @@ async fn main() -> anyhow::Result<()> {
                         &resolved.username,
                         &resolved.hostname,
                         &resolved.ip,
-                        &resolved.identity_path,
+                        Some(resolved.identity_path.as_str()),
                         resolved.port,
                         &resolved.default_base_path,
                     )
@@ -232,28 +232,62 @@ async fn main() -> anyhow::Result<()> {
                     println!("Cluster {} added successfully!", resolved.hostid);
                 }
                 ClusterCmd::Set(args) => {
-                    print_banner_if_interactive(args.headless);
-                    let resolved = resolve_add_cluster_args(args)?;
                     let response = fetch_list_clusters(&mut client, "").await?;
-                    if !response
+                    let Some(cluster) = response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.hostid == resolved.hostid)
-                    {
+                        .find(|cluster| cluster.hostid == args.hostid)
+                    else {
                         bail!(
                             "cluster '{}' not found; use 'cluster add' to create it",
-                            resolved.hostid
+                            args.hostid
                         );
-                    }
+                    };
+                    let (hostname, ip) = match args.ip.as_ref() {
+                        Some(ip) => (None, Some(ip.clone())),
+                        None => match &cluster.host {
+                            Some(proto::list_clusters_unit_response::Host::Hostname(host)) => {
+                                (Some(host.clone()), None)
+                            }
+                            Some(proto::list_clusters_unit_response::Host::Ipaddr(host)) => {
+                                (None, Some(host.clone()))
+                            }
+                            None => {
+                                bail!(
+                                    "cluster '{}' has no address; pass --ip to update it",
+                                    args.hostid
+                                );
+                            }
+                        },
+                    };
+                    let port = match args.port {
+                        Some(port) => port,
+                        None => match u32::try_from(cluster.port) {
+                            Ok(port) => port,
+                            Err(_) => bail!(
+                                "cluster '{}' has invalid port '{}'",
+                                args.hostid,
+                                cluster.port
+                            ),
+                        },
+                    };
+                    let identity_path = args
+                        .identity_path
+                        .clone()
+                        .or_else(|| cluster.identity_path.clone());
+                    let default_base_path = args
+                        .default_base_path
+                        .clone()
+                        .or_else(|| cluster.default_base_path.clone());
                     send_add_cluster(
                         &mut client,
-                        &resolved.hostid,
-                        &resolved.username,
-                        &resolved.hostname,
-                        &resolved.ip,
-                        &resolved.identity_path,
-                        resolved.port,
-                        &resolved.default_base_path,
+                        &cluster.hostid,
+                        &cluster.username,
+                        &hostname,
+                        &ip,
+                        identity_path.as_deref(),
+                        port,
+                        &default_base_path,
                     )
                     .await?
                 }

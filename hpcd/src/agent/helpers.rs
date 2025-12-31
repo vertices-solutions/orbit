@@ -72,6 +72,7 @@ pub fn db_host_record_to_api_unit_response(hs: &HostRecord) -> ListClustersUnitR
         connected: false,
         hostid: hs.hostid.to_owned(),
         accounting_available: hs.accounting_available,
+        default_base_path: hs.default_base_path.to_owned(),
     }
 }
 

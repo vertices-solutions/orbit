@@ -25,6 +25,7 @@ pub fn cluster_to_json(item: &ListClustersUnitResponse) -> serde_json::Value {
         "status": status,
         "identity_path": item.identity_path.as_deref(),
         "accounting_available": item.accounting_available,
+        "default_base_path": item.default_base_path.as_deref(),
     })
 }
 
@@ -152,14 +153,15 @@ pub fn format_cluster_details(item: &ListClustersUnitResponse) -> String {
         false => "disabled",
     };
     format!(
-        "hostid: {}\nusername: {}\naddress: {}\nport: {}\nstatus: {}\naccounting: {}\nidentity_path: {}\n",
+        "hostid: {}\nusername: {}\naddress: {}\nport: {}\nstatus: {}\naccounting: {}\nidentity_path: {}\ndefault_base_path: {}\n",
         item.hostid,
         item.username,
         host_str,
         item.port,
         connected_str,
         accounting_str,
-        item.identity_path.as_deref().unwrap_or("-")
+        item.identity_path.as_deref().unwrap_or("-"),
+        item.default_base_path.as_deref().unwrap_or("-")
     )
 }
 
@@ -299,6 +301,7 @@ mod tests {
             connected: true,
             hostid: "cluster-a".to_string(),
             accounting_available: false,
+            default_base_path: None,
         }
     }
 

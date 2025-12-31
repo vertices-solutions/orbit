@@ -98,7 +98,7 @@ pub enum ClusterCmd {
     /// Add a new cluster.
     Add(AddClusterArgs),
     /// Update cluster parameters.
-    Set(AddClusterArgs),
+    Set(SetClusterArgs),
 }
 
 #[derive(Args, Debug)]
@@ -106,6 +106,24 @@ pub struct ClusterGetArgs {
     pub hostid: String,
     #[arg(long)]
     pub json: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct SetClusterArgs {
+    pub hostid: String,
+
+    /// Use a remote IP address as input
+    #[arg(long, value_name = "IP")]
+    pub ip: Option<String>,
+
+    #[arg(long)]
+    pub port: Option<u32>,
+
+    #[arg(long)]
+    pub identity_path: Option<String>,
+
+    #[arg(long)]
+    pub default_base_path: Option<String>,
 }
 
 #[derive(Args, Debug)]

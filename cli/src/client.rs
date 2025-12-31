@@ -244,7 +244,7 @@ pub async fn send_add_cluster(
     username: &str,
     hostname: &Option<String>,
     ip: &Option<String>,
-    identity_path: &str,
+    identity_path: Option<&str>,
     port: u32,
     default_base_path: &Option<String>,
 ) -> anyhow::Result<()> {
@@ -258,12 +258,15 @@ pub async fn send_add_cluster(
             None => anyhow::bail!("both hostname and ip address can't be none"),
         },
     };
-    let identity_path_expanded = shellexpand::full(identity_path)?;
+    let identity_path_expanded = match identity_path {
+        Some(value) => Some(shellexpand::full(value)?.to_string()),
+        None => None,
+    };
     let init = AddClusterInit {
         hostid: host_id.to_owned(),
         username: username.to_owned(),
         host: Some(host),
-        identity_path: Some(identity_path_expanded.to_string()),
+        identity_path: identity_path_expanded,
         port: port,
         default_base_path: default_base_path.to_owned(),
     };
