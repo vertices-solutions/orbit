@@ -1,6 +1,6 @@
 use super::{SessionManager, SessionManagerTestHooks};
-use anyhow::Result;
 use crate::ssh::sync::{SyncFilterRule, SyncOptions, sync_dir_with_executor};
+use anyhow::Result;
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;

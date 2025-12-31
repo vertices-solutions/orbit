@@ -2,18 +2,19 @@ use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
 use cli::args::{Cli, ClusterCmd, Cmd, JobCmd, SubmitArgs};
 use cli::client::{
-    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_job_retrieve, send_ls,
-    send_ping, send_submit,
+    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_job_retrieve, send_ls, send_ping,
+    send_submit,
 };
 use cli::filters::submit_filters_from_matches;
 use cli::format::{
-    cluster_host_string, format_cluster_details, format_cluster_details_json,
-    format_clusters_json, format_clusters_table, format_job_details, format_job_details_json,
-    format_jobs_json, format_jobs_table,
+    cluster_host_string, format_cluster_details, format_cluster_details_json, format_clusters_json,
+    format_clusters_table, format_job_details, format_job_details_json, format_jobs_json,
+    format_jobs_table,
 };
+use cli::interactive::resolve_add_cluster_args;
 use cli::sbatch::resolve_sbatch_script;
-use proto::agent_client::AgentClient;
 use proto::ListJobsUnitResponse;
+use proto::agent_client::AgentClient;
 use std::io::Write;
 use std::path::PathBuf;
 
@@ -169,62 +170,64 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
                 ClusterCmd::Add(args) => {
+                    let resolved = resolve_add_cluster_args(args)?;
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.hostid == args.hostid)
+                        .any(|cluster| cluster.hostid == resolved.hostid)
                     {
                         bail!(
                             "cluster '{}' already exists; use 'cluster set' to update it",
-                            args.hostid
+                            resolved.hostid
                         );
                     }
-                    if let Some(host) = args.hostname.as_deref().or(args.ip.as_deref()) {
+                    if let Some(host) = resolved.hostname.as_deref().or(resolved.ip.as_deref()) {
                         if response.clusters.iter().any(|cluster| {
-                            cluster.username == args.username
+                            cluster.username == resolved.username
                                 && cluster_host_string(cluster) == host
                         }) {
                             bail!(
                                 "cluster '{}' with address '{}' already exists; use 'cluster set' to update it",
-                                args.username,
+                                resolved.username,
                                 host
                             );
                         }
                     }
                     send_add_cluster(
                         &mut client,
-                        &args.hostid,
-                        &args.username,
-                        &args.hostname,
-                        &args.ip,
-                        &args.identity_path,
-                        args.port,
-                        &args.default_base_path,
+                        &resolved.hostid,
+                        &resolved.username,
+                        &resolved.hostname,
+                        &resolved.ip,
+                        &resolved.identity_path,
+                        resolved.port,
+                        &resolved.default_base_path,
                     )
                     .await?
                 }
                 ClusterCmd::Set(args) => {
+                    let resolved = resolve_add_cluster_args(args)?;
                     let response = fetch_list_clusters(&mut client, "").await?;
                     if !response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.hostid == args.hostid)
+                        .any(|cluster| cluster.hostid == resolved.hostid)
                     {
                         bail!(
                             "cluster '{}' not found; use 'cluster add' to create it",
-                            args.hostid
+                            resolved.hostid
                         );
                     }
                     send_add_cluster(
                         &mut client,
-                        &args.hostid,
-                        &args.username,
-                        &args.hostname,
-                        &args.ip,
-                        &args.identity_path,
-                        args.port,
-                        &args.default_base_path,
+                        &resolved.hostid,
+                        &resolved.username,
+                        &resolved.hostname,
+                        &resolved.ip,
+                        &resolved.identity_path,
+                        resolved.port,
+                        &resolved.default_base_path,
                     )
                     .await?
                 }

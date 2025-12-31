@@ -348,9 +348,7 @@ mod tests {
         std::fs::write(root.join("b.sbatch"), "echo two").unwrap();
 
         let err = resolve_sbatch_script(&root, None, true).unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("multiple .sbatch files found"));
+        assert!(err.to_string().contains("multiple .sbatch files found"));
         let _ = std::fs::remove_dir_all(&root);
     }
 }

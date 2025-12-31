@@ -316,12 +316,12 @@ mod tests {
 
     #[test]
     fn cluster_host_string_handles_hostname_ip_none() {
-        let hostname = sample_cluster(Some(
-            proto::list_clusters_unit_response::Host::Hostname("node".to_string()),
-        ));
-        let ip = sample_cluster(Some(
-            proto::list_clusters_unit_response::Host::Ipaddr("10.0.0.1".to_string()),
-        ));
+        let hostname = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
+            "node".to_string(),
+        )));
+        let ip = sample_cluster(Some(proto::list_clusters_unit_response::Host::Ipaddr(
+            "10.0.0.1".to_string(),
+        )));
         let none = sample_cluster(None);
 
         assert_eq!(cluster_host_string(&hostname), "node");
@@ -344,9 +344,9 @@ mod tests {
 
     #[test]
     fn format_clusters_table_includes_headers_and_rows() {
-        let cluster = sample_cluster(Some(
-            proto::list_clusters_unit_response::Host::Hostname("node".to_string()),
-        ));
+        let cluster = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
+            "node".to_string(),
+        )));
         let output = format_clusters_table(&[cluster]);
         assert!(output.contains("username"));
         assert!(output.contains("cluster-a"));
@@ -364,9 +364,9 @@ mod tests {
 
     #[test]
     fn cluster_to_json_includes_status_fields() {
-        let cluster = sample_cluster(Some(
-            proto::list_clusters_unit_response::Host::Hostname("node".to_string()),
-        ));
+        let cluster = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
+            "node".to_string(),
+        )));
         let json = cluster_to_json(&cluster);
         assert_eq!(json["status"], "connected");
         assert_eq!(json["hostid"], "cluster-a");

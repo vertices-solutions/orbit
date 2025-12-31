@@ -11,8 +11,8 @@ use tokio::sync::mpsc;
 use super::SessionManager;
 use crate::ssh::sync::{BoxFuture, SyncExecutor, SyncOptions, sync_dir_with_executor};
 use crate::ssh::utils::{
-    build_remote_dir_paths, build_remote_hash_script, local_block_hashes,
-    parse_remote_hash_output, sh_escape,
+    build_remote_dir_paths, build_remote_hash_script, local_block_hashes, parse_remote_hash_output,
+    sh_escape,
 };
 
 impl SessionManager {
@@ -342,15 +342,7 @@ impl SessionManager {
         evt_tx: &mpsc::Sender<Result<StreamEvent, tonic::Status>>,
         mfa_rx: mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
-        sync_dir_with_executor(
-            self,
-            local_dir,
-            remote_dir,
-            options,
-            evt_tx,
-            mfa_rx,
-        )
-        .await
+        sync_dir_with_executor(self, local_dir, remote_dir, options, evt_tx, mfa_rx).await
     }
 
     pub async fn retrieve_path(&self, remote_path: &str, local_path: &Path) -> Result<()> {

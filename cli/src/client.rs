@@ -1,11 +1,12 @@
-use crate::stream::{SubmitStreamOutcome, ensure_exit_code, handle_stream_events, handle_submit_stream_events};
+use crate::stream::{
+    SubmitStreamOutcome, ensure_exit_code, handle_stream_events, handle_submit_stream_events,
+};
 use anyhow::bail;
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, ListClustersRequest, ListClustersResponse,
-    ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit, RetrieveJobRequest,
-    RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest, add_cluster_init,
-    add_cluster_request,
+    AddClusterInit, AddClusterRequest, ListClustersRequest, ListClustersResponse, ListJobsRequest,
+    ListJobsResponse, LsRequest, LsRequestInit, RetrieveJobRequest, RetrieveJobRequestInit,
+    SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
 };
 use std::path::PathBuf;
 use tokio::sync::mpsc;

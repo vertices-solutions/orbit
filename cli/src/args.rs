@@ -149,8 +149,7 @@ pub struct SubmitArgs {
 #[command(
     group(
         ArgGroup::new("addcluster")
-            .required(true)      // at least one is required...
-            .multiple(false)     // ...and they are mutually exclusive
+            .multiple(false)
             .args(&["hostname", "ip"])
     )
 )]
@@ -163,17 +162,23 @@ pub struct AddClusterArgs {
     pub ip: Option<String>,
 
     #[arg(long)]
-    pub username: String,
+    pub username: Option<String>,
 
     #[arg(long)]
-    pub hostid: String,
+    pub hostid: Option<String>,
 
-    #[arg(long, default_value_t = 22)]
-    pub port: u32,
+    /// Defaults to 22.
+    #[arg(long)]
+    pub port: Option<u32>,
 
-    #[arg(long, default_value = "~/.ssh/id_ed25519")]
-    pub identity_path: String,
+    /// Defaults to ~/.ssh/id_ed25519.
+    #[arg(long)]
+    pub identity_path: Option<String>,
 
     #[arg(long)]
     pub default_base_path: Option<String>,
+
+    /// Disable prompts; missing values must have defaults or the command will fail.
+    #[arg(long)]
+    pub headless: bool,
 }

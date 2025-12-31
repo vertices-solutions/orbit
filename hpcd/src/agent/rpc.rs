@@ -373,9 +373,7 @@ impl Agent for AgentSvc {
                     return Err(Status::internal(format!("network error: {e}")));
                 }
                 other_error => {
-                    return Err(Status::internal(format!(
-                        "unexpected error: {other_error}"
-                    )));
+                    return Err(Status::internal(format!("unexpected error: {other_error}")));
                 }
             },
         };
@@ -415,8 +413,7 @@ impl Agent for AgentSvc {
             Err(e) => {
                 return Err(Status::internal(format!(
                     "could not establish connection to {}: {}",
-                    &hostid,
-                    e
+                    &hostid, e
                 )));
             }
         };
@@ -426,9 +423,7 @@ impl Agent for AgentSvc {
             Err(e) => {
                 return Err(Status::internal(format!(
                     "can't list {} on {}: {}",
-                    &remote_path,
-                    &hostid,
-                    e
+                    &remote_path, &hostid, e
                 )));
             }
         };
@@ -506,8 +501,7 @@ impl Agent for AgentSvc {
             if evt_tx.is_closed() || *cancel_rx.borrow() {
                 return;
             }
-            let remote_sbatch_script_path =
-                resolve_remote_sbatch_path(&remote_path, &sbatchscript);
+            let remote_sbatch_script_path = resolve_remote_sbatch_path(&remote_path, &sbatchscript);
 
             let sbatch_command = crate::agent::slurm::path_to_sbatch_command(
                 &remote_sbatch_script_path,
@@ -883,14 +877,14 @@ impl Agent for AgentSvc {
                 false
             });
 
-            let normalized_default_base_path =
-                match normalize_default_base_path(default_base_path) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = evt_tx.send(Err(e)).await;
-                        return;
-                    }
-                };
+            let normalized_default_base_path = match normalize_default_base_path(default_base_path)
+            {
+                Ok(v) => v,
+                Err(e) => {
+                    let _ = evt_tx.send(Err(e)).await;
+                    return;
+                }
+            };
             if let Some(ref dbp) = normalized_default_base_path {
                 let command = format!("mkdir -p {}", dbp.to_string_lossy());
                 let (_, err, code) = match sm.exec_capture(&command).await {
@@ -899,9 +893,7 @@ impl Agent for AgentSvc {
                         let _ = evt_tx
                             .send(Err(Status::internal(format!(
                                 "failed to execute command `{}` on {}: {}",
-                                command,
-                                hostid,
-                                e
+                                command, hostid, e
                             ))))
                             .await;
                         return;

@@ -55,15 +55,12 @@ mod tests {
     #[test]
     fn resolve_submit_remote_path_handles_variants() {
         let err = resolve_submit_remote_path(Some(""), "/base", "run").unwrap_err();
-        assert!(err
-            .message()
-            .contains("remote path can't be empty"));
+        assert!(err.message().contains("remote path can't be empty"));
 
         let absolute = resolve_submit_remote_path(Some("/abs/path"), "/base", "run").unwrap();
         assert_eq!(absolute, "/abs/path");
 
-        let relative =
-            resolve_submit_remote_path(Some("jobs/run"), "/base", "run").unwrap();
+        let relative = resolve_submit_remote_path(Some("jobs/run"), "/base", "run").unwrap();
         assert_eq!(relative, "/base/jobs/run");
 
         let generated = resolve_submit_remote_path(None, "/base", "run").unwrap();

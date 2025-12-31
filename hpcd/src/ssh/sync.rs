@@ -221,16 +221,9 @@ mod executor_tests {
             filters: &filters,
         };
 
-        sync_dir_with_executor(
-            &executor,
-            root,
-            "/remote",
-            options,
-            &evt_tx,
-            mfa_rx,
-        )
-        .await
-        .unwrap();
+        sync_dir_with_executor(&executor, root, "/remote", options, &evt_tx, mfa_rx)
+            .await
+            .unwrap();
 
         let calls = executor.calls();
         let expected_prefix = vec![
@@ -261,16 +254,9 @@ mod executor_tests {
             filters: &[],
         };
 
-        let err = sync_dir_with_executor(
-            &executor,
-            root,
-            "/remote",
-            options,
-            &evt_tx,
-            mfa_rx,
-        )
-        .await
-        .unwrap_err();
+        let err = sync_dir_with_executor(&executor, root, "/remote", options, &evt_tx, mfa_rx)
+            .await
+            .unwrap_err();
 
         let msg = format!("{err:#}");
         assert!(msg.contains("sync_dir encountered 1 error(s):"));
@@ -280,7 +266,9 @@ mod executor_tests {
 
 #[cfg(test)]
 mod sync_option_tests {
-    use super::{MfaAnswer, StreamEvent, SyncExecutor, SyncFilterRule, SyncOptions, sync_dir_with_executor};
+    use super::{
+        MfaAnswer, StreamEvent, SyncExecutor, SyncFilterRule, SyncOptions, sync_dir_with_executor,
+    };
     use anyhow::Result;
     use std::fs;
     use std::path::Path;
@@ -347,16 +335,9 @@ mod sync_option_tests {
             filters: &[] as &[SyncFilterRule],
         };
 
-        sync_dir_with_executor(
-            &executor,
-            root,
-            "/remote",
-            options,
-            &evt_tx,
-            mfa_rx,
-        )
-        .await
-        .unwrap();
+        sync_dir_with_executor(&executor, root, "/remote", options, &evt_tx, mfa_rx)
+            .await
+            .unwrap();
 
         assert_eq!(executor.sizes(), vec![1024 * 1024]);
     }

@@ -217,11 +217,7 @@ pub fn sacct_terminal_state(output: &str) -> Option<String> {
 }
 
 fn normalize_slurm_state(state: &str) -> String {
-    let token = state
-        .split(['+', ':', '('])
-        .next()
-        .unwrap_or(state)
-        .trim();
+    let token = state.split(['+', ':', '(']).next().unwrap_or(state).trim();
     token.to_ascii_uppercase()
 }
 
