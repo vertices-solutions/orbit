@@ -354,9 +354,10 @@ fn prompt_with_default(label: &str, default: &str, hint: &str) -> anyhow::Result
 }
 
 fn prompt_optional(label: &str, hint: &str) -> anyhow::Result<Option<String>> {
-    let input = prompt_line(&format!("{label}: "), hint)?;
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
+    let hint = format_default_hint("none", hint);
+    let result = prompt_line_with_default_result(&format!("{label}: "), &hint, Some("none"))?;
+    let trimmed = result.input.trim();
+    if trimmed.is_empty() || result.used_default {
         Ok(None)
     } else {
         Ok(Some(trimmed.to_string()))
@@ -397,17 +398,32 @@ fn prompt_line_with_default(
     hint: &str,
     default: Option<&str>,
 ) -> anyhow::Result<String> {
+    Ok(prompt_line_with_default_result(prompt, hint, default)?.input)
+}
+
+struct PromptLineResult {
+    input: String,
+    used_default: bool,
+}
+
+fn prompt_line_with_default_result(
+    prompt: &str,
+    hint: &str,
+    default: Option<&str>,
+) -> anyhow::Result<PromptLineResult> {
     let _guard = RawModeGuard::enter()?;
     let mut stdout = std::io::stdout();
     execute!(stdout, cursor::MoveToColumn(0))?;
     let mut editor = LineEditor::new(prompt, 0, hint, default);
     editor.render(&mut stdout)?;
+    let mut used_default = false;
 
     loop {
         match event::read()? {
             Event::Key(key) => match key.code {
                 KeyCode::Enter => {
                     if editor.apply_default_if_empty() {
+                        used_default = true;
                         editor.render(&mut stdout)?;
                     }
                     execute!(stdout, ResetColor, Print("\r\n"))?;
@@ -451,7 +467,10 @@ fn prompt_line_with_default(
         editor.render(&mut stdout)?;
     }
 
-    Ok(editor.into_string())
+    Ok(PromptLineResult {
+        input: editor.into_string(),
+        used_default,
+    })
 }
 
 struct RawModeGuard;
@@ -545,9 +564,7 @@ impl LineEditor {
             terminal::Clear(ClearType::UntilNewLine),
             Print(&self.prompt),
         )?;
-        if self.has_typed {
-            execute!(stdout, Print(buffer_string))?;
-        } else if buffer_string.is_empty() {
+        if buffer_string.is_empty() {
             if !self.hint.is_empty() {
                 execute!(
                     stdout,
@@ -558,15 +575,6 @@ impl LineEditor {
             }
         } else {
             execute!(stdout, Print(&buffer_string))?;
-            if !self.hint.is_empty() {
-                execute!(
-                    stdout,
-                    Print(" "),
-                    SetForegroundColor(HINT_COLOR),
-                    Print(&self.hint),
-                    ResetColor,
-                )?;
-            }
         }
         let cursor_col = self
             .start_col
