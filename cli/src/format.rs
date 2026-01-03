@@ -163,7 +163,12 @@ pub fn format_cluster_details_json(item: &ListClustersUnitResponse) -> anyhow::R
 
 pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
-        "job id", "slurm id", "name", "status", "created", "finished",
+        "job id",
+        "slurm id",
+        "cluster name",
+        "status",
+        "created",
+        "finished",
     ];
     let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
 

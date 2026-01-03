@@ -14,7 +14,7 @@ use std::net::IpAddr;
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_IDENTITY_PATH: &str = "~/.ssh/id_ed25519";
-const DEFAULT_BASE_PATH: &str = "~";
+const DEFAULT_BASE_PATH: &str = "~/runs";
 const HINT_COLOR: Color = Color::DarkGrey;
 
 #[derive(Debug)]
@@ -28,11 +28,15 @@ pub struct ResolvedAddClusterArgs {
     pub default_base_path: Option<String>,
 }
 
-pub fn prompt_default_base_path(default_value: &str) -> anyhow::Result<String> {
+pub fn prompt_default_base_path(home_dir: &str) -> anyhow::Result<String> {
     ensure_tty_for_prompt()?;
+    let default_value = std::path::PathBuf::from(home_dir)
+        .join("runs")
+        .to_string_lossy()
+        .into_owned();
     prompt_with_default(
         "Default base path",
-        default_value,
+        &default_value,
         "Remote base folder for projects.",
     )
 }

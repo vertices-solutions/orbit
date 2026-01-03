@@ -82,7 +82,8 @@ fn resolve_default_base_path(
     });
 
     let Some(raw) = default_base_path else {
-        return Ok(Some(home_dir.to_string()));
+        let expanded = PathBuf::from(home_dir).join("runs");
+        return Ok(Some(expanded.to_string_lossy().into_owned()));
     };
 
     if raw == "~" {
@@ -957,23 +958,6 @@ impl Agent for AgentSvc {
                     return;
                 }
             };
-            let resolved_default_base_path =
-                match resolve_default_base_path(default_base_path, &home_dir) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = evt_tx.send(Err(e)).await;
-                        return;
-                    }
-                };
-            let normalized_default_base_path =
-                match normalize_default_base_path(resolved_default_base_path) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        let _ = evt_tx.send(Err(e)).await;
-                        return;
-                    }
-                };
-
             let (out, err, code) = match sm
                 .exec_capture(crate::agent::managers::DETERMINE_HPC_WORKLOAD_MANAGERS_CMD)
                 .await
@@ -1178,6 +1162,22 @@ impl Agent for AgentSvc {
                 false
             });
 
+            let resolved_default_base_path =
+                match resolve_default_base_path(default_base_path, &home_dir) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = evt_tx.send(Err(e)).await;
+                        return;
+                    }
+                };
+            let normalized_default_base_path =
+                match normalize_default_base_path(resolved_default_base_path) {
+                    Ok(v) => v,
+                    Err(e) => {
+                        let _ = evt_tx.send(Err(e)).await;
+                        return;
+                    }
+                };
             if let Some(ref dbp) = normalized_default_base_path {
                 let command = format!("mkdir -p {}", dbp.to_string_lossy());
                 let (_, err, code) = match sm.exec_capture(&command).await {

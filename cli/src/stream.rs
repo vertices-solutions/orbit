@@ -10,7 +10,8 @@ use proto::{
 use ratatui::symbols::braille;
 use std::future::Future;
 use std::io::Write;
-use tokio::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::time::sleep;
 use tokio_stream::{Stream, StreamExt};
 use tonic::Status;
 
@@ -76,6 +77,34 @@ impl Spinner {
         if let Some(msg) = done_message {
             eprintln!("{msg}");
         }
+    }
+}
+
+pub struct MinDurationSpinner {
+    spinner: Spinner,
+    started_at: Instant,
+    min_duration: Duration,
+}
+
+impl MinDurationSpinner {
+    pub fn start(message: &str, min_duration: Duration) -> Self {
+        Self {
+            spinner: Spinner::start(message),
+            started_at: Instant::now(),
+            min_duration,
+        }
+    }
+
+    pub async fn stop(self, done_message: Option<&str>) {
+        let elapsed = self.started_at.elapsed();
+        if elapsed < self.min_duration {
+            sleep(self.min_duration - elapsed).await;
+        }
+        self.spinner.stop(done_message).await;
+    }
+
+    pub async fn cancel(self) {
+        self.spinner.stop(None).await;
     }
 }
 

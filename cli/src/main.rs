@@ -16,10 +16,12 @@ use cli::format::{
 };
 use cli::interactive::{confirm_action, prompt_default_base_path, resolve_add_cluster_args};
 use cli::sbatch::resolve_sbatch_script;
+use cli::stream::MinDurationSpinner;
 use proto::ListJobsUnitResponse;
 use proto::agent_client::AgentClient;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 
 const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗
 ██║  ██║██╔══██╗██╔════╝
@@ -215,7 +217,11 @@ async fn main() -> anyhow::Result<()> {
                         let base_path = prompt_default_base_path(&home_dir)?;
                         resolved.default_base_path = Some(base_path);
                     }
-                    send_add_cluster(
+                    let info_spinner = MinDurationSpinner::start(
+                        "Gathering cluster information",
+                        Duration::from_millis(500),
+                    );
+                    match send_add_cluster(
                         &mut client,
                         &resolved.name,
                         &resolved.username,
@@ -225,8 +231,17 @@ async fn main() -> anyhow::Result<()> {
                         resolved.port,
                         &resolved.default_base_path,
                     )
-                    .await?;
-                    println!("Cluster {} added successfully!", resolved.name);
+                    .await
+                    {
+                        Ok(()) => {
+                            info_spinner.stop(None).await;
+                            println!("Cluster {} added successfully!", resolved.name);
+                        }
+                        Err(err) => {
+                            info_spinner.cancel().await;
+                            return Err(err);
+                        }
+                    }
                 }
                 ClusterCmd::Set(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;

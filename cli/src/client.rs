@@ -3,7 +3,8 @@
 
 use crate::mfa::{clear_transient_mfa, collect_mfa_answers_transient};
 use crate::stream::{
-    SubmitStreamOutcome, ensure_exit_code, handle_stream_events, handle_submit_stream_events,
+    MinDurationSpinner, SubmitStreamOutcome, ensure_exit_code, handle_stream_events,
+    handle_submit_stream_events,
 };
 use anyhow::bail;
 use proto::agent_client::AgentClient;
@@ -376,20 +377,42 @@ pub async fn send_resolve_home_dir(
     let mut stderr = Vec::new();
     let mut exit_code = None;
     let mut mfa_lines = 0usize;
+    let mut saw_mfa = false;
+    let mut connect_spinner: Option<MinDurationSpinner> = None;
+    let min_spinner = Duration::from_millis(500);
     while let Some(item) = inbound.next().await {
         match item {
             Ok(event) => match event.event {
                 Some(stream_event::Event::Stdout(bytes)) => {
+                    if saw_mfa && connect_spinner.is_none() {
+                        connect_spinner = Some(MinDurationSpinner::start(
+                            "Connecting to cluster",
+                            min_spinner,
+                        ));
+                    }
                     stdout.extend_from_slice(&bytes);
                 }
                 Some(stream_event::Event::Stderr(bytes)) => {
+                    if saw_mfa && connect_spinner.is_none() {
+                        connect_spinner = Some(MinDurationSpinner::start(
+                            "Connecting to cluster",
+                            min_spinner,
+                        ));
+                    }
                     stderr.extend_from_slice(&bytes);
                 }
                 Some(stream_event::Event::ExitCode(code)) => {
+                    if saw_mfa && connect_spinner.is_none() {
+                        connect_spinner = Some(MinDurationSpinner::start(
+                            "Connecting to cluster",
+                            min_spinner,
+                        ));
+                    }
                     exit_code = Some(code);
                     break;
                 }
                 Some(stream_event::Event::Mfa(mfa)) => {
+                    saw_mfa = true;
                     let (answers, lines) = collect_mfa_answers_transient(&mfa).await?;
                     mfa_lines = mfa_lines.saturating_add(lines);
                     tx_mfa
@@ -400,17 +423,26 @@ pub async fn send_resolve_home_dir(
                         .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))?;
                 }
                 Some(stream_event::Event::Error(err)) => {
+                    if let Some(spinner) = connect_spinner.take() {
+                        spinner.cancel().await;
+                    }
                     bail!("server error: {err}");
                 }
                 None => {}
             },
             Err(status) => {
+                if let Some(spinner) = connect_spinner.take() {
+                    spinner.cancel().await;
+                }
                 bail!("stream error: {status}");
             }
         }
     }
 
     if exit_code != Some(0) {
+        if let Some(spinner) = connect_spinner.take() {
+            spinner.cancel().await;
+        }
         let detail = if stderr.is_empty() {
             "unknown error".to_string()
         } else {
@@ -419,8 +451,14 @@ pub async fn send_resolve_home_dir(
         bail!("failed to resolve remote home directory: {detail}");
     }
 
-    if mfa_lines > 0 {
-        clear_transient_mfa(mfa_lines)?;
+    if let Some(spinner) = connect_spinner.take() {
+        spinner.stop(None).await;
+    }
+    if saw_mfa {
+        if mfa_lines > 0 {
+            clear_transient_mfa(mfa_lines)?;
+        }
+        eprintln!("Connected to cluster");
     }
 
     let home_raw =
