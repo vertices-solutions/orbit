@@ -106,14 +106,14 @@ pub enum ClusterCmd {
 
 #[derive(Args, Debug)]
 pub struct ClusterGetArgs {
-    pub hostid: String,
+    pub name: String,
     #[arg(long)]
     pub json: bool,
 }
 
 #[derive(Args, Debug)]
 pub struct SetClusterArgs {
-    pub hostid: String,
+    pub name: String,
 
     /// Use a remote IP address as input
     #[arg(long, value_name = "IP")]
@@ -131,13 +131,13 @@ pub struct SetClusterArgs {
 
 #[derive(Args, Debug)]
 pub struct LsArgs {
-    pub hostid: String,
+    pub name: String,
     pub path: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct SubmitArgs {
-    pub hostid: String,
+    pub name: String,
     pub local_path: String,
     pub sbatchscript: Option<String>,
     #[arg(long)]
@@ -190,7 +190,9 @@ pub struct AddClusterArgs {
     pub username: Option<String>,
 
     #[arg(long)]
-    pub hostid: Option<String>,
+    /// Friendly cluster name you’ll use in other commands (e.g. "gpu01" or "lab-cluster").
+    #[arg(long)]
+    pub name: Option<String>,
 
     /// Defaults to 22.
     #[arg(long)]

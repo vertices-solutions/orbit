@@ -21,7 +21,7 @@ pub struct ResolvedAddClusterArgs {
     pub hostname: Option<String>,
     pub ip: Option<String>,
     pub username: String,
-    pub hostid: String,
+    pub name: String,
     pub port: u32,
     pub identity_path: String,
     pub default_base_path: Option<String>,
@@ -32,7 +32,7 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
     let hostname = normalize_option(args.hostname);
     let ip = normalize_option(args.ip);
     let username = normalize_option(args.username);
-    let hostid = normalize_option(args.hostid);
+    let name = normalize_option(args.name);
     let identity_path = normalize_option(args.identity_path);
     let default_base_path = normalize_option(args.default_base_path);
     let env_username = default_username();
@@ -57,7 +57,7 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
 
     let needs_prompt = !args.headless
         && ((parsed_destination.is_none() && hostname.is_none() && ip.is_none())
-            || hostid.is_none()
+            || name.is_none()
             || (args.port.is_none() && dest_port.is_none())
             || identity_path.is_none()
             || default_base_path.is_none()
@@ -108,14 +108,17 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
         },
     };
 
-    let hostid = match hostid {
+    let name = match name {
         Some(value) => value,
         None => {
-            let default_hostid = default_hostid_for_host(hostname.as_deref(), ip.as_deref())?;
+            let default_name = default_name_for_host(hostname.as_deref(), ip.as_deref())?;
             if args.headless {
-                default_hostid
+                default_name
             } else {
-                prompt_with_default("Host ID", &default_hostid)?
+                prompt_with_default(
+                    "Name (you will use this in other commands, e.g. gpu01)",
+                    &default_name,
+                )?
             }
         }
     };
@@ -159,7 +162,7 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
         hostname,
         ip,
         username,
-        hostid,
+        name,
         port,
         identity_path,
         default_base_path,
@@ -281,20 +284,20 @@ fn parse_destination_port(value: &str) -> anyhow::Result<u32> {
     }
 }
 
-fn default_hostid_for_host(hostname: Option<&str>, ip: Option<&str>) -> anyhow::Result<String> {
+fn default_name_for_host(hostname: Option<&str>, ip: Option<&str>) -> anyhow::Result<String> {
     if let Some(host) = hostname {
         if host.parse::<IpAddr>().is_ok() {
-            return Ok(generate_random_hostid());
+            return Ok(generate_random_name());
         }
         return Ok(host.to_string());
     }
     if ip.is_some() {
-        return Ok(generate_random_hostid());
+        return Ok(generate_random_name());
     }
-    bail!("hostid default requires a hostname or ip")
+    bail!("name default requires a hostname or ip")
 }
 
-fn generate_random_hostid() -> String {
+fn generate_random_name() -> String {
     let mut rng = rand::rng();
     let adjective = ADJECTIVES.choose(&mut rng).copied().unwrap_or("curious");
     let scientist = SCIENTISTS.choose(&mut rng).copied().unwrap_or("einstein");
@@ -529,7 +532,7 @@ mod tests {
             hostname: None,
             ip: None,
             username: None,
-            hostid: None,
+            name: None,
             port: None,
             identity_path: None,
             default_base_path: None,
@@ -541,7 +544,7 @@ mod tests {
         assert_eq!(resolved.identity_path, DEFAULT_IDENTITY_PATH);
         assert!(resolved.default_base_path.is_none());
         assert_eq!(resolved.username, "alex");
-        assert_eq!(resolved.hostid, "example.com");
+        assert_eq!(resolved.name, "example.com");
     }
 
     #[test]
@@ -551,7 +554,7 @@ mod tests {
             hostname: None,
             ip: None,
             username: Some("alex".into()),
-            hostid: None,
+            name: None,
             port: Some(2222),
             identity_path: Some("~/.ssh/id_rsa".into()),
             default_base_path: None,
@@ -571,9 +574,9 @@ mod tests {
     }
 
     #[test]
-    fn random_hostid_uses_known_words() {
-        let hostid = generate_random_hostid();
-        let mut parts = hostid.split('_');
+    fn random_name_uses_known_words() {
+        let name = generate_random_name();
+        let mut parts = name.split('_');
         let adjective = parts.next().unwrap_or_default();
         let scientist = parts.next().unwrap_or_default();
         assert!(ADJECTIVES.contains(&adjective));

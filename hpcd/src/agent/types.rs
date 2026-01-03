@@ -14,8 +14,8 @@ pub type SubmitOutStream =
 
 #[derive(Debug, PartialEq, Eq, ThisError)]
 pub enum AgentSvcError {
-    #[error("unknown hostid")]
-    UnknownHostId,
+    #[error("unknown name")]
+    UnknownName,
 
     #[error("network error: {0}")]
     NetworkError(String),

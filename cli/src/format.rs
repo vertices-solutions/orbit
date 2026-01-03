@@ -20,7 +20,7 @@ pub fn cluster_to_json(item: &ListClustersUnitResponse) -> serde_json::Value {
         false => "disconnected",
     };
     json!({
-        "hostid": item.hostid.as_str(),
+        "name": item.name.as_str(),
         "username": item.username.as_str(),
         "address": cluster_host_string(item),
         "port": item.port,
@@ -37,7 +37,7 @@ pub fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
     json!({
         "job_id": item.job_id,
         "slurm_id": item.slurm_id,
-        "hostid": item.hostid.as_str(),
+        "name": item.name.as_str(),
         "status": status,
         "is_completed": item.is_completed,
         "terminal_state": item.terminal_state.as_deref(),
@@ -57,7 +57,7 @@ fn str_width(value: &str) -> usize {
 pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
     let headers = [
         "username",
-        "hostid",
+        "name",
         "address",
         "port",
         "status",
@@ -77,7 +77,7 @@ pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
         };
         rows.push((
             item.username.clone(),
-            item.hostid.clone(),
+            item.name.clone(),
             host_str,
             item.port.to_string(),
             connected_str.to_string(),
@@ -156,8 +156,8 @@ pub fn format_cluster_details(item: &ListClustersUnitResponse) -> String {
         false => "disabled",
     };
     format!(
-        "hostid: {}\nusername: {}\naddress: {}\nport: {}\nstatus: {}\naccounting: {}\nidentity_path: {}\ndefault_base_path: {}\n",
-        item.hostid,
+        "name: {}\nusername: {}\naddress: {}\nport: {}\nstatus: {}\naccounting: {}\nidentity_path: {}\ndefault_base_path: {}\n",
+        item.name,
         item.username,
         host_str,
         item.port,
@@ -174,7 +174,7 @@ pub fn format_cluster_details_json(item: &ListClustersUnitResponse) -> anyhow::R
 
 pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
-        "job id", "slurm id", "host id", "status", "created", "finished",
+        "job id", "slurm id", "name", "status", "created", "finished",
     ];
     let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
 
@@ -189,7 +189,7 @@ pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
         rows.push((
             job_id,
             slurm_id,
-            item.hostid.clone(),
+            item.name.clone(),
             completed_str.to_string(),
             item.created_at.clone(),
             finished_at,
@@ -263,10 +263,10 @@ pub fn format_job_details(item: &ListJobsUnitResponse) -> String {
         .unwrap_or_else(|| "-".to_string());
     let completed_str = job_status(item);
     format!(
-        "job_id: {}\nslurm_id: {}\nhostid: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\n",
+        "job_id: {}\nslurm_id: {}\nname: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\n",
         item.job_id,
         slurm_id,
-        item.hostid,
+        item.name,
         completed_str,
         item.terminal_state.as_deref().unwrap_or("-"),
         item.created_at,
@@ -302,7 +302,7 @@ mod tests {
             port: 22,
             host,
             connected: true,
-            hostid: "cluster-a".to_string(),
+            name: "cluster-a".to_string(),
             accounting_available: false,
             default_base_path: None,
         }
@@ -310,7 +310,7 @@ mod tests {
 
     fn sample_job(completed: bool, terminal_state: Option<&str>) -> ListJobsUnitResponse {
         ListJobsUnitResponse {
-            hostid: "cluster-a".to_string(),
+            name: "cluster-a".to_string(),
             job_id: 42,
             slurm_id: Some(99),
             created_at: "2024-01-01T00:00:00Z".to_string(),
@@ -375,7 +375,7 @@ mod tests {
         )));
         let json = cluster_to_json(&cluster);
         assert_eq!(json["status"], "connected");
-        assert_eq!(json["hostid"], "cluster-a");
+        assert_eq!(json["name"], "cluster-a");
         assert_eq!(json["address"], "node");
     }
 }

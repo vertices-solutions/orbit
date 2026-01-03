@@ -85,7 +85,7 @@ pub async fn fetch_list_jobs(
     client: &mut AgentClient<Channel>,
     cluster: Option<String>,
 ) -> anyhow::Result<ListJobsResponse> {
-    let list_jobs_request = ListJobsRequest { hostid: cluster };
+    let list_jobs_request = ListJobsRequest { name: cluster };
     let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await
     {
         Ok(Ok(res)) => res.into_inner(),
@@ -113,7 +113,7 @@ pub async fn fetch_list_jobs(
 
 pub async fn send_ls(
     client: &mut AgentClient<Channel>,
-    hostid: &str,
+    name: &str,
     path: &Option<String>,
 ) -> anyhow::Result<()> {
     let (tx_ans, rx_ans) = mpsc::channel::<LsRequest>(16);
@@ -121,7 +121,7 @@ pub async fn send_ls(
     tx_ans
         .send(LsRequest {
             msg: Some(proto::ls_request::Msg::Init(LsRequestInit {
-                hostid: hostid.to_owned(),
+                name: name.to_owned(),
                 path: path.to_owned(),
             })),
         })
@@ -168,7 +168,7 @@ pub async fn send_job_retrieve(
             msg: Some(proto::retrieve_job_request::Msg::Init(
                 RetrieveJobRequestInit {
                     job_id,
-                    hostid: cluster.to_owned(),
+                    name: cluster.to_owned(),
                     path: path.to_owned(),
                     local_path: Some(local_path),
                 },
@@ -196,7 +196,7 @@ pub async fn send_job_retrieve(
 
 pub async fn send_submit(
     client: &mut AgentClient<Channel>,
-    hostid: &str,
+    name: &str,
     local_path: &str,
     remote_path: &Option<String>,
     sbatchscript: &str,
@@ -210,7 +210,7 @@ pub async fn send_submit(
             msg: Some(proto::submit_request::Msg::Init(proto::SubmitRequestInit {
                 local_path: local_path.to_owned(),
                 remote_path: remote_path.to_owned(),
-                hostid: hostid.to_owned(),
+                name: name.to_owned(),
                 sbatchscript: sbatchscript.to_owned(),
                 filters: filters.to_vec(),
             })),
@@ -243,7 +243,7 @@ pub async fn send_submit(
 
 pub async fn send_add_cluster(
     client: &mut AgentClient<Channel>,
-    host_id: &str,
+    name: &str,
     username: &str,
     hostname: &Option<String>,
     ip: &Option<String>,
@@ -266,7 +266,7 @@ pub async fn send_add_cluster(
         None => None,
     };
     let init = AddClusterInit {
-        hostid: host_id.to_owned(),
+        name: name.to_owned(),
         username: username.to_owned(),
         host: Some(host),
         identity_path: identity_path_expanded,

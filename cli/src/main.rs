@@ -80,10 +80,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Cmd::Ls(args) => {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
-            send_ls(&mut client, &args.hostid, &args.path).await?
+            send_ls(&mut client, &args.name, &args.path).await?
         }
         Cmd::Submit(SubmitArgs {
-            hostid,
+            name,
             local_path,
             remote_path,
             sbatchscript,
@@ -94,14 +94,14 @@ async fn main() -> anyhow::Result<()> {
             let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
             let local_path_buf = PathBuf::from(&local_path);
             println!("Submitting job...");
-            println!("hostid: {hostid}");
+            println!("name: {name}");
             let _ = std::io::stdout().flush();
             let sbatchscript =
                 resolve_sbatch_script(&local_path_buf, sbatchscript.as_deref(), headless)?;
             println!("selected sbatch script: {sbatchscript}");
             send_submit(
                 &mut client,
-                &hostid,
+                &name,
                 &local_path,
                 &remote_path,
                 &sbatchscript,
@@ -183,9 +183,9 @@ async fn main() -> anyhow::Result<()> {
                     let Some(cluster) = response
                         .clusters
                         .iter()
-                        .find(|cluster| cluster.hostid == args.hostid)
+                        .find(|cluster| cluster.name == args.name)
                     else {
-                        bail!("cluster '{}' not found", args.hostid);
+                        bail!("cluster '{}' not found", args.name);
                     };
                     if args.json {
                         let output = format_cluster_details_json(cluster)?;
@@ -202,11 +202,11 @@ async fn main() -> anyhow::Result<()> {
                     if response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.hostid == resolved.hostid)
+                        .any(|cluster| cluster.name == resolved.name)
                     {
                         bail!(
                             "cluster '{}' already exists; use 'cluster set' to update it",
-                            resolved.hostid
+                            resolved.name
                         );
                     }
                     if let Some(host) = resolved.hostname.as_deref().or(resolved.ip.as_deref()) {
@@ -223,7 +223,7 @@ async fn main() -> anyhow::Result<()> {
                     }
                     send_add_cluster(
                         &mut client,
-                        &resolved.hostid,
+                        &resolved.name,
                         &resolved.username,
                         &resolved.hostname,
                         &resolved.ip,
@@ -232,18 +232,18 @@ async fn main() -> anyhow::Result<()> {
                         &resolved.default_base_path,
                     )
                     .await?;
-                    println!("Cluster {} added successfully!", resolved.hostid);
+                    println!("Cluster {} added successfully!", resolved.name);
                 }
                 ClusterCmd::Set(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let Some(cluster) = response
                         .clusters
                         .iter()
-                        .find(|cluster| cluster.hostid == args.hostid)
+                        .find(|cluster| cluster.name == args.name)
                     else {
                         bail!(
                             "cluster '{}' not found; use 'cluster add' to create it",
-                            args.hostid
+                            args.name
                         );
                     };
                     let (hostname, ip) = match args.ip.as_ref() {
@@ -258,7 +258,7 @@ async fn main() -> anyhow::Result<()> {
                             None => {
                                 bail!(
                                     "cluster '{}' has no address; pass --ip to update it",
-                                    args.hostid
+                                    args.name
                                 );
                             }
                         },
@@ -269,7 +269,7 @@ async fn main() -> anyhow::Result<()> {
                             Ok(port) => port,
                             Err(_) => bail!(
                                 "cluster '{}' has invalid port '{}'",
-                                args.hostid,
+                                args.name,
                                 cluster.port
                             ),
                         },
@@ -284,7 +284,7 @@ async fn main() -> anyhow::Result<()> {
                         .or_else(|| cluster.default_base_path.clone());
                     send_add_cluster(
                         &mut client,
-                        &cluster.hostid,
+                        &cluster.name,
                         &cluster.username,
                         &hostname,
                         &ip,

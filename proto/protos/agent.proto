@@ -38,7 +38,7 @@ message SubmitStatus {
     TRANSFER_START = 2;
     TRANSFER_DONE = 3;
   }
-  string hostid = 1;
+  string name = 1;
   string remote_path = 2;
   Phase phase = 3;
 }
@@ -68,7 +68,7 @@ message SubmitStreamEvent {
 }
 
 message LsRequestInit {
-  string hostid = 1;       // host identifier
+  string name = 1;       // cluster name
   optional string path = 2; // path to list (absolute or relative to default_base_path)
 }
 
@@ -82,7 +82,7 @@ message LsRequest {
 
 message RetrieveJobRequestInit {
   int64 job_id = 1; // internal job id from the daemon
-  optional string hostid = 2; // optional host identifier to validate ownership
+  optional string name = 2; // optional cluster name to validate ownership
   string path = 3;         // remote path (absolute or relative to run folder)
   optional string local_path = 4; // local destination base path
 }
@@ -102,7 +102,7 @@ message RetrieveJobRequest {
 message SubmitRequestInit {
   string local_path = 1;  // local project path
   optional string remote_path = 2; // path to where to locate the remote project
-  string hostid = 3;      // host identifier - should be something easy to remember
+  string name = 3;      // cluster name - should be something easy to remember
   string sbatchscript = 4;
   repeated SubmitPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
 }
@@ -119,10 +119,10 @@ message SubmitPathFilterRule {
 }
 
 message AddClusterInit {
-  string hostid = 1;  // memorable host identifier
+  string name = 1;  // memorable cluster name
   string username = 2; // path to where to locate the remote project
   oneof host {
-    string hostname = 3;      // host identifier - should be something easy to remember
+    string hostname = 3;      // hostname or IP address
     string ipaddr = 4;
   }
   optional string identity_path = 5;
@@ -142,7 +142,7 @@ message ListClustersUnitResponse {
     string ipaddr = 5;
   }
   bool connected = 6;
-  string hostid = 7;
+  string name = 7;
   bool accounting_available = 8;
   optional string default_base_path = 9;
 }
@@ -151,7 +151,7 @@ message ListClustersUnitResponse {
 
 
 message ListJobsRequest {
-  optional string hostid = 1;
+  optional string name = 1;
 }
 
 message ListClustersResponse {
@@ -161,7 +161,7 @@ message ListClustersResponse {
 
 
 message ListJobsUnitResponse {
-  string hostid = 1;
+  string name = 1;
   int64 job_id = 2;
   optional int64 slurm_id = 3;
   string created_at = 4;
