@@ -17,11 +17,11 @@ use crate::util;
 use crate::util::remote_path::normalize_path;
 use proto::agent_server::Agent;
 use proto::{
-    AddClusterRequest, ListClustersRequest, ListClustersResponse, ListClustersUnitResponse,
-    ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit, MfaAnswer, PingReply, PingRequest,
-    RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest, SubmitResult,
-    SubmitStatus, SubmitStreamEvent, stream_event, submit_result, submit_status,
-    submit_stream_event,
+    AddClusterRequest, DeleteClusterRequest, DeleteClusterResponse, ListClustersRequest,
+    ListClustersResponse, ListClustersUnitResponse, ListJobsRequest, ListJobsResponse, LsRequest,
+    LsRequestInit, MfaAnswer, PingReply, PingRequest, RetrieveJobRequest, RetrieveJobRequestInit,
+    StreamEvent, SubmitRequest, SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event,
+    submit_result, submit_status, submit_stream_event,
 };
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -64,9 +64,7 @@ impl Agent for AgentSvc {
         let (name, path) = match init.msg {
             Some(proto::ls_request::Msg::Init(LsRequestInit { name, path })) => (name, path),
             _ => {
-                return Err(Status::invalid_argument(
-                    "first message must be init(name)",
-                ));
+                return Err(Status::invalid_argument("first message must be init(name)"));
             }
         };
 
@@ -324,6 +322,50 @@ impl Agent for AgentSvc {
         }
 
         Ok(ListClustersResponse { clusters }.into())
+    }
+
+    async fn delete_cluster(
+        &self,
+        request: tonic::Request<DeleteClusterRequest>,
+    ) -> Result<tonic::Response<DeleteClusterResponse>, Status> {
+        let name = request.into_inner().name.trim().to_string();
+        if name.is_empty() {
+            return Err(Status::invalid_argument("name is required"));
+        }
+
+        let deleted = match self.hosts().delete_by_name(&name).await {
+            Ok(value) => value,
+            Err(e) => match e {
+                HostStoreError::Sqlx(sql_err) => {
+                    log::error!("sqlx error deleting cluster '{}': {sql_err}", name);
+                    return Err(Status::internal(
+                        "internal error: please report this error along with daemon logs",
+                    ));
+                }
+                other_error => {
+                    log::error!(
+                        "unexpected error deleting cluster '{}': {other_error}",
+                        name
+                    );
+                    return Err(Status::internal(
+                        "internal error: please report this error along with daemon logs",
+                    ));
+                }
+            },
+        };
+
+        if deleted == 0 {
+            return Err(Status::invalid_argument(format!(
+                "name {} is unknown",
+                name
+            )));
+        }
+
+        self.sessions().remove_and_shutdown(&name).await;
+
+        Ok(tonic::Response::new(DeleteClusterResponse {
+            deleted: true,
+        }))
     }
 
     async fn submit(

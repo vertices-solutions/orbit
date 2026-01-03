@@ -209,6 +209,21 @@ fn ensure_tty_for_prompt() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn confirm_action(prompt: &str, hint: &str) -> anyhow::Result<bool> {
+    if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
+        bail!("confirmation requires a TTY; pass --yes to skip the prompt");
+    }
+    loop {
+        let input = prompt_line_with_default(prompt, hint, Some("no"))?;
+        let normalized = input.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "y" | "yes" => return Ok(true),
+            "n" | "no" | "" => return Ok(false),
+            _ => eprintln!("Please answer 'yes' or 'no'."),
+        }
+    }
+}
+
 fn prompt_destination() -> anyhow::Result<ParsedDestination> {
     loop {
         let input = prompt_line(
@@ -328,7 +343,7 @@ fn prompt_required(label: &str, hint: &str) -> anyhow::Result<String> {
 }
 
 fn prompt_with_default(label: &str, default: &str, hint: &str) -> anyhow::Result<String> {
-    let hint = format!("{hint} (default: {default})");
+    let hint = format_default_hint(default, hint);
     let input = prompt_line_with_default(&format!("{label}: "), &hint, Some(default))?;
     let trimmed = input.trim();
     if trimmed.is_empty() {
@@ -349,8 +364,8 @@ fn prompt_optional(label: &str, hint: &str) -> anyhow::Result<Option<String>> {
 }
 
 fn prompt_port(default: u32, hint: &str) -> anyhow::Result<u32> {
-    let hint = format!("{hint} (default: {default})");
     let default_str = default.to_string();
+    let hint = format_default_hint(default_str.as_str(), hint);
     loop {
         let input = prompt_line_with_default("Port: ", &hint, Some(default_str.as_str()))?;
         let trimmed = input.trim();
@@ -366,6 +381,15 @@ fn prompt_port(default: u32, hint: &str) -> anyhow::Result<u32> {
 
 fn prompt_line(prompt: &str, hint: &str) -> anyhow::Result<String> {
     prompt_line_with_default(prompt, hint, None)
+}
+
+fn format_default_hint(default: &str, hint: &str) -> String {
+    let trimmed = hint.trim();
+    if trimmed.is_empty() {
+        default.to_string()
+    } else {
+        format!("{default} - {trimmed}")
+    }
 }
 
 fn prompt_line_with_default(

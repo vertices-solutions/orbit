@@ -70,10 +70,7 @@ impl AgentSvc {
 
         let mut jobs_by_host: HashMap<String, Vec<JobRecord>> = HashMap::new();
         for job in jobs {
-            jobs_by_host
-                .entry(job.name.clone())
-                .or_default()
-                .push(job);
+            jobs_by_host.entry(job.name.clone()).or_default().push(job);
         }
 
         let mut completed_ids: Vec<(i64, Option<String>)> = Vec::new();
@@ -129,9 +126,7 @@ impl AgentSvc {
                     let terminal_state = match crate::agent::slurm::sacct_terminal_state(&output) {
                         Some(v) => v,
                         None => {
-                            log::debug!(
-                                "sacct returned no terminal state for {name} job {job_id}"
-                            );
+                            log::debug!("sacct returned no terminal state for {name} job {job_id}");
                             continue;
                         }
                     };

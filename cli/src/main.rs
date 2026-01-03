@@ -5,8 +5,8 @@ use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
 use cli::args::{Cli, ClusterCmd, Cmd, JobCmd, SubmitArgs};
 use cli::client::{
-    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_job_retrieve, send_ls, send_ping,
-    send_submit,
+    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_delete_cluster, send_job_retrieve,
+    send_ls, send_ping, send_submit,
 };
 use cli::filters::submit_filters_from_matches;
 use cli::format::{
@@ -14,7 +14,7 @@ use cli::format::{
     format_clusters_table, format_job_details, format_job_details_json, format_jobs_json,
     format_jobs_table,
 };
-use cli::interactive::resolve_add_cluster_args;
+use cli::interactive::{confirm_action, resolve_add_cluster_args};
 use cli::sbatch::resolve_sbatch_script;
 use proto::ListJobsUnitResponse;
 use proto::agent_client::AgentClient;
@@ -273,6 +273,29 @@ async fn main() -> anyhow::Result<()> {
                         &default_base_path,
                     )
                     .await?
+                }
+                ClusterCmd::Delete(args) => {
+                    println!(
+                        "WARNING: This will delete cluster '{}' and all its job records from the local database.",
+                        args.name
+                    );
+                    println!("Any active SSH sessions for this cluster will be closed.");
+                    println!("This action cannot be undone.");
+                    if !args.yes {
+                        let confirmed = confirm_action(
+                            "Continue with delete? (yes/no): ",
+                            "Type yes to confirm, no to cancel.",
+                        )?;
+                        if !confirmed {
+                            println!("Delete canceled.");
+                            return Ok(());
+                        }
+                    }
+                    let response = send_delete_cluster(&mut client, &args.name).await?;
+                    if !response.deleted {
+                        bail!("cluster '{}' not found", args.name);
+                    }
+                    println!("Cluster '{}' deleted.", args.name);
                 }
             }
         }

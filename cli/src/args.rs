@@ -102,6 +102,8 @@ pub enum ClusterCmd {
     Add(AddClusterArgs),
     /// Update cluster parameters.
     Set(SetClusterArgs),
+    /// Delete a cluster and its job records.
+    Delete(DeleteClusterArgs),
 }
 
 #[derive(Args, Debug)]
@@ -127,6 +129,14 @@ pub struct SetClusterArgs {
 
     #[arg(long)]
     pub default_base_path: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct DeleteClusterArgs {
+    pub name: String,
+    /// Skip the confirmation prompt.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug)]

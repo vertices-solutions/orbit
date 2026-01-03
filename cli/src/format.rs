@@ -14,6 +14,16 @@ pub fn cluster_host_string(item: &ListClustersUnitResponse) -> String {
     }
 }
 
+pub fn cluster_ssh_string(item: &ListClustersUnitResponse) -> String {
+    let host = cluster_host_string(item);
+    let formatted_host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    format!("{}@{}:{}", item.username, formatted_host, item.port)
+}
+
 pub fn cluster_to_json(item: &ListClustersUnitResponse) -> serde_json::Value {
     let status = match item.connected {
         true => "connected",
@@ -55,18 +65,11 @@ fn str_width(value: &str) -> usize {
 }
 
 pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
-    let headers = [
-        "username",
-        "name",
-        "address",
-        "port",
-        "status",
-        "accounting",
-    ];
-    let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
+    let headers = ["name", "destination", "status", "accounting"];
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
 
     for item in clusters.iter() {
-        let host_str = cluster_host_string(item);
+        let ssh_str = cluster_ssh_string(item);
         let connected_str = match item.connected {
             true => "connected",
             false => "disconnected",
@@ -76,64 +79,50 @@ pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
             false => "disabled",
         };
         rows.push((
-            item.username.clone(),
             item.name.clone(),
-            host_str,
-            item.port.to_string(),
+            ssh_str,
             connected_str.to_string(),
             accounting_str.to_string(),
         ));
     }
 
-    let mut widths: [usize; 6] = [
+    let mut widths: [usize; 4] = [
         str_width(headers[0]),
         str_width(headers[1]),
         str_width(headers[2]),
         str_width(headers[3]),
-        str_width(headers[4]),
-        str_width(headers[5]),
     ];
     for row in rows.iter() {
         widths[0] = widths[0].max(str_width(&row.0));
         widths[1] = widths[1].max(str_width(&row.1));
         widths[2] = widths[2].max(str_width(&row.2));
         widths[3] = widths[3].max(str_width(&row.3));
-        widths[4] = widths[4].max(str_width(&row.4));
-        widths[5] = widths[5].max(str_width(&row.5));
     }
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}\n",
+        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
         headers[0],
         headers[1],
         headers[2],
         headers[3],
-        headers[4],
-        headers[5],
         w0 = widths[0],
         w1 = widths[1],
         w2 = widths[2],
         w3 = widths[3],
-        w4 = widths[4],
-        w5 = widths[5]
     ));
 
     for row in rows {
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
             row.0,
             row.1,
             row.2,
             row.3,
-            row.4,
-            row.5,
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
             w3 = widths[3],
-            w4 = widths[4],
-            w5 = widths[5]
         ));
     }
 
@@ -336,6 +325,14 @@ mod tests {
     }
 
     #[test]
+    fn cluster_ssh_string_includes_username_host_port() {
+        let cluster = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
+            "node".to_string(),
+        )));
+        assert_eq!(cluster_ssh_string(&cluster), "alice@node:22");
+    }
+
+    #[test]
     fn job_status_reports_running_and_terminal_states() {
         let running = sample_job(false, None);
         let completed = sample_job(true, Some("COMPLETED"));
@@ -354,9 +351,10 @@ mod tests {
             "node".to_string(),
         )));
         let output = format_clusters_table(&[cluster]);
-        assert!(output.contains("username"));
+        assert!(output.contains("name"));
+        assert!(output.contains("destination"));
         assert!(output.contains("cluster-a"));
-        assert!(output.contains("node"));
+        assert!(output.contains("alice@node:22"));
     }
 
     #[test]

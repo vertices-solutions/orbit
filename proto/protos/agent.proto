@@ -158,6 +158,14 @@ message ListClustersResponse {
   repeated ListClustersUnitResponse clusters = 1;
 }
 
+message DeleteClusterRequest {
+  string name = 1;
+}
+
+message DeleteClusterResponse {
+  bool deleted = 1;
+}
+
 
 
 message ListJobsUnitResponse {
@@ -201,5 +209,6 @@ service Agent {
   rpc Submit(stream SubmitRequest) returns (stream SubmitStreamEvent);
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+  rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
 }

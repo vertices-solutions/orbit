@@ -641,35 +641,32 @@ impl HostStore {
         address: &Address,
         port: u16,
     ) -> Result<Option<i64>> {
-        let row = match address {
-            Address::Hostname(h) => {
-                sqlx::query(
+        let row =
+            match address {
+                Address::Hostname(h) => sqlx::query(
                     "SELECT id FROM hosts WHERE username = ? AND hostname = ? AND port = ? LIMIT 1",
                 )
-                    .bind(username)
-                    .bind(h)
-                    .bind(port)
-                    .fetch_optional(&self.pool)
-                    .await?
-            }
-            Address::Ip(ip) => {
-                let ip_s = ip.to_string();
-                sqlx::query("SELECT id FROM hosts WHERE username = ? AND ip = ? AND port = ? LIMIT 1")
+                .bind(username)
+                .bind(h)
+                .bind(port)
+                .fetch_optional(&self.pool)
+                .await?,
+                Address::Ip(ip) => {
+                    let ip_s = ip.to_string();
+                    sqlx::query(
+                        "SELECT id FROM hosts WHERE username = ? AND ip = ? AND port = ? LIMIT 1",
+                    )
                     .bind(username)
                     .bind(&ip_s)
                     .bind(port)
                     .fetch_optional(&self.pool)
                     .await?
-            }
-        };
+                }
+            };
         Ok(row.map(|r| r.try_get::<i64, _>("id").unwrap()))
     }
     #[allow(dead_code)]
-    pub async fn upsert_partition_by_name(
-        &self,
-        name: &str,
-        spec: &NewPartition,
-    ) -> Result<i64> {
+    pub async fn upsert_partition_by_name(&self, name: &str, spec: &NewPartition) -> Result<i64> {
         let host_id = self
             .find_id_by_name(name)
             .await?

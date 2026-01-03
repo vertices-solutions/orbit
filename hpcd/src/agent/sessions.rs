@@ -44,6 +44,15 @@ impl SessionCache {
         self.sessions.write().await.insert(name, session);
     }
 
+    pub async fn remove_and_shutdown(&self, name: &str) -> bool {
+        let session = self.sessions.write().await.remove(name);
+        if let Some(session) = session {
+            session.shutdown().await;
+            return true;
+        }
+        false
+    }
+
     pub async fn is_connected(&self, name: &str) -> bool {
         let Some(session) = self.get(name).await else {
             return false;

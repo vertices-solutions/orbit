@@ -7,9 +7,10 @@ use crate::stream::{
 use anyhow::bail;
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, ListClustersRequest, ListClustersResponse, ListJobsRequest,
-    ListJobsResponse, LsRequest, LsRequestInit, RetrieveJobRequest, RetrieveJobRequestInit,
-    SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
+    AddClusterInit, AddClusterRequest, DeleteClusterRequest, DeleteClusterResponse,
+    ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse, LsRequest,
+    LsRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest,
+    add_cluster_init, add_cluster_request,
 };
 use std::path::PathBuf;
 use tokio::sync::mpsc;
@@ -87,6 +88,42 @@ pub async fn fetch_list_jobs(
 ) -> anyhow::Result<ListJobsResponse> {
     let list_jobs_request = ListJobsRequest { name: cluster };
     let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await
+    {
+        Ok(Ok(res)) => res.into_inner(),
+        Ok(Err(status)) => match status.code() {
+            tonic::Code::InvalidArgument => {
+                bail!("invalid argument: '{}'", status.message())
+            }
+            tonic::Code::Internal => {
+                bail!("internal error: '{}'", status.message())
+            }
+            _ => {
+                bail!(
+                    "error encountered: {} - '{}'",
+                    status.code(),
+                    status.message()
+                )
+            }
+        },
+        Err(e) => {
+            bail!("operation timed out: {}", e)
+        }
+    };
+    Ok(response)
+}
+
+pub async fn send_delete_cluster(
+    client: &mut AgentClient<Channel>,
+    name: &str,
+) -> anyhow::Result<DeleteClusterResponse> {
+    let delete_request = DeleteClusterRequest {
+        name: name.to_string(),
+    };
+    let response = match timeout(
+        Duration::from_secs(5),
+        client.delete_cluster(delete_request),
+    )
+    .await
     {
         Ok(Ok(res)) => res.into_inner(),
         Ok(Err(status)) => match status.code() {
