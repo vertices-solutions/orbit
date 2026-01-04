@@ -102,6 +102,18 @@ fn resolve_default_base_path(
     Ok(Some(raw))
 }
 
+async fn send_add_cluster_progress(
+    evt_tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, Status>>,
+    message: &str,
+) {
+    let line = format!("✓ {message}\n");
+    let _ = evt_tx
+        .send(Ok(StreamEvent {
+            event: Some(stream_event::Event::Stderr(line.into_bytes())),
+        }))
+        .await;
+}
+
 fn parse_resolve_home_host(
     host: Option<proto::resolve_home_dir_request_init::Host>,
 ) -> Result<Address, Status> {
@@ -1053,6 +1065,7 @@ impl Agent for AgentSvc {
                     .await;
                 return;
             }
+            send_add_cluster_progress(&evt_tx, "Scheduler: Slurm").await;
             let (out, err, code) = match sm.exec_capture(crate::agent::os::GATHER_OS_INFO_CMD).await
             {
                 Ok((vo, ve, ec)) => (vo, ve, ec),
@@ -1103,6 +1116,14 @@ impl Agent for AgentSvc {
                     return;
                 }
             };
+            let os_label = format!(
+                "OS: {} {}",
+                os_info.id.as_str(),
+                os_info.version.as_str()
+            );
+            send_add_cluster_progress(&evt_tx, &os_label).await;
+            let kernel_label = format!("Kernel: {}", os_info.kernel.as_str());
+            send_add_cluster_progress(&evt_tx, &kernel_label).await;
             let distro_info = crate::state::db::Distro {
                 name: os_info.id,
                 version: os_info.version,
@@ -1179,6 +1200,7 @@ impl Agent for AgentSvc {
                     return;
                 }
             };
+            send_add_cluster_progress(&evt_tx, &format!("Slurm: {slurm_version}")).await;
             let (out, err, code) = match sm.exec_capture("scontrol show config").await {
                 Ok((vo, ve, ec)) => (vo, ve, ec),
                 Err(e) => {
@@ -1209,6 +1231,12 @@ impl Agent for AgentSvc {
                 );
                 false
             });
+            let accounting_state = if accounting_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
+            send_add_cluster_progress(&evt_tx, &format!("Accounting: {accounting_state}")).await;
 
             let resolved_default_base_path =
                 match resolve_default_base_path(default_base_path, &home_dir) {

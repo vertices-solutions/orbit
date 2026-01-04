@@ -5,7 +5,7 @@ use crate::errors::{format_server_error, format_status_error};
 use crate::mfa::{clear_transient_mfa, collect_mfa_answers_transient};
 use crate::stream::{
     MinDurationSpinner, SubmitStreamOutcome, ensure_exit_code, handle_stream_events,
-    handle_submit_stream_events,
+    handle_stream_events_with_progress, handle_submit_stream_events,
 };
 use anyhow::bail;
 use proto::agent_client::AgentClient;
@@ -277,6 +277,7 @@ pub async fn send_add_cluster(
     identity_path: Option<&str>,
     port: u32,
     default_base_path: &Option<String>,
+    show_progress: bool,
 ) -> anyhow::Result<()> {
     // outgoing stream client -> server with MFA answers
     let (tx_ans, rx_ans) = mpsc::channel::<AddClusterRequest>(16);
@@ -310,19 +311,40 @@ pub async fn send_add_cluster(
         .await
         .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let inbound = response.into_inner();
-    let tx_mfa = tx_ans.clone();
-    let exit_code = handle_stream_events(inbound, move |answers| {
-        let tx_mfa = tx_mfa.clone();
-        async move {
-            tx_mfa
-                .send(AddClusterRequest {
-                    msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
-                })
-                .await
-                .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
-        }
-    })
-    .await?;
+    let exit_code = if show_progress {
+        let tx_mfa = tx_ans.clone();
+        handle_stream_events_with_progress(
+            inbound,
+            move |answers| {
+                let tx_mfa = tx_mfa.clone();
+                async move {
+                    tx_mfa
+                        .send(AddClusterRequest {
+                            msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
+                }
+            },
+            "Gathering cluster information",
+            Duration::from_millis(500),
+        )
+        .await?
+    } else {
+        let tx_mfa = tx_ans.clone();
+        handle_stream_events(inbound, move |answers| {
+            let tx_mfa = tx_mfa.clone();
+            async move {
+                tx_mfa
+                    .send(AddClusterRequest {
+                        msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
+                    })
+                    .await
+                    .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
+            }
+        })
+        .await?
+    };
     ensure_exit_code(exit_code, "on client side: received exit code")
 }
 

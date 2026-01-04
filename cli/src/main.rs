@@ -19,12 +19,10 @@ use cli::interactive::{
     validate_default_base_path_with_feedback,
 };
 use cli::sbatch::resolve_sbatch_script;
-use cli::stream::MinDurationSpinner;
 use proto::ListJobsUnitResponse;
 use proto::agent_client::AgentClient;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Duration;
 
 const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗
 ██║  ██║██╔══██╗██╔════╝
@@ -253,11 +251,7 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    let info_spinner = MinDurationSpinner::start(
-                        "Gathering cluster information",
-                        Duration::from_millis(500),
-                    );
-                    match send_add_cluster(
+                    send_add_cluster(
                         &mut client,
                         &resolved.name,
                         &resolved.username,
@@ -266,18 +260,10 @@ async fn main() -> anyhow::Result<()> {
                         Some(resolved.identity_path.as_str()),
                         resolved.port,
                         &resolved.default_base_path,
+                        true,
                     )
-                    .await
-                    {
-                        Ok(()) => {
-                            info_spinner.stop(None).await;
-                            println!("Cluster {} added successfully!", resolved.name);
-                        }
-                        Err(err) => {
-                            info_spinner.cancel().await;
-                            return Err(err);
-                        }
-                    }
+                    .await?;
+                    println!("Cluster {} added successfully!", resolved.name);
                 }
                 ClusterCmd::Set(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
@@ -336,6 +322,7 @@ async fn main() -> anyhow::Result<()> {
                         identity_path.as_deref(),
                         port,
                         &default_base_path,
+                        false,
                     )
                     .await?
                 }
