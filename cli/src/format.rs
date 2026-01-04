@@ -46,7 +46,7 @@ pub fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
     let status = job_status(item);
     json!({
         "job_id": item.job_id,
-        "slurm_id": item.slurm_id,
+        "scheduler_id": item.scheduler_id,
         "name": item.name.as_str(),
         "status": status,
         "is_completed": item.is_completed,
@@ -164,7 +164,7 @@ pub fn format_cluster_details_json(item: &ListClustersUnitResponse) -> anyhow::R
 pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
         "job id",
-        "slurm id",
+        "scheduler id",
         "cluster name",
         "status",
         "created",
@@ -174,15 +174,15 @@ pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
 
     for item in jobs.iter() {
         let job_id = item.job_id.to_string();
-        let slurm_id = item
-            .slurm_id
+        let scheduler_id = item
+            .scheduler_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "-".to_string());
         let completed_str = job_status(item);
         let finished_at = item.finished_at.clone().unwrap_or_else(|| "-".to_string());
         rows.push((
             job_id,
-            slurm_id,
+            scheduler_id,
             item.name.clone(),
             completed_str.to_string(),
             item.created_at.clone(),
@@ -251,15 +251,15 @@ pub fn format_jobs_json(jobs: &[ListJobsUnitResponse]) -> anyhow::Result<String>
 }
 
 pub fn format_job_details(item: &ListJobsUnitResponse) -> String {
-    let slurm_id = item
-        .slurm_id
+    let scheduler_id = item
+        .scheduler_id
         .map(|id| id.to_string())
         .unwrap_or_else(|| "-".to_string());
     let completed_str = job_status(item);
     format!(
-        "job_id: {}\nslurm_id: {}\nname: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\n",
+        "job_id: {}\nscheduler_id: {}\nname: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\n",
         item.job_id,
-        slurm_id,
+        scheduler_id,
         item.name,
         completed_str,
         item.terminal_state.as_deref().unwrap_or("-"),
@@ -306,7 +306,7 @@ mod tests {
         ListJobsUnitResponse {
             name: "cluster-a".to_string(),
             job_id: 42,
-            slurm_id: Some(99),
+            scheduler_id: Some(99),
             created_at: "2024-01-01T00:00:00Z".to_string(),
             finished_at: Some("2024-01-01T01:00:00Z".to_string()),
             is_completed: completed,

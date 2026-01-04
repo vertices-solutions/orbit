@@ -72,7 +72,7 @@ pub fn db_job_record_to_api_unit_response(jr: &JobRecord) -> ListJobsUnitRespons
     ListJobsUnitResponse {
         name: jr.name.clone(),
         job_id: jr.id,
-        slurm_id: jr.slurm_id,
+        scheduler_id: jr.scheduler_id,
         created_at: jr.created_at.clone(),
         finished_at: jr.finished_at.clone(),
         is_completed: jr.is_completed,

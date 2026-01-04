@@ -163,8 +163,8 @@ pub type Result<T> = std::result::Result<T, HostStoreError>;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct NewJob {
-    /// Slurm job ID; host-specific. Database will additionally keep its own, internal id.
-    pub slurm_id: Option<i64>,
+    /// Scheduler job ID; host-specific. Database will additionally keep its own, internal id.
+    pub scheduler_id: Option<i64>,
     /// Host row id on which the job is submitted.
     pub host_id: i64,
     pub local_path: String,
@@ -175,7 +175,7 @@ pub struct NewJob {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct JobRecord {
     pub id: i64,
-    pub slurm_id: Option<i64>,
+    pub scheduler_id: Option<i64>,
     pub name: String,
     pub created_at: String,
     pub finished_at: Option<String>,
@@ -381,7 +381,7 @@ impl HostStore {
             r#"
             create table if not exists jobs (
             id integer primary key autoincrement,
-            slurm_id integer,
+            scheduler_id integer,
             host_id integer not null references hosts(id) on delete cascade,
             local_path TEXT NOT NULL,
             remote_path TEXT NOT NULL,
@@ -411,7 +411,7 @@ impl HostStore {
             .execute(&self.pool)
             .await?;
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_jobs_slurm_id_host_id ON jobs(slurm_id,host_id)",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_scheduler_id_host_id ON jobs(scheduler_id,host_id)",
         )
         .execute(&self.pool)
         .await?;
@@ -771,12 +771,12 @@ impl HostStore {
     pub async fn insert_job(&self, job: &NewJob) -> Result<i64> {
         let rec = sqlx::query(
             r#"
-        insert into jobs(slurm_id, host_id, local_path, remote_path)
+        insert into jobs(scheduler_id, host_id, local_path, remote_path)
         values (?1, ?2, ?3, ?4)
         returning id;
     "#,
         )
-        .bind(job.slurm_id)
+        .bind(job.scheduler_id)
         .bind(job.host_id)
         .bind(job.local_path.clone())
         .bind(job.remote_path.clone())
@@ -791,7 +791,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs where host_id = ?1
             )
-            select aj.id as id, aj.slurm_id as slurm_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.local_path as local_path,aj.remote_path as remote_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.local_path as local_path,aj.remote_path as remote_path,h.name as name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -806,7 +806,7 @@ impl HostStore {
         let row = sqlx::query(
             r#"
             select aj.id as id,
-                   aj.slurm_id as slurm_id,
+                   aj.scheduler_id as scheduler_id,
                    aj.is_completed as is_completed,
                    aj.created_at as created_at,
                    aj.completed_at as completed_at,
@@ -831,7 +831,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs
             )
-            select aj.id as id, aj.slurm_id as slurm_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.local_path as local_path,aj.remote_path as remote_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.local_path as local_path,aj.remote_path as remote_path,h.name as name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -845,7 +845,7 @@ impl HostStore {
     pub async fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let rows = sqlx::query(
             r#"
-            select aj.id as id, aj.slurm_id as slurm_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.local_path as local_path,aj.remote_path as remote_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.local_path as local_path,aj.remote_path as remote_path,h.name as name
             from jobs aj
             join hosts h
               on aj.host_id = h.id
@@ -942,7 +942,7 @@ fn row_to_partition(row: sqlx::sqlite::SqliteRow) -> PartitionRecord {
 fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
     JobRecord {
         id: row.try_get("id").unwrap(),
-        slurm_id: row.try_get("slurm_id").unwrap(),
+        scheduler_id: row.try_get("scheduler_id").unwrap(),
         name: row.try_get("name").unwrap(),
         created_at: row.try_get("created_at").unwrap(),
         finished_at: row.try_get("completed_at").unwrap(),
@@ -1202,7 +1202,7 @@ mod tests {
 
         let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
         let job = NewJob {
-            slurm_id: Some(42),
+            scheduler_id: Some(42),
             host_id: host_row.id,
             local_path: "/tmp/local".into(),
             remote_path: "/remote/run".into(),
@@ -1212,7 +1212,7 @@ mod tests {
         let jobs = db.list_jobs_for_host(host_row.id).await.unwrap();
         assert_eq!(jobs.len(), 1);
         let got = &jobs[0];
-        assert_eq!(got.slurm_id, Some(42));
+        assert_eq!(got.scheduler_id, Some(42));
         assert_eq!(got.name, "host-a");
         assert_eq!(got.local_path, "/tmp/local");
         assert_eq!(got.remote_path, "/remote/run");
@@ -1230,7 +1230,7 @@ mod tests {
 
         let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
         let job = NewJob {
-            slurm_id: Some(42),
+            scheduler_id: Some(42),
             host_id: host_row.id,
             local_path: "/tmp/local-a".into(),
             remote_path: "/remote/run-a".into(),
@@ -1239,7 +1239,7 @@ mod tests {
 
         let got = db.get_job_by_job_id(job_id).await.unwrap().unwrap();
         assert_eq!(got.id, job_id);
-        assert_eq!(got.slurm_id, Some(42));
+        assert_eq!(got.scheduler_id, Some(42));
         assert_eq!(got.name, "host-a");
     }
 
@@ -1251,13 +1251,13 @@ mod tests {
 
         let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
         let job1 = NewJob {
-            slurm_id: Some(101),
+            scheduler_id: Some(101),
             host_id: host_row.id,
             local_path: "/tmp/local1".into(),
             remote_path: "/remote/run1".into(),
         };
         let job2 = NewJob {
-            slurm_id: Some(102),
+            scheduler_id: Some(102),
             host_id: host_row.id,
             local_path: "/tmp/local2".into(),
             remote_path: "/remote/run2".into(),

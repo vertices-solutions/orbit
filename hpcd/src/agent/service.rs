@@ -101,8 +101,8 @@ impl AgentSvc {
             }
 
             for job in host_jobs {
-                let Some(job_id) = job.slurm_id else {
-                    log::warn!("job {} has no slurm id; skipping", job.id);
+                let Some(job_id) = job.scheduler_id else {
+                    log::warn!("job {} has no scheduler id; skipping", job.id);
                     continue;
                 };
 

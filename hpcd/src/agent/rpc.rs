@@ -856,8 +856,8 @@ impl Agent for AgentSvc {
                 return;
             }
             let out_string = String::from_utf8_lossy(&out);
-            let slurm_id = crate::agent::slurm::parse_job_id(&out_string);
-            if slurm_id.is_none() {
+            let scheduler_id = crate::agent::slurm::parse_job_id(&out_string);
+            if scheduler_id.is_none() {
                 log::debug!("sbatch did not return a job id");
                 let _ = evt_tx
                     .send(Ok(SubmitStreamEvent {
@@ -886,7 +886,7 @@ impl Agent for AgentSvc {
             };
 
             let nj = crate::state::db::NewJob {
-                slurm_id,
+                scheduler_id,
                 host_id: hr.id,
                 local_path,
                 remote_path,
