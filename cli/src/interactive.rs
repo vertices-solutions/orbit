@@ -823,7 +823,12 @@ fn prompt_line_with_default_result(
                     editor.move_left();
                 }
                 KeyCode::Right => {
-                    editor.move_right();
+                    if !editor.apply_default_if_empty() {
+                        editor.move_right();
+                    }
+                }
+                KeyCode::Tab => {
+                    editor.apply_default_if_empty();
                 }
                 KeyCode::Home => {
                     editor.move_home();
