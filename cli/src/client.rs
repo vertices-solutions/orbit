@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use crate::errors::{format_server_error, format_status_error};
 use crate::mfa::{clear_transient_mfa, collect_mfa_answers_transient};
 use crate::stream::{
     MinDurationSpinner, SubmitStreamOutcome, ensure_exit_code, handle_stream_events,
@@ -29,17 +30,9 @@ pub async fn send_ping(client: &mut AgentClient<Channel>) -> anyhow::Result<()> 
     let response = match timeout(Duration::from_secs(1), client.ping(ping_request)).await {
         Ok(res) => match res {
             Ok(response) => response,
-            Err(status) => match status.code() {
-                tonic::Code::InvalidArgument => {
-                    bail!("invalid argument: {}", status.message());
-                }
-                tonic::Code::Cancelled => {
-                    bail!("operation was canceled:{}", status.message());
-                }
-                _ => {
-                    bail!("error occured: {}", status);
-                }
-            },
+            Err(status) => {
+                bail!(format_status_error(&status));
+            }
         },
         Err(elapsed) => bail!("Cancelled request after {elapsed} seconds"),
     };
@@ -64,21 +57,9 @@ pub async fn fetch_list_clusters(
     .await
     {
         Ok(Ok(res)) => res.into_inner(),
-        Ok(Err(status)) => match status.code() {
-            tonic::Code::InvalidArgument => {
-                bail!("invalid argument: '{}'", status.message())
-            }
-            tonic::Code::Internal => {
-                bail!("internal error: '{}'", status.message())
-            }
-            _ => {
-                bail!(
-                    "error encountered: {} - '{}'",
-                    status.code(),
-                    status.message()
-                )
-            }
-        },
+        Ok(Err(status)) => {
+            bail!(format_status_error(&status));
+        }
         Err(e) => {
             bail!("operation timed out: {}", e)
         }
@@ -94,21 +75,9 @@ pub async fn fetch_list_jobs(
     let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await
     {
         Ok(Ok(res)) => res.into_inner(),
-        Ok(Err(status)) => match status.code() {
-            tonic::Code::InvalidArgument => {
-                bail!("invalid argument: '{}'", status.message())
-            }
-            tonic::Code::Internal => {
-                bail!("internal error: '{}'", status.message())
-            }
-            _ => {
-                bail!(
-                    "error encountered: {} - '{}'",
-                    status.code(),
-                    status.message()
-                )
-            }
-        },
+        Ok(Err(status)) => {
+            bail!(format_status_error(&status));
+        }
         Err(e) => {
             bail!("operation timed out: {}", e)
         }
@@ -130,21 +99,9 @@ pub async fn send_delete_cluster(
     .await
     {
         Ok(Ok(res)) => res.into_inner(),
-        Ok(Err(status)) => match status.code() {
-            tonic::Code::InvalidArgument => {
-                bail!("invalid argument: '{}'", status.message())
-            }
-            tonic::Code::Internal => {
-                bail!("internal error: '{}'", status.message())
-            }
-            _ => {
-                bail!(
-                    "error encountered: {} - '{}'",
-                    status.code(),
-                    status.message()
-                )
-            }
-        },
+        Ok(Err(status)) => {
+            bail!(format_status_error(&status));
+        }
         Err(e) => {
             bail!("operation timed out: {}", e)
         }
@@ -168,7 +125,10 @@ pub async fn send_ls(
         })
         .await?;
 
-    let response = client.ls(Request::new(outbound)).await?;
+    let response = client
+        .ls(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let inbound = response.into_inner();
     let tx_mfa = tx_ans.clone();
     let exit_code = handle_stream_events(inbound, move |answers| {
@@ -217,7 +177,10 @@ pub async fn send_job_retrieve(
         })
         .await?;
 
-    let response = client.retrieve_job(Request::new(outbound)).await?;
+    let response = client
+        .retrieve_job(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let inbound = response.into_inner();
     let tx_mfa = tx_ans.clone();
     let exit_code = handle_stream_events(inbound, move |answers| {
@@ -258,7 +221,10 @@ pub async fn send_submit(
         })
         .await?;
     // Start Submit RPC
-    let response = client.submit(Request::new(outbound)).await?;
+    let response = client
+        .submit(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let inbound = response.into_inner();
     let tx_mfa = tx_ans.clone();
     let outcome = handle_submit_stream_events(inbound, move |answers| {
@@ -319,7 +285,10 @@ pub async fn send_add_cluster(
     };
     tx_ans.send(acr).await?;
     // Start AddCluster RPC
-    let response = client.add_cluster(Request::new(outbound)).await?;
+    let response = client
+        .add_cluster(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let inbound = response.into_inner();
     let tx_mfa = tx_ans.clone();
     let exit_code = handle_stream_events(inbound, move |answers| {
@@ -370,7 +339,10 @@ pub async fn send_resolve_home_dir(
         msg: Some(resolve_home_dir_request::Msg::Init(init)),
     };
     tx_ans.send(req).await?;
-    let response = client.resolve_home_dir(Request::new(outbound)).await?;
+    let response = client
+        .resolve_home_dir(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let mut inbound = response.into_inner();
     let tx_mfa = tx_ans.clone();
     let mut stdout = Vec::new();
@@ -426,7 +398,7 @@ pub async fn send_resolve_home_dir(
                     if let Some(spinner) = connect_spinner.take() {
                         spinner.cancel().await;
                     }
-                    bail!("server error: {err}");
+                    bail!(format_server_error(&err));
                 }
                 None => {}
             },
@@ -434,7 +406,7 @@ pub async fn send_resolve_home_dir(
                 if let Some(spinner) = connect_spinner.take() {
                     spinner.cancel().await;
                 }
-                bail!("stream error: {status}");
+                bail!(format_status_error(&status));
             }
         }
     }
@@ -448,7 +420,10 @@ pub async fn send_resolve_home_dir(
         } else {
             String::from_utf8_lossy(&stderr).to_string()
         };
-        bail!("failed to resolve remote home directory: {detail}");
+        bail!(
+            "failed to resolve remote home directory: {}",
+            format_server_error(detail.trim())
+        );
     }
 
     if let Some(spinner) = connect_spinner.take() {

@@ -10,12 +10,14 @@ use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{self, ClearType};
 use rand::prelude::IndexedRandom;
 use std::io::{IsTerminal, Write};
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::time::Duration;
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_IDENTITY_PATH: &str = "~/.ssh/id_ed25519";
 const DEFAULT_BASE_PATH: &str = "~/runs";
 const HINT_COLOR: Color = Color::DarkGrey;
+const CONNECT_TIMEOUT_SECS: u64 = 3;
 
 #[derive(Debug)]
 pub struct ResolvedAddClusterArgs {
@@ -52,6 +54,9 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
     let env_username = default_username();
 
     let parsed_destination = destination.as_deref().map(parse_destination).transpose()?;
+    if let Some(parsed) = parsed_destination.as_ref() {
+        validate_destination_reachability(parsed)?;
+    }
     let dest_username = parsed_destination
         .as_ref()
         .and_then(|d| d.username.as_ref());
@@ -239,16 +244,20 @@ fn prompt_destination() -> anyhow::Result<ParsedDestination> {
     loop {
         let input = prompt_line(
             "Destination: ",
-            "SSH destination in [user@]host[:port] form.",
+            "SSH destination in user@host[:port] form.",
         )?;
         let trimmed = input.trim();
         if trimmed.is_empty() {
-            eprintln!("Destination is required.");
+            eprintln!("Please, provide a valid connection string");
             continue;
         }
-        match parse_destination(trimmed) {
+        match parse_destination(trimmed)
+            .and_then(|parsed| {
+                validate_destination_reachability(&parsed)?;
+                Ok(parsed)
+            }) {
             Ok(parsed) => return Ok(parsed),
-            Err(err) => eprintln!("{err}"),
+            Err(_) => eprintln!("Please, provide a valid connection string"),
         }
     }
 }
@@ -262,11 +271,11 @@ fn parse_destination(input: &str) -> anyhow::Result<ParsedDestination> {
     let (username_part, host_part) = match trimmed.split_once('@') {
         Some((user, host)) => {
             if user.trim().is_empty() {
-                bail!("destination username is empty");
+                bail!("destination username is required");
             }
             (Some(user.trim().to_string()), host.trim())
         }
-        None => (None, trimmed),
+        None => bail!("destination must be in user@host[:port] format"),
     };
 
     let host_part = host_part.trim();
@@ -319,6 +328,48 @@ fn parse_destination_port(value: &str) -> anyhow::Result<u32> {
         Ok(port) => Ok(port),
         Err(_) => bail!("destination port must be a number"),
     }
+}
+
+fn validate_destination_reachability(destination: &ParsedDestination) -> anyhow::Result<()> {
+    let port = resolve_destination_port(destination.port)?;
+    let host = destination.host.as_str();
+
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        if is_socket_reachable(SocketAddr::new(ip, port)) {
+            return Ok(());
+        }
+        bail!("destination host is unreachable");
+    }
+
+    let mut addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| anyhow::anyhow!("destination host could not be resolved"))?;
+    let mut resolved = false;
+    while let Some(addr) = addrs.next() {
+        resolved = true;
+        if is_socket_reachable(addr) {
+            return Ok(());
+        }
+    }
+
+    if !resolved {
+        bail!("destination host could not be resolved");
+    }
+
+    bail!("destination host is unreachable");
+}
+
+fn resolve_destination_port(port: Option<u32>) -> anyhow::Result<u16> {
+    let port = port.unwrap_or(DEFAULT_SSH_PORT);
+    if port == 0 || port > u16::MAX as u32 {
+        bail!("destination port must be between 1 and 65535");
+    }
+    Ok(port as u16)
+}
+
+fn is_socket_reachable(addr: SocketAddr) -> bool {
+    let timeout = Duration::from_secs(CONNECT_TIMEOUT_SECS);
+    TcpStream::connect_timeout(&addr, timeout).is_ok()
 }
 
 fn default_name_for_host(hostname: Option<&str>, ip: Option<&str>) -> anyhow::Result<String> {
@@ -617,14 +668,15 @@ const SCIENTISTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
 
     #[test]
     fn resolve_add_cluster_headless_defaults() {
         let args = AddClusterArgs {
-            destination: Some("alex@example.com".into()),
-            hostname: None,
+            destination: None,
+            hostname: Some("example.com".into()),
             ip: None,
-            username: None,
+            username: Some("alex".into()),
             name: None,
             port: None,
             identity_path: None,
@@ -664,6 +716,36 @@ mod tests {
         assert_eq!(parsed.username.as_deref(), Some("user"));
         assert_eq!(parsed.host, "example.com");
         assert_eq!(parsed.port, Some(2222));
+    }
+
+    #[test]
+    fn parse_destination_requires_username() {
+        let err = parse_destination("example.com:2222").unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("destination must be in user@host[:port] format"));
+    }
+
+    #[test]
+    fn resolve_add_cluster_headless_destination_reachable() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let args = AddClusterArgs {
+            destination: Some(format!("alex@127.0.0.1:{port}")),
+            hostname: None,
+            ip: None,
+            username: None,
+            name: Some("local".into()),
+            port: None,
+            identity_path: None,
+            default_base_path: None,
+            headless: true,
+        };
+
+        let resolved = resolve_add_cluster_args(args).unwrap();
+        assert_eq!(resolved.username, "alex");
+        assert_eq!(resolved.port, port as u32);
+        assert_eq!(resolved.name, "local");
     }
 
     #[test]

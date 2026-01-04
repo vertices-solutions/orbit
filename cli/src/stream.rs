@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use crate::errors::{format_server_error, format_status_error};
 use crate::mfa::collect_mfa_answers;
 use anyhow::bail;
 use proto::{
@@ -140,14 +141,14 @@ where
                     }
                 }
                 stream_event::Event::Error(err) => {
-                    eprintln!("server error: {err}");
+                    eprintln!("{}", format_server_error(&err));
                     exit_code = Some(1);
                     break;
                 }
             },
             Ok(StreamEvent { event: None }) => log::info!("received empty event"),
             Err(status) => {
-                eprintln!("stream error: {}", status);
+                eprintln!("{}", format_status_error(&status));
                 exit_code = Some(1);
                 break;
             }
@@ -223,7 +224,7 @@ where
                     if let Some(spinner) = spinner.take() {
                         spinner.stop(None).await;
                     }
-                    eprintln!("server error: {err}");
+                    eprintln!("{}", format_server_error(&err));
                     exit_code = Some(1);
                     break;
                 }
@@ -270,7 +271,7 @@ where
                             if detail.is_empty() {
                                 eprintln!("failed");
                             } else {
-                                eprintln!("failed: {detail}");
+                                eprintln!("failed: {}", format_server_error(detail));
                             }
                             exit_code = Some(1);
                         }
@@ -287,7 +288,7 @@ where
                 if let Some(spinner) = spinner.take() {
                     spinner.stop(None).await;
                 }
-                eprintln!("stream error: {}", status);
+                eprintln!("{}", format_status_error(&status));
                 exit_code = Some(1);
                 break;
             }

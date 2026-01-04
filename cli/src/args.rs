@@ -190,7 +190,7 @@ pub struct SubmitArgs {
     )
 )]
 pub struct AddClusterArgs {
-    /// Destination in ssh format: [user@]host[:port]
+    /// Destination in ssh format: user@host[:port]
     #[arg(value_name = "DESTINATION")]
     pub destination: Option<String>,
 

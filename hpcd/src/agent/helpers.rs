@@ -3,6 +3,7 @@
 
 use crate::ssh::{SyncFilterAction, SyncFilterRule};
 use crate::state::db::{HostRecord, HostStore, JobRecord};
+use crate::agent::error_codes;
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
 use proto::{SubmitPathFilterAction, SubmitPathFilterRule, list_clusters_unit_response};
 use tonic::Status;
@@ -16,15 +17,11 @@ pub fn build_sync_filters(
             Ok(SubmitPathFilterAction::Include) => SyncFilterAction::Include,
             Ok(SubmitPathFilterAction::Exclude) => SyncFilterAction::Exclude,
             _ => {
-                return Err(Status::invalid_argument(
-                    "submit filter action must be include or exclude",
-                ));
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
         };
         if rule.pattern.trim().is_empty() {
-            return Err(Status::invalid_argument(
-                "submit filter pattern cannot be empty",
-            ));
+            return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
         }
         out.push(SyncFilterRule {
             action,
@@ -38,24 +35,16 @@ pub async fn get_default_base_path(hs: &HostStore, name: &str) -> Result<String,
     let host_data = match hs.get_by_name(name).await {
         Ok(Some(v)) => v,
         Ok(None) => {
-            return Err(Status::invalid_argument(format!(
-                "name {} is unknown",
-                name
-            )));
+            return Err(Status::invalid_argument(error_codes::NOT_FOUND));
         }
         Err(e) => {
-            return Err(Status::internal(format!(
-                "could not retrieve default_base_path for {} from app's db: {}",
-                name, e
-            )));
+            log::debug!("could not retrieve default_base_path for {name}: {e}");
+            return Err(Status::internal(error_codes::INTERNAL_ERROR));
         }
     };
     match host_data.default_base_path {
         Some(v) => Ok(v),
-        None => Err(Status::invalid_argument(format!(
-            "default_base_path for {} is not set",
-            name,
-        ))),
+        None => Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT)),
     }
 }
 

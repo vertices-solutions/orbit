@@ -8,6 +8,7 @@ use crate::agent::helpers::{
     build_sync_filters, db_host_record_to_api_unit_response, db_job_record_to_api_unit_response,
     get_default_base_path,
 };
+use crate::agent::error_codes;
 use crate::agent::service::AgentSvc;
 use crate::agent::submit::{resolve_remote_sbatch_path, resolve_submit_remote_path};
 use crate::agent::types::{AgentSvcError, OutStream, SubmitOutStream};
@@ -34,9 +35,8 @@ async fn fetch_remote_home_dir(
 ) -> Result<String, Status> {
     let command = "printf '%s' \"$HOME\"";
     let (out, err, code) = sm.exec_capture(command).await.map_err(|e| {
-        Status::aborted(format!(
-            "failed to resolve home directory on {name}: {e}"
-        ))
+        log::debug!("failed to resolve home directory on {name}: {e}");
+        Status::aborted(error_codes::REMOTE_ERROR)
     })?;
     if code != 0 {
         let err_message = String::from_utf8_lossy(&err);
@@ -45,25 +45,21 @@ async fn fetch_remote_home_dir(
         } else {
             err_message.trim().to_string()
         };
-        return Err(Status::aborted(format!(
-            "failed to resolve home directory on {name}: {detail}"
-        )));
+        log::debug!("failed to resolve home directory on {name}: {detail}");
+        return Err(Status::aborted(error_codes::REMOTE_ERROR));
     }
     let home_raw = String::from_utf8(out).map_err(|e| {
-        Status::aborted(format!(
-            "failed to decode home directory for {name}: {e}"
-        ))
+        log::debug!("failed to decode home directory for {name}: {e}");
+        Status::aborted(error_codes::REMOTE_ERROR)
     })?;
     let home = home_raw.trim();
     if home.is_empty() {
-        return Err(Status::aborted(format!(
-            "home directory is empty on {name}"
-        )));
+        log::debug!("home directory is empty on {name}");
+        return Err(Status::aborted(error_codes::REMOTE_ERROR));
     }
     if !Path::new(home).is_absolute() {
-        return Err(Status::aborted(format!(
-            "home directory for {name} is not absolute: {home}"
-        )));
+        log::debug!("home directory for {name} is not absolute: {home}");
+        return Err(Status::aborted(error_codes::REMOTE_ERROR));
     }
     Ok(home.to_string())
 }
@@ -99,9 +95,8 @@ fn resolve_default_base_path(
     }
 
     if raw.starts_with('~') {
-        return Err(Status::invalid_argument(
-            "default_base_path must be absolute or start with '~/' (use '~' for the home directory)",
-        ));
+        log::debug!("default_base_path must be absolute or start with '~/' (use '~')");
+        return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
     }
 
     Ok(Some(raw))
@@ -112,7 +107,7 @@ fn parse_resolve_home_host(
 ) -> Result<Address, Status> {
     let host = match host {
         Some(v) => v,
-        None => return Err(Status::invalid_argument("empty host in initial message")),
+        None => return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT)),
     };
     match host {
         proto::resolve_home_dir_request_init::Host::Hostname(v) => Ok(Address::Hostname(v)),
@@ -120,10 +115,8 @@ fn parse_resolve_home_host(
             let ip: IpAddr = match addr.parse() {
                 Ok(v) => v,
                 Err(e) => {
-                    return Err(Status::invalid_argument(format!(
-                        "could not parse {} into ip address: {:?}",
-                        addr, e
-                    )));
+                    log::debug!("could not parse ip address {}: {:?}", addr, e);
+                    return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
                 }
             };
             Ok(Address::Ip(ip))
@@ -148,10 +141,10 @@ impl Agent for AgentSvc {
             "ping" => Ok(tonic::Response::new(PingReply {
                 message: "pong".into(),
             })),
-            m => Err(Status::invalid_argument(format!(
-                "expected message 'ping', got '{}'",
-                m
-            ))),
+            m => {
+                log::debug!("unexpected ping message: {}", m);
+                Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT))
+            }
         }
     }
 
@@ -165,17 +158,18 @@ impl Agent for AgentSvc {
         let init = inbound
             .message()
             .await
-            .map_err(|e| Status::unknown(format!("read error: {e}")))?
-            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+            .map_err(|e| {
+                log::debug!("read error in resolve_home_dir: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
 
         let (username, host, identity_path, port, name) = match init.msg {
             Some(proto::resolve_home_dir_request::Msg::Init(i)) => {
                 (i.username, i.host, i.identity_path, i.port, i.name)
             }
             _ => {
-                return Err(Status::invalid_argument(
-                    "first message must be init(username, host, port)",
-                ));
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
         };
 
@@ -219,10 +213,10 @@ impl Agent for AgentSvc {
         tokio::spawn(async move {
             let sm = Arc::new(crate::ssh::SessionManager::new(ssh_params));
             if let Err(e) = sm.ensure_connected(&evt_tx, &mut mfa_rx).await {
+                log::debug!("failed to connect to {target}: {e}");
+                let code = error_codes::code_for_ssh_error(&e);
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to connect to {target}: {e}",
-                    ))))
+                    .send(Err(Status::aborted(code)))
                     .await;
                 return;
             };
@@ -261,13 +255,16 @@ impl Agent for AgentSvc {
         let init = inbound
             .message()
             .await
-            .map_err(|e| Status::unknown(format!("read error: {e}")))?
-            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+            .map_err(|e| {
+                log::debug!("read error in ls: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
 
         let (name, path) = match init.msg {
             Some(proto::ls_request::Msg::Init(LsRequestInit { name, path })) => (name, path),
             _ => {
-                return Err(Status::invalid_argument("first message must be init(name)"));
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
         };
 
@@ -285,9 +282,7 @@ impl Agent for AgentSvc {
         let list_path = match path {
             Some(v) => {
                 if v.is_empty() {
-                    return Err(Status::invalid_argument(
-                        "path can't be empty: provide a path or omit it completely",
-                    ));
+                    return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
                 }
                 if PathBuf::from(&v).is_absolute() {
                     normalize_path(v).to_string_lossy().into_owned()
@@ -318,8 +313,11 @@ impl Agent for AgentSvc {
         let init = inbound
             .message()
             .await
-            .map_err(|e| Status::unknown(format!("read error: {e}")))?
-            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+            .map_err(|e| {
+                log::debug!("read error in retrieve_job: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
 
         let (job_id, name, path, local_path) = match init.msg {
             Some(proto::retrieve_job_request::Msg::Init(RetrieveJobRequestInit {
@@ -329,21 +327,17 @@ impl Agent for AgentSvc {
                 local_path,
             })) => (job_id, name, path, local_path),
             _ => {
-                return Err(Status::invalid_argument(
-                    "first message must be init(job_id, name, path, local_path)",
-                ));
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
         };
 
         if path.trim().is_empty() {
-            return Err(Status::invalid_argument("path can't be empty"));
+            return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
         }
         let local_path = match local_path {
             Some(v) if !v.trim().is_empty() => v,
             _ => {
-                return Err(Status::invalid_argument(
-                    "local_path can't be empty for retrieve",
-                ));
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
         };
 
@@ -370,19 +364,20 @@ impl Agent for AgentSvc {
                     Ok(None) => {
                         let _ = evt_tx
                             .send(Ok(StreamEvent {
-                                event: Some(stream_event::Event::Error(format!(
-                                    "job id {job_id} not found",
-                                ))),
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::NOT_FOUND.to_string(),
+                                )),
                             }))
                             .await;
                         return;
                     }
                     Err(e) => {
+                        log::debug!("could not fetch job id {job_id}: {e}");
                         let _ = evt_tx
                             .send(Ok(StreamEvent {
-                                event: Some(stream_event::Event::Error(format!(
-                                    "could not fetch job id {job_id}: {e}",
-                                ))),
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::INTERNAL_ERROR.to_string(),
+                                )),
                             }))
                             .await;
                         return;
@@ -393,9 +388,9 @@ impl Agent for AgentSvc {
                 {
                     let _ = evt_tx
                         .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Error(format!(
-                                "job id {job_id} not found in cluster '{expected}'",
-                            ))),
+                            event: Some(stream_event::Event::Error(
+                                error_codes::NOT_FOUND.to_string(),
+                            )),
                         }))
                         .await;
                     return;
@@ -407,13 +402,19 @@ impl Agent for AgentSvc {
                 Ok(v) => v,
                 Err(e) => {
                     let message = match e {
-                        AgentSvcError::UnknownName => format!("unknown name {name}"),
-                        AgentSvcError::NetworkError(e) => format!("network error: {e}"),
-                        other_error => format!("unexpected error: {other_error}"),
+                        AgentSvcError::UnknownName => error_codes::NOT_FOUND,
+                        AgentSvcError::NetworkError(e) => {
+                            log::debug!("network error for {name}: {e}");
+                            error_codes::NETWORK_ERROR
+                        }
+                        other_error => {
+                            log::debug!("unexpected session manager error for {name}: {other_error}");
+                            error_codes::INTERNAL_ERROR
+                        }
                     };
                     let _ = evt_tx
                         .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Error(message)),
+                            event: Some(stream_event::Event::Error(message.to_string())),
                         }))
                         .await;
                     return;
@@ -421,9 +422,12 @@ impl Agent for AgentSvc {
             };
 
             if let Err(err) = mgr.ensure_connected(&evt_tx, &mut mfa_rx).await {
+                log::debug!("failed to connect for retrieve job on {name}: {err}");
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(err.to_string())),
+                        event: Some(stream_event::Event::Error(
+                            error_codes::code_for_ssh_error(&err).to_string(),
+                        )),
                     }))
                     .await;
                 return;
@@ -442,11 +446,12 @@ impl Agent for AgentSvc {
                 match std::env::current_dir() {
                     Ok(cwd) => local_base = cwd.join(local_base),
                     Err(e) => {
+                        log::debug!("could not resolve local destination: {e}");
                         let _ = evt_tx
                             .send(Ok(StreamEvent {
-                                event: Some(stream_event::Event::Error(format!(
-                                    "could not resolve local destination: {e}",
-                                ))),
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::LOCAL_ERROR.to_string(),
+                                )),
                             }))
                             .await;
                         return;
@@ -459,7 +464,7 @@ impl Agent for AgentSvc {
                     let _ = evt_tx
                         .send(Ok(StreamEvent {
                             event: Some(stream_event::Event::Error(
-                                "remote path has no basename".to_string(),
+                                error_codes::INVALID_ARGUMENT.to_string(),
                             )),
                         }))
                         .await;
@@ -471,9 +476,12 @@ impl Agent for AgentSvc {
             };
 
             if let Err(err) = mgr.retrieve_path(&remote_path, &local_target).await {
+                log::debug!("retrieve path failed: {err}");
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(err.to_string())),
+                        event: Some(stream_event::Event::Error(
+                            error_codes::REMOTE_ERROR.to_string(),
+                        )),
                     }))
                     .await;
                 return;
@@ -501,15 +509,11 @@ impl Agent for AgentSvc {
             Err(e) => match e {
                 HostStoreError::Sqlx(sql_err) => {
                     log::error!("unknown error at sqlx level: {sql_err}");
-                    return Err(Status::internal(
-                        "internal error: please report this  error along with daemon logs",
-                    ));
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
                 other_error => {
                     log::error!("internal error: unexpected error: {other_error}");
-                    return Err(Status::internal(
-                        "internal error: please report this error along with daemon logs",
-                    ));
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
             },
         };
@@ -533,7 +537,7 @@ impl Agent for AgentSvc {
     ) -> Result<tonic::Response<DeleteClusterResponse>, Status> {
         let name = request.into_inner().name.trim().to_string();
         if name.is_empty() {
-            return Err(Status::invalid_argument("name is required"));
+            return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
         }
 
         let deleted = match self.hosts().delete_by_name(&name).await {
@@ -541,27 +545,20 @@ impl Agent for AgentSvc {
             Err(e) => match e {
                 HostStoreError::Sqlx(sql_err) => {
                     log::error!("sqlx error deleting cluster '{}': {sql_err}", name);
-                    return Err(Status::internal(
-                        "internal error: please report this error along with daemon logs",
-                    ));
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
                 other_error => {
                     log::error!(
                         "unexpected error deleting cluster '{}': {other_error}",
                         name
                     );
-                    return Err(Status::internal(
-                        "internal error: please report this error along with daemon logs",
-                    ));
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
             },
         };
 
         if deleted == 0 {
-            return Err(Status::invalid_argument(format!(
-                "name {} is unknown",
-                name
-            )));
+            return Err(Status::invalid_argument(error_codes::NOT_FOUND));
         }
 
         self.sessions().remove_and_shutdown(&name).await;
@@ -580,8 +577,11 @@ impl Agent for AgentSvc {
         let init = inbound
             .message()
             .await
-            .map_err(|e| Status::unknown(format!("read error: {e}")))?
-            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+            .map_err(|e| {
+                log::debug!("read error in submit: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
 
         let (local_path, remote_path, name, sbatchscript, filters) = match init.msg {
             Some(proto::submit_request::Msg::Init(i)) => (
@@ -591,7 +591,7 @@ impl Agent for AgentSvc {
                 i.sbatchscript,
                 i.filters,
             ),
-            _ => return Err(Status::invalid_argument("first message must be init(path)")),
+            _ => return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT)),
         };
         let filters = build_sync_filters(filters)?;
 
@@ -614,13 +614,15 @@ impl Agent for AgentSvc {
             Ok(v) => v,
             Err(e) => match e {
                 AgentSvcError::UnknownName => {
-                    return Err(Status::invalid_argument(format!("unknown name {name}")));
+                    return Err(Status::invalid_argument(error_codes::NOT_FOUND));
                 }
                 AgentSvcError::NetworkError(e) => {
-                    return Err(Status::internal(format!("network error: {e}")));
+                    log::debug!("network error resolving session for submit: {e}");
+                    return Err(Status::internal(error_codes::NETWORK_ERROR));
                 }
                 other_error => {
-                    return Err(Status::internal(format!("unexpected error: {other_error}")));
+                    log::debug!("unexpected error resolving session for submit: {other_error}");
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
             },
         };
@@ -648,11 +650,11 @@ impl Agent for AgentSvc {
             .await
             .is_err()
         {
-            return Err(Status::cancelled("client disconnected"));
+            return Err(Status::cancelled(error_codes::CANCELED));
         }
 
         if *cancel_rx.borrow() {
-            return Err(Status::cancelled("client disconnected"));
+            return Err(Status::cancelled(error_codes::CANCELED));
         }
 
         match mgr
@@ -661,28 +663,22 @@ impl Agent for AgentSvc {
         {
             Ok(_) => {}
             Err(e) => {
-                return Err(Status::internal(format!(
-                    "could not establish connection to {}: {}",
-                    &name, e
-                )));
+                log::debug!("could not establish connection to {}: {}", &name, e);
+                let code = error_codes::code_for_ssh_error(&e);
+                return Err(Status::internal(code));
             }
         };
 
         let remote_path_exists = match mgr.directory_exists(&remote_path).await {
             Ok(v) => v,
             Err(e) => {
-                return Err(Status::internal(format!(
-                    "can't list {} on {}: {}",
-                    &remote_path, &name, e
-                )));
+                log::debug!("can't list {} on {}: {}", &remote_path, &name, e);
+                return Err(Status::internal(error_codes::REMOTE_ERROR));
             }
         };
 
         if remote_path_exists {
-            return Err(Status::invalid_argument(format!(
-                "can't use {} as remote path on {}: directory already exists on remote",
-                &remote_path, &name
-            )));
+            return Err(Status::already_exists(error_codes::CONFLICT));
         }
 
         log::debug!(
@@ -728,12 +724,13 @@ impl Agent for AgentSvc {
                 }
             };
             if let Err(err) = sync_result {
+                log::debug!("sync failed for submit: {err}");
                 let _ = evt_tx
                     .send(Ok(SubmitStreamEvent {
                         event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
-                            detail: err.to_string(),
+                            detail: error_codes::REMOTE_ERROR.to_string(),
                         })),
                     }))
                     .await;
@@ -774,12 +771,13 @@ impl Agent for AgentSvc {
             let (out, err, code) = match exec_result {
                 Ok(v) => (v.0, v.1, v.2),
                 Err(e) => {
+                    log::debug!("sbatch execution failed: {e}");
                     let _ = evt_tx
                         .send(Ok(SubmitStreamEvent {
                             event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                                 status: submit_result::Status::Failed as i32,
                                 job_id: None,
-                                detail: e.to_string(),
+                                detail: error_codes::REMOTE_ERROR.to_string(),
                             })),
                         }))
                         .await;
@@ -804,12 +802,13 @@ impl Agent for AgentSvc {
                 } else {
                     err_message.trim()
                 };
+                log::debug!("sbatch failed: {}", detail);
                 let _ = evt_tx
                     .send(Ok(SubmitStreamEvent {
                         event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
-                            detail: format!("sbatch failed with exit code {}: {}", code, detail),
+                            detail: error_codes::REMOTE_ERROR.to_string(),
                         })),
                     }))
                     .await;
@@ -818,12 +817,13 @@ impl Agent for AgentSvc {
             let out_string = String::from_utf8_lossy(&out);
             let slurm_id = crate::agent::slurm::parse_job_id(&out_string);
             if slurm_id.is_none() {
+                log::debug!("sbatch did not return a job id");
                 let _ = evt_tx
                     .send(Ok(SubmitStreamEvent {
                         event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
-                            detail: "sbatch did not return a job id".to_string(),
+                            detail: error_codes::REMOTE_ERROR.to_string(),
                         })),
                     }))
                     .await;
@@ -831,12 +831,13 @@ impl Agent for AgentSvc {
             }
 
             let Ok(Some(hr)) = hs.get_by_name(&name).await else {
+                log::debug!("unknown name '{}' while creating job record", name);
                 let _ = evt_tx
                     .send(Ok(SubmitStreamEvent {
                         event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                             status: submit_result::Status::Failed as i32,
                             job_id: None,
-                            detail: format!("unknown name '{}'", name),
+                            detail: error_codes::NOT_FOUND.to_string(),
                         })),
                     }))
                     .await;
@@ -862,12 +863,13 @@ impl Agent for AgentSvc {
                         .await;
                 }
                 Err(e) => {
+                    log::debug!("failed to create job record: {e}");
                     let _ = evt_tx
                         .send(Ok(SubmitStreamEvent {
                             event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
                                 status: submit_result::Status::Failed as i32,
                                 job_id: None,
-                                detail: format!("failed to create job record: {}", e),
+                                detail: error_codes::INTERNAL_ERROR.to_string(),
                             })),
                         }))
                         .await;
@@ -889,8 +891,11 @@ impl Agent for AgentSvc {
         let init = inbound
             .message()
             .await
-            .map_err(|e| Status::unknown(format!("read error: {e}")))?
-            .ok_or_else(|| Status::invalid_argument("stream closed before init"))?;
+            .map_err(|e| {
+                log::debug!("read error in add_cluster: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
         let (username, host, name, identity_path, port, default_base_path) = match init.msg {
             Some(proto::add_cluster_request::Msg::Init(i)) => (
                 i.username,
@@ -901,9 +906,7 @@ impl Agent for AgentSvc {
                 i.default_base_path,
             ),
             _ => {
-                return Err(Status::invalid_argument(
-                    "first message must be init(username, hostname, name)",
-                ));
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
         };
         let addr = parse_add_cluster_host(host)?;
@@ -943,10 +946,10 @@ impl Agent for AgentSvc {
                 _ => Arc::new(crate::ssh::SessionManager::new(ssh_params)),
             };
             if let Err(e) = sm.ensure_connected(&evt_tx, &mut mfa_rx).await {
+                log::debug!("failed to connect to {name}: {e}");
+                let code = error_codes::code_for_ssh_error(&e);
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to connect to {name}: {e}",
-                    ))))
+                    .send(Err(Status::aborted(code)))
                     .await;
                 return;
             };
@@ -964,10 +967,9 @@ impl Agent for AgentSvc {
             {
                 Ok((vo, ve, ec)) => (vo, ve, ec),
                 Err(e) => {
+                    log::debug!("failed to gather cluster metadata for {name}: {e}");
                     let _ = evt_tx
-                        .send(Err(Status::aborted(format!(
-                            "failed to gather cluster metadata for {name}: {e}",
-                        ))))
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                         .await;
                     return;
                 }
@@ -976,34 +978,37 @@ impl Agent for AgentSvc {
             if code != 0 {
                 let err_message =
                     String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+                log::debug!(
+                    "failed to gather cluster metadata for {name}: exit {}: {}",
+                    code,
+                    err_message
+                );
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather cluster metadata for {name}: remote command returned non-zero exit code {}, and error message : {}",
-                        code,
-                        err_message
-                    ))))
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                     .await;
                 return;
             }
             let out = match String::from_utf8(out) {
                 Ok(v) => v,
                 Err(e) => {
+                    log::debug!(
+                        "failed to gather cluster metadata for {name}: decode error: {e}"
+                    );
                     let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather cluster metadata for {name}: could not decode the gathered output: {e}",
-                    ))))
-                    .await;
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                        .await;
                     return;
                 }
             };
 
             let wlms = crate::agent::managers::parse_wlms(&out);
             if !wlms.contains(&crate::agent::managers::WorkloadManager::Slurm) {
+                log::debug!(
+                    "no supported workload managers found on {name}; identified: {:?}",
+                    wlms
+                );
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "no supported workload managers found on {name}; identified workload managers: {:?}",
-                        wlms
-                    ))))
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                     .await;
                 return;
             }
@@ -1011,10 +1016,9 @@ impl Agent for AgentSvc {
             {
                 Ok((vo, ve, ec)) => (vo, ve, ec),
                 Err(e) => {
+                    log::debug!("failed to gather cluster os metadata for {name}: {e}");
                     let _ = evt_tx
-                        .send(Err(Status::aborted(format!(
-                            "failed to gather cluster os metadata for {name}: {e}",
-                        ))))
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                         .await;
                     return;
                 }
@@ -1023,23 +1027,25 @@ impl Agent for AgentSvc {
             if code != 0 {
                 let err_message =
                     String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+                log::debug!(
+                    "failed to gather cluster os metadata for {name}: exit {}: {}",
+                    code,
+                    err_message
+                );
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather cluster os metadata for {name}: remote command returned non-zero exit code {}, and error message : {}",
-                        code,
-                        err_message
-                    ))))
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                     .await;
                 return;
             }
             let out = match String::from_utf8(out) {
                 Ok(v) => v,
                 Err(e) => {
+                    log::debug!(
+                        "failed to gather cluster os metadata for {name}: decode error: {e}"
+                    );
                     let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather cluster os metadata for {name}: could not decode the gathered output: {e}",
-                    ))))
-                    .await;
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                        .await;
                     return;
                 }
             };
@@ -1047,11 +1053,12 @@ impl Agent for AgentSvc {
             let os_info = match crate::agent::os::parse_distro_info(&out) {
                 Ok(v) => v,
                 Err(e) => {
+                    log::debug!(
+                        "failed to gather cluster os metadata for {name}: parse error: {e}"
+                    );
                     let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather cluster os metadata for {name}: could not parse the gathered output: {e}",
-                    ))))
-                    .await;
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                        .await;
                     return;
                 }
             };
@@ -1066,10 +1073,9 @@ impl Agent for AgentSvc {
             {
                 Ok((vo, ve, ec)) => (vo, ve, ec),
                 Err(e) => {
+                    log::debug!("failed to gather slurm version for {name}: {e}");
                     let _ = evt_tx
-                        .send(Err(Status::aborted(format!(
-                            "failed to gather slurm version for {name}: {e}",
-                        ))))
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                         .await;
                     return;
                 }
@@ -1078,33 +1084,35 @@ impl Agent for AgentSvc {
             if code != 0 {
                 let err_message =
                     String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+                log::debug!(
+                    "failed to gather slurm version for {name}: exit {}: {}",
+                    code,
+                    err_message
+                );
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather slurm version for {name}: remote command returned non-zero exit code {}, and error message : {}",
-                        code,
-                        err_message
-                    ))))
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                     .await;
                 return;
             }
             let out = match String::from_utf8(out) {
                 Ok(v) => v,
                 Err(e) => {
+                    log::debug!(
+                        "failed to gather slurm version for {name}: decode error: {e}"
+                    );
                     let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather slurm version for {name}: could not decode the gathered output: {e}",
-                    ))))
-                    .await;
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                        .await;
                     return;
                 }
             };
             let mut parts = out.split_whitespace();
             if parts.next().is_none() {
+                log::debug!(
+                    "failed to gather slurm version for {name}: unexpected output: {out}"
+                );
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather slurm version for {name}: server returned an unexpected output: {out}",
-
-                    ))))
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                     .await;
                 return;
             }
@@ -1113,41 +1121,40 @@ impl Agent for AgentSvc {
                 Some(v) => match v.parse() {
                     Ok(vv) => vv,
                     Err(e) => {
+                        log::debug!("failed to parse slurm version for {name}: '{e:?}'");
                         let _ = evt_tx
-                            .send(Err(Status::aborted(format!(
-                                "failed to parse slurm version for {name}: '{e:?}'",
-                            ))))
+                            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                             .await;
                         return;
                     }
                 },
                 None => {
+                    log::debug!(
+                        "failed to gather slurm version for {name}: unexpected output: {out}"
+                    );
                     let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to gather slurm version for {name}: server returned an unexpected output: {out}",
-
-                    ))))
-                    .await;
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                        .await;
                     return;
                 }
             };
             let (out, err, code) = match sm.exec_capture("scontrol show config").await {
                 Ok((vo, ve, ec)) => (vo, ve, ec),
                 Err(e) => {
+                    log::debug!("failed to gather cluster config for {name}: {e}");
                     let _ = evt_tx
-                        .send(Err(Status::aborted(format!(
-                            "failed to gather cluster config for {name}: {e}",
-                        ))))
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                         .await;
                     return;
                 }
             };
             if code != 0 {
+                log::debug!(
+                    "failed to run `scontrol show config` on {name}: {}",
+                    String::from_utf8_lossy(&err)
+                );
                 let _ = evt_tx
-                    .send(Err(Status::aborted(format!(
-                        "failed to run `scontrol show config` on {name}: {}",
-                        String::from_utf8_lossy(&err)
-                    ))))
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                     .await;
                 return;
             }
@@ -1183,22 +1190,21 @@ impl Agent for AgentSvc {
                 let (_, err, code) = match sm.exec_capture(&command).await {
                     Ok((vo, ve, ec)) => (vo, ve, ec),
                     Err(e) => {
+                        log::debug!("failed to execute command `{}` on {}: {}", command, name, e);
                         let _ = evt_tx
-                            .send(Err(Status::internal(format!(
-                                "failed to execute command `{}` on {}: {}",
-                                command, name, e
-                            ))))
+                            .send(Err(Status::internal(error_codes::REMOTE_ERROR)))
                             .await;
                         return;
                     }
                 };
                 if code != 0 {
+                    log::debug!(
+                        "failed to create default_base_path on {}: {}",
+                        name,
+                        String::from_utf8_lossy(&err)
+                    );
                     let _ = evt_tx
-                        .send(Err(Status::aborted(format!(
-                            "failed to create default_base_path on {}: {}",
-                            name,
-                            String::from_utf8_lossy(&err)
-                        ))))
+                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
                         .await;
                     return;
                 }
@@ -1223,9 +1229,12 @@ impl Agent for AgentSvc {
                     log::debug!("successfully upserted host with id {v}")
                 }
                 Err(e) => {
+                    log::debug!("failed to upsert host {name}: {e}");
                     let _ = evt_tx
                         .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Error(e.to_string())),
+                            event: Some(stream_event::Event::Error(
+                                error_codes::INTERNAL_ERROR.to_string(),
+                            )),
                         }))
                         .await;
                 }
@@ -1247,26 +1256,22 @@ impl Agent for AgentSvc {
         let jobs = match inbound.name {
             Some(ref v) => {
                 let Ok(Some(hr)) = self.hosts().get_by_name(v).await else {
-                    return Err(Status::invalid_argument(format!("name {} is unknown", v)));
+                    return Err(Status::invalid_argument(error_codes::NOT_FOUND));
                 };
 
                 match self.hosts().list_jobs_for_host(hr.id).await {
                     Ok(v) => v,
                     Err(e) => {
-                        return Err(Status::internal(format!(
-                            "couldn't list jobs for host '{}': {}",
-                            hr.name, e
-                        )));
+                        log::debug!("couldn't list jobs for host '{}': {}", hr.name, e);
+                        return Err(Status::internal(error_codes::INTERNAL_ERROR));
                     }
                 }
             }
             None => match self.hosts().list_all_jobs().await {
                 Ok(v) => v,
                 Err(e) => {
-                    return Err(Status::internal(format!(
-                        "couldn't list jobs for all hosts: {}",
-                        e
-                    )));
+                    log::debug!("couldn't list jobs for all hosts: {}", e);
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
             },
         };

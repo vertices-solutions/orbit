@@ -3,6 +3,7 @@
 
 use crate::agent::sessions::{DefaultSessionFactory, SessionCache, SessionFactory};
 use crate::agent::types::{AgentSvcError, OutStream};
+use crate::agent::error_codes;
 use crate::ssh::SessionManager;
 use crate::ssh::receiver_to_stream;
 use crate::state::db::{HostStore, JobRecord};
@@ -205,25 +206,27 @@ impl AgentSvc {
             Ok(v) => v,
             Err(e) => match e {
                 AgentSvcError::UnknownName => {
-                    return Err(Status::invalid_argument(format!("unknown name {name}")));
+                    return Err(Status::invalid_argument(error_codes::NOT_FOUND));
                 }
                 AgentSvcError::NetworkError(e) => {
-                    return Err(Status::internal(format!("network error: {e}")));
+                    log::debug!("network error while resolving session manager: {e}");
+                    return Err(Status::internal(error_codes::NETWORK_ERROR));
                 }
                 other_error => {
-                    return Err(Status::internal(format!(
-                        "unexpected error: {}",
-                        other_error
-                    )));
+                    log::debug!("unexpected error while resolving session manager: {other_error}");
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
             },
         };
         let cmd = command;
         tokio::spawn(async move {
             if let Err(err) = mgr.exec(&cmd, evt_tx.clone(), mfa_rx).await {
+                log::debug!("command execution failed: {err}");
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(err.to_string())),
+                        event: Some(stream_event::Event::Error(
+                            error_codes::REMOTE_ERROR.to_string(),
+                        )),
                     }))
                     .await;
             }
