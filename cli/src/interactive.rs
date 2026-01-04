@@ -45,88 +45,50 @@ pub fn prompt_default_base_path(home_dir: &str) -> anyhow::Result<String> {
 
 pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<ResolvedAddClusterArgs> {
     let destination = normalize_option(args.destination);
-    let hostname = normalize_option(args.hostname);
-    let ip = normalize_option(args.ip);
-    let username = normalize_option(args.username);
     let name = normalize_option(args.name);
     let identity_path = normalize_option(args.identity_path);
     let default_base_path = normalize_option(args.default_base_path);
-    let env_username = default_username();
-
-    let parsed_destination = destination.as_deref().map(parse_destination).transpose()?;
-    if let Some(parsed) = parsed_destination.as_ref() {
-        validate_destination_reachability(parsed)?;
-    }
-    let dest_username = parsed_destination
-        .as_ref()
-        .and_then(|d| d.username.as_ref());
-    let dest_port = parsed_destination.as_ref().and_then(|d| d.port);
-
-    if parsed_destination.is_some() && (hostname.is_some() || ip.is_some()) {
-        bail!("--destination cannot be combined with --hostname or --ip");
-    }
-
-    if let (Some(_), Some(_)) = (dest_username, username.as_ref()) {
-        bail!("username cannot be provided both in destination and --username");
-    }
-
-    if let (Some(_), Some(_)) = (dest_port, args.port) {
-        bail!("port cannot be provided both in destination and --port");
-    }
 
     let needs_prompt = !args.headless
-        && ((parsed_destination.is_none() && hostname.is_none() && ip.is_none())
+        && (destination.is_none()
             || name.is_none()
-            || (args.port.is_none() && dest_port.is_none())
             || identity_path.is_none()
-            || default_base_path.is_none()
-            || (username.is_none() && dest_username.is_none() && env_username.is_none()));
+            || default_base_path.is_none());
     if needs_prompt {
         ensure_tty_for_prompt()?;
     }
 
-    let parsed_destination = if let Some(parsed) = parsed_destination {
-        Some(parsed)
-    } else if hostname.is_none() && ip.is_none() {
-        if args.headless {
-            bail!("destination, hostname, or ip is required in headless mode");
-        }
-        Some(prompt_destination()?)
+    let mut destination_prompted = false;
+    let parsed_destination = if let Some(value) = destination.as_deref() {
+        let parsed = parse_destination(value)?;
+        validate_destination_reachability(&parsed)?;
+        parsed
     } else {
-        None
-    };
-
-    let (hostname, ip) = match (parsed_destination.as_ref(), hostname, ip) {
-        (Some(parsed), None, None) => {
-            if parsed.host.parse::<IpAddr>().is_ok() {
-                (None, Some(parsed.host.clone()))
-            } else {
-                (Some(parsed.host.clone()), None)
-            }
+        if args.headless {
+            bail!("destination is required in headless mode");
         }
-        (None, Some(hostname), None) => (Some(hostname), None),
-        (None, None, Some(ip)) => (None, Some(ip)),
-        (None, None, None) => unreachable!("destination or hostname/ip must be resolved"),
-        (None, Some(_), Some(_)) => bail!("hostname and ip cannot be provided at the same time"),
-        _ => unreachable!("destination parsing should cover all cases"),
+        destination_prompted = true;
+        prompt_destination()?
     };
 
-    let username = match parsed_destination.as_ref().and_then(|d| d.username.clone()) {
+    if !destination_prompted {
+        if let Some(value) = destination.as_deref() {
+            print_selected_value("Destination", value);
+        }
+    }
+
+    let (hostname, ip) = if parsed_destination.host.parse::<IpAddr>().is_ok() {
+        (None, Some(parsed_destination.host.clone()))
+    } else {
+        (Some(parsed_destination.host.clone()), None)
+    };
+
+    let username = match parsed_destination.username.clone() {
         Some(value) => value,
-        None => match username {
-            Some(value) => value,
-            None => match env_username {
-                Some(value) => value,
-                None => {
-                    if args.headless {
-                        bail!("--username is required in headless mode");
-                    }
-                    prompt_required("Username", "SSH login user for the cluster")?
-                }
-            },
-        },
+        None => bail!("destination username is required"),
     };
 
+    let mut name_prompted = false;
     let name = match name {
         Some(value) => value,
         None => {
@@ -134,6 +96,7 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
                 default_name_for_host(hostname.as_deref(), ip.as_deref())?
             } else {
                 let default_name = generate_random_name();
+                name_prompted = true;
                 prompt_with_default(
                     "Name",
                     &default_name,
@@ -142,26 +105,20 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
             }
         }
     };
+    if !name_prompted {
+        print_selected_value("Name", &name);
+    }
 
-    let port = match (parsed_destination.and_then(|d| d.port), args.port) {
-        (Some(value), None) => value,
-        (None, Some(value)) => value,
-        (None, None) => {
-            if args.headless {
-                DEFAULT_SSH_PORT
-            } else {
-                prompt_port(DEFAULT_SSH_PORT, "SSH port for the cluster")?
-            }
-        }
-        (Some(_), Some(_)) => unreachable!("port conflicts handled earlier"),
-    };
+    let port = parsed_destination.port.unwrap_or(DEFAULT_SSH_PORT);
 
+    let mut identity_prompted = false;
     let identity_path = match identity_path {
         Some(value) => value,
         None => {
             if args.headless {
                 DEFAULT_IDENTITY_PATH.to_string()
             } else {
+                identity_prompted = true;
                 prompt_with_default(
                     "Identity path",
                     DEFAULT_IDENTITY_PATH,
@@ -170,6 +127,9 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
             }
         }
     };
+    if !identity_prompted {
+        print_selected_value("Identity path", &identity_path);
+    }
 
     let default_base_path = match default_base_path {
         Some(value) => Some(value),
@@ -181,6 +141,9 @@ pub fn resolve_add_cluster_args(args: AddClusterArgs) -> anyhow::Result<Resolved
             }
         }
     };
+    if let Some(ref value) = default_base_path {
+        print_selected_value("Default base path", value);
+    }
 
     Ok(ResolvedAddClusterArgs {
         hostname,
@@ -200,6 +163,10 @@ struct ParsedDestination {
     port: Option<u32>,
 }
 
+fn print_selected_value(label: &str, value: &str) {
+    println!("{label}: {value}");
+}
+
 fn normalize_option(value: Option<String>) -> Option<String> {
     value.and_then(|item| {
         let trimmed = item.trim();
@@ -209,14 +176,6 @@ fn normalize_option(value: Option<String>) -> Option<String> {
             Some(trimmed.to_string())
         }
     })
-}
-
-fn default_username() -> Option<String> {
-    std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn ensure_tty_for_prompt() -> anyhow::Result<()> {
@@ -393,18 +352,6 @@ fn generate_random_name() -> String {
     format!("{adjective}_{scientist}")
 }
 
-fn prompt_required(label: &str, hint: &str) -> anyhow::Result<String> {
-    loop {
-        let input = prompt_line(&format!("{label}: "), hint)?;
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            eprintln!("{label} is required.");
-            continue;
-        }
-        return Ok(trimmed.to_string());
-    }
-}
-
 fn prompt_with_default(label: &str, default: &str, hint: &str) -> anyhow::Result<String> {
     let hint = format_default_hint(default, hint);
     let input = prompt_line_with_default(&format!("{label}: "), &hint, Some(default))?;
@@ -413,22 +360,6 @@ fn prompt_with_default(label: &str, default: &str, hint: &str) -> anyhow::Result
         Ok(default.to_string())
     } else {
         Ok(trimmed.to_string())
-    }
-}
-
-fn prompt_port(default: u32, hint: &str) -> anyhow::Result<u32> {
-    let default_str = default.to_string();
-    let hint = format_default_hint(default_str.as_str(), hint);
-    loop {
-        let input = prompt_line_with_default("Port: ", &hint, Some(default_str.as_str()))?;
-        let trimmed = input.trim();
-        if trimmed.is_empty() {
-            return Ok(default);
-        }
-        match trimmed.parse::<u32>() {
-            Ok(value) => return Ok(value),
-            Err(_) => eprintln!("Invalid port; expected a number."),
-        }
     }
 }
 
@@ -668,35 +599,35 @@ mod tests {
 
     #[test]
     fn resolve_add_cluster_headless_defaults() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
+                return;
+            }
+            Err(err) => panic!("failed to bind listener: {err}"),
+        };
+        let port = listener.local_addr().unwrap().port();
         let args = AddClusterArgs {
-            destination: None,
-            hostname: Some("example.com".into()),
-            ip: None,
-            username: Some("alex".into()),
+            destination: Some(format!("alex@localhost:{port}")),
             name: None,
-            port: None,
             identity_path: None,
             default_base_path: None,
             headless: true,
         };
 
         let resolved = resolve_add_cluster_args(args).unwrap();
-        assert_eq!(resolved.port, DEFAULT_SSH_PORT);
+        assert_eq!(resolved.port, port as u32);
         assert_eq!(resolved.identity_path, DEFAULT_IDENTITY_PATH);
         assert_eq!(resolved.default_base_path.as_deref(), Some(DEFAULT_BASE_PATH));
         assert_eq!(resolved.username, "alex");
-        assert_eq!(resolved.name, "example.com");
+        assert_eq!(resolved.name, "localhost");
     }
 
     #[test]
     fn resolve_add_cluster_headless_requires_destination() {
         let args = AddClusterArgs {
             destination: None,
-            hostname: None,
-            ip: None,
-            username: Some("alex".into()),
             name: None,
-            port: Some(2222),
             identity_path: Some("~/.ssh/id_rsa".into()),
             default_base_path: None,
             headless: true,
@@ -734,11 +665,7 @@ mod tests {
         let port = listener.local_addr().unwrap().port();
         let args = AddClusterArgs {
             destination: Some(format!("alex@127.0.0.1:{port}")),
-            hostname: None,
-            ip: None,
-            username: None,
             name: Some("local".into()),
-            port: None,
             identity_path: None,
             default_base_path: None,
             headless: true,

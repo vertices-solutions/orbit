@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use clap::{ArgGroup, Args, Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -195,36 +195,14 @@ pub struct SubmitArgs {
 }
 
 #[derive(Args, Debug)]
-#[command(
-    group(
-        ArgGroup::new("addcluster")
-            .multiple(false)
-            .args(&["destination", "hostname", "ip"])
-    )
-)]
 pub struct AddClusterArgs {
-    /// Destination in ssh format: user@host[:port]
+    /// Destination in ssh format: user@host[:port] (required in headless mode)
     #[arg(value_name = "DESTINATION")]
     pub destination: Option<String>,
 
-    #[arg(long, value_name = "HOSTNAME")]
-    pub hostname: Option<String>,
-
-    /// Use a remote IP address as input
-    #[arg(long, value_name = "IP")]
-    pub ip: Option<String>,
-
-    #[arg(long)]
-    pub username: Option<String>,
-
-    #[arg(long)]
     /// Friendly cluster name you’ll use in other commands (e.g. "gpu01" or "lab-cluster").
     #[arg(long)]
     pub name: Option<String>,
-
-    /// Defaults to 22.
-    #[arg(long)]
-    pub port: Option<u32>,
 
     /// Defaults to ~/.ssh/id_ed25519.
     #[arg(long)]
