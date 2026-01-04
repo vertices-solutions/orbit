@@ -64,8 +64,19 @@ async fn main() -> anyhow::Result<()> {
             match job_args.cmd {
                 JobCmd::Submit(args) => {
                     let local_path_buf = PathBuf::from(&args.local_path);
+                    let response = fetch_list_clusters(&mut client, "").await?;
+                    if !response
+                        .clusters
+                        .iter()
+                        .any(|cluster| cluster.name == args.name)
+                    {
+                        bail!(
+                            "cluster '{}' not found; use 'cluster add' to create it",
+                            args.name
+                        );
+                    }
                     println!("Submitting job...");
-                    println!("name: {}", args.name);
+                    println!("Name: {}", args.name);
                     let _ = std::io::stdout().flush();
                     let sbatchscript = resolve_sbatch_script(
                         &local_path_buf,
