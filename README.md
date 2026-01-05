@@ -9,17 +9,27 @@
 ╚═╝  ╚═╝╚═╝      ╚═════╝
 ```
 
-Local-first Slurm submissions over SSH.
+
 
 </div>
 
-`hpc` is a daemon + CLI that syncs a local project to a remote cluster and runs `sbatch`, while streaming output and handling keyboard-interactive/MFA prompts.
+`hpc` provides a local-first interface to Slurm over SSH.
+
+It allows you to do supercomputing from the comfort of your local development environment. 
+- **Add a cluster**: just tell `hpc` how to connect to cluster over SSH, and it will handle the rest for you.
+- **Submit a job**: `hpc` will handle for you where the submitted code and data will go and 
+- **Retrieve the results**: `hpc` provides a simple and intuitive way to check the job's results and retrieve them once they're ready
+- **Everything over SSH**: the best part is - `hpc` does everything over SSH!
 
 ## Motivation
 
 Submitting jobs to an HPC cluster usually means repeatedly doing the same glue work: copying a project to the cluster, picking the right `sbatch` script, dealing with interactive auth, and remembering where outputs landed, then rsync'ing them back.
 
 `hpc` keeps that workflow local, repeatable, and scriptable: you talk to a local daemon, and it takes care of the remote side.
+This allows you to:
+- Automate your supercomputing workflows
+- Use supercomputers together with your favourite AI tools
+- Keep code in a local git repository serving as a single source of truth.
 
 ## Features
 
