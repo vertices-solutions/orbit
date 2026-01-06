@@ -18,7 +18,7 @@ use super::{SyncFilterAction, SyncFilterRule};
 /// A single file chosen for synchronization from local to remote.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncItem {
-    /// Canonicalized absolute path to the local file on disk.
+    /// Local path to the file on disk.
     pub local_path: PathBuf,
     /// Path of the file relative to the local sync root.
     pub rel_path: PathBuf,
@@ -29,7 +29,7 @@ pub struct SyncItem {
 /// The full sync plan derived from a local root, a remote root, and filters.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPlan {
-    /// Canonicalized local directory that was used as the scan root.
+    /// Local directory that was used as the scan root.
     pub local_root: PathBuf,
     /// Remote directory prefix used to build `remote_path` values.
     pub remote_root: String,
@@ -41,16 +41,17 @@ pub struct SyncPlan {
 
 /// Build a sync plan by scanning `local_dir` and applying `filters`.
 ///
-/// This function canonicalizes the local directory, compiles glob-style filter
-/// rules, and walks the local directory tree. It prunes excluded directories,
-/// collects file entries, maps each file to a remote path, and records the
-/// required remote parent directories. `remote_dirs` is returned sorted.
+/// This function uses the local directory as provided, compiles glob-style
+/// filter rules, and walks the local directory tree. It prunes excluded
+/// directories, collects file entries, maps each file to a remote path, and
+/// records the required remote parent directories. `remote_dirs` is returned
+/// sorted.
 pub fn build_sync_plan<P: AsRef<Path>>(
     local_dir: P,
     remote_dir: &str,
     filters: &[SyncFilterRule],
 ) -> Result<SyncPlan> {
-    let local_root = local_dir.as_ref().canonicalize()?;
+    let local_root = local_dir.as_ref().to_path_buf();
     let path_filter = PathFilter::new(filters)?;
     let use_filter = !path_filter.is_empty();
     let mut items = Vec::new();
