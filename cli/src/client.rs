@@ -4,8 +4,8 @@
 use crate::errors::{format_server_error, format_status_error};
 use crate::mfa::{clear_transient_mfa, collect_mfa_answers_transient};
 use crate::stream::{
-    MinDurationSpinner, SubmitStreamOutcome, ensure_exit_code, handle_stream_events,
-    handle_stream_events_with_progress, handle_submit_stream_events,
+    MinDurationSpinner, Spinner, SubmitStreamOutcome, ensure_exit_code, handle_stream_events,
+    handle_stream_events_with_progress, handle_submit_stream_events, print_with_green_check_stderr,
 };
 use anyhow::bail;
 use proto::agent_client::AgentClient;
@@ -14,8 +14,10 @@ use proto::{
     ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse, LsRequest,
     LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
     RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest, add_cluster_init,
-    add_cluster_request, resolve_home_dir_request, resolve_home_dir_request_init, stream_event,
+    add_cluster_request, list_clusters_unit_response, resolve_home_dir_request,
+    resolve_home_dir_request_init, stream_event,
 };
+use std::net::{TcpStream, ToSocketAddrs};
 use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -265,6 +267,135 @@ pub async fn send_submit(
             Ok(())
         }
         SubmitStreamOutcome::Canceled => bail!("submission canceled"),
+    }
+}
+
+const CHECK_CONNECT_TIMEOUT_SECS: u64 = 3;
+
+fn check_cluster_reachable(host: &str, port: u16) -> anyhow::Result<()> {
+    let mut addrs = (host, port)
+        .to_socket_addrs()
+        .map_err(|_| anyhow::anyhow!("destination host could not be resolved"))?;
+    let mut resolved = false;
+    let timeout = std::time::Duration::from_secs(CHECK_CONNECT_TIMEOUT_SECS);
+    while let Some(addr) = addrs.next() {
+        resolved = true;
+        if TcpStream::connect_timeout(&addr, timeout).is_ok() {
+            return Ok(());
+        }
+    }
+    if !resolved {
+        bail!("destination host could not be resolved");
+    }
+    bail!("destination host is unreachable");
+}
+
+pub async fn validate_cluster_live(
+    client: &mut AgentClient<Channel>,
+    cluster: &proto::ListClustersUnitResponse,
+) -> anyhow::Result<()> {
+    let host = match cluster.host.as_ref() {
+        Some(list_clusters_unit_response::Host::Hostname(value)) => value.as_str(),
+        Some(list_clusters_unit_response::Host::Ipaddr(value)) => value.as_str(),
+        None => bail!("cluster '{}' has no configured host", cluster.name),
+    };
+    let port = u16::try_from(cluster.port)
+        .map_err(|_| anyhow::anyhow!("cluster '{}' has invalid port", cluster.name))?;
+    let check_message = format!("Checking {}", cluster.name);
+    let mut spinner = Some(Spinner::start(&check_message));
+
+    if let Err(err) = check_cluster_reachable(host, port) {
+        if let Some(spinner) = spinner.take() {
+            spinner.stop(None).await;
+        }
+        return Err(err);
+    }
+
+    let (tx_ans, rx_ans) = mpsc::channel::<LsRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(LsRequest {
+            msg: Some(proto::ls_request::Msg::Init(LsRequestInit {
+                name: cluster.name.clone(),
+                path: None,
+                job_id: None,
+            })),
+        })
+        .await?;
+
+    let response = client
+        .ls(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let mut inbound = response.into_inner();
+    let tx_mfa = tx_ans.clone();
+    let mut exit_code: Option<i32> = None;
+    let mut stderr = Vec::new();
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(proto::StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(_) => {}
+                stream_event::Event::Stderr(bytes) => {
+                    stderr.extend_from_slice(&bytes);
+                }
+                stream_event::Event::ExitCode(code) => {
+                    exit_code = Some(code);
+                    break;
+                }
+                stream_event::Event::Mfa(mfa) => {
+                    if let Some(spinner) = spinner.take() {
+                        spinner.stop(None).await;
+                    }
+                    eprintln!("Connection required: ");
+                    let (answers, lines) = collect_mfa_answers_transient(&mfa).await?;
+                    tx_mfa
+                        .send(LsRequest {
+                            msg: Some(proto::ls_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))?;
+                    clear_transient_mfa(lines.saturating_add(1))?;
+                    spinner = Some(Spinner::start(&check_message));
+                }
+                stream_event::Event::Error(err) => {
+                    if let Some(spinner) = spinner.take() {
+                        spinner.stop(None).await;
+                    }
+                    return Err(anyhow::anyhow!(format_server_error(&err)));
+                }
+            },
+            Ok(proto::StreamEvent { event: None }) => {}
+            Err(status) => {
+                if let Some(spinner) = spinner.take() {
+                    spinner.stop(None).await;
+                }
+                return Err(anyhow::anyhow!(format_status_error(&status)));
+            }
+        }
+    }
+
+    if let Some(spinner) = spinner.take() {
+        spinner.stop(None).await;
+    }
+
+    match exit_code {
+        Some(0) => {
+            print_with_green_check_stderr(&format!("{} live", cluster.name))?;
+            Ok(())
+        }
+        Some(code) => {
+            let detail = if stderr.is_empty() {
+                format!("exit code {code}")
+            } else {
+                String::from_utf8_lossy(&stderr).to_string()
+            };
+            bail!(
+                "cluster '{}' did not respond to checks: {}",
+                cluster.name,
+                detail.trim()
+            );
+        }
+        None => bail!("cluster '{}' did not respond to checks", cluster.name),
     }
 }
 

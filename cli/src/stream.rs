@@ -148,11 +148,7 @@ impl ProgressSpinner {
         }
     }
 
-    async fn print_output(
-        &mut self,
-        bytes: &[u8],
-        stream: OutputStream,
-    ) -> anyhow::Result<()> {
+    async fn print_output(&mut self, bytes: &[u8], stream: OutputStream) -> anyhow::Result<()> {
         self.pause().await;
         match stream {
             OutputStream::Stdout => write_all(&mut std::io::stdout(), bytes)?,
@@ -384,7 +380,10 @@ where
                     match phase {
                         submit_status::Phase::Resolved => {
                             if !printed_remote_path {
-                                println!("remote target: {}", status.remote_path);
+                                print_with_green_check_stdout(&format!(
+                                    "Remote path: {}",
+                                    status.remote_path
+                                ))?;
                                 printed_remote_path = true;
                             }
                         }
@@ -395,8 +394,9 @@ where
                         }
                         submit_status::Phase::TransferDone => {
                             if let Some(spinner) = spinner.take() {
-                                spinner.stop(Some("Transfer complete.")).await;
+                                spinner.stop(None).await;
                             }
+                            print_with_green_check_stderr("Data transfer complete.")?;
                         }
                         submit_status::Phase::Unspecified => {}
                     }
@@ -410,7 +410,8 @@ where
                     match status {
                         submit_result::Status::Submitted => {
                             if let Some(job_id) = result.job_id {
-                                println!("Successfully submitted sbatch script; job id {job_id}");
+                                print_with_green_check_stdout(&format!("Job {job_id} submitted!"))?;
+                                println!("Check job status with 'hpc job get {job_id}'");
                             } else {
                                 println!("Successfully submitted sbatch script.");
                             }
@@ -487,6 +488,48 @@ fn write_stderr_with_green_ticks(bytes: &[u8]) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+fn write_stdout_with_green_ticks(bytes: &[u8]) -> anyhow::Result<()> {
+    let mut stdout = std::io::stdout();
+    if !stdout.is_terminal() {
+        return write_all(&mut stdout, bytes);
+    }
+    let text = match std::str::from_utf8(bytes) {
+        Ok(v) => v,
+        Err(_) => return write_all(&mut stdout, bytes),
+    };
+    if !text.contains('✓') {
+        return write_all(&mut stdout, bytes);
+    }
+    for line in text.split_inclusive('\n') {
+        if let Some(rest) = line.strip_prefix('✓') {
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Green),
+                Print("✓"),
+                ResetColor,
+                Print(rest)
+            )?;
+        } else {
+            write_all(&mut stdout, line.as_bytes())?;
+        }
+    }
+    Ok(())
+}
+
+pub fn print_with_green_check_stdout(message: &str) -> anyhow::Result<()> {
+    let mut line = String::from("✓ ");
+    line.push_str(message);
+    line.push('\n');
+    write_stdout_with_green_ticks(line.as_bytes())
+}
+
+pub fn print_with_green_check_stderr(message: &str) -> anyhow::Result<()> {
+    let mut line = String::from("✓ ");
+    line.push_str(message);
+    line.push('\n');
+    write_stderr_with_green_ticks(line.as_bytes())
 }
 
 fn write_all<W: Write>(w: &mut W, buf: &[u8]) -> anyhow::Result<()> {
