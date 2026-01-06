@@ -5,7 +5,6 @@ use clap::{CommandFactory, FromArgMatches, Parser};
 use log::LevelFilter;
 use proto::agent_server::AgentServer;
 use std::{
-    io::IsTerminal,
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
 };
@@ -65,13 +64,6 @@ struct Opts {
     port: Option<u16>,
 }
 
-const HPCD_WORDART: &str = r#"██╗  ██╗██████╗  ██████╗██████╗
-██║  ██║██╔══██╗██╔════╝██╔══██╗
-███████║██████╔╝██║     ██║  ██║
-██╔══██║██╔═══╝ ██║     ██║  ██║
-██║  ██║██║     ╚██████╗██████╔╝
-╚═╝  ╚═╝╚═╝      ╚═════╝╚═════╝"#;
-
 const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗██████╗
 ██║  ██║██╔══██╗██╔════╝██╔══██╗
 ███████║██████╔╝██║     ██║  ██║
@@ -107,24 +99,6 @@ fn init_logging(verbose: bool) {
     builder.init();
 }
 
-fn format_check_line(message: &str) -> String {
-    if std::io::stdout().is_terminal() {
-        format!("\x1b[32m✓\x1b[0m {message}")
-    } else {
-        format!("✓ {message}")
-    }
-}
-
-fn print_startup_banner(server_addr: SocketAddr) {
-    let version = env!("CARGO_PKG_VERSION");
-    println!("{HPCD_WORDART}\n");
-    println!("{}", format_check_line(&format!("hpcd {version}")));
-    println!(
-        "{}\n",
-        format_check_line(&format!("Listening on {server_addr}"))
-    );
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut cmd = Opts::command();
@@ -153,7 +127,6 @@ async fn main() -> anyhow::Result<()> {
 
     let svc = agent::AgentSvc::new(db);
     svc.spawn_job_checker(Duration::from_secs(config.job_check_interval_secs));
-    print_startup_banner(server_addr);
     log::info!("server listening on {}", server_addr);
     Server::builder()
         .add_service(AgentServer::new(svc))
