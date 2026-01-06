@@ -7,7 +7,9 @@ use cli::args::{Cli, ClusterCmd, Cmd, JobCmd};
 use cli::client::{
     fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_delete_cluster, send_job_ls,
     send_job_retrieve, send_ls, send_ping, send_resolve_home_dir, send_submit,
+    validate_cluster_live,
 };
+use cli::config;
 use cli::filters::submit_filters_from_matches;
 use cli::format::{
     cluster_host_string, format_cluster_details, format_cluster_details_json, format_clusters_json,
@@ -19,6 +21,7 @@ use cli::interactive::{
     validate_default_base_path_with_feedback,
 };
 use cli::sbatch::resolve_sbatch_script;
+use cli::stream::print_with_green_check_stdout;
 use proto::ListJobsUnitResponse;
 use proto::agent_client::AgentClient;
 use std::io::Write;
@@ -52,43 +55,55 @@ async fn main() -> anyhow::Result<()> {
     let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
     let submit_filters = submit_filters_from_matches(&matches);
+    let daemon_endpoint = config::daemon_endpoint(cli.config.clone())?;
     match cli.cmd {
         Cmd::Ping => {
-            let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
+            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
             match send_ping(&mut client).await {
                 Ok(()) => println!("pong"),
                 Err(e) => bail!(e),
             }
         }
         Cmd::Job(job_args) => {
-            let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
+            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
             match job_args.cmd {
                 JobCmd::Submit(args) => {
                     let local_path_buf = PathBuf::from(&args.local_path);
                     let response = fetch_list_clusters(&mut client, "").await?;
-                    if !response
+                    let Some(cluster) = response
                         .clusters
                         .iter()
-                        .any(|cluster| cluster.name == args.name)
-                    {
+                        .find(|cluster| cluster.name == args.name)
+                    else {
                         bail!(
                             "cluster '{}' not found; use 'cluster add' to create it",
                             args.name
                         );
-                    }
-                    println!("Submitting job...");
-                    println!("Name: {}", args.name);
-                    let _ = std::io::stdout().flush();
+                    };
+                    validate_cluster_live(&mut client, cluster).await?;
+                    let resolved_local_path = local_path_buf.canonicalize().map_err(|e| {
+                        anyhow::anyhow!(
+                            "failed to resolve local path '{}': {e}",
+                            local_path_buf.display()
+                        )
+                    })?;
                     let sbatchscript = resolve_sbatch_script(
                         &local_path_buf,
                         args.sbatchscript.as_deref(),
                         args.headless,
                     )?;
-                    println!("selected sbatch script: {sbatchscript}");
+                    let resolved_local_path_display = resolved_local_path.display().to_string();
+                    print_with_green_check_stdout(&format!(
+                        "Selected sbatch script: {sbatchscript}"
+                    ))?;
+                    print_with_green_check_stdout(&format!(
+                        "Local path: {resolved_local_path_display}"
+                    ))?;
+                    let _ = std::io::stdout().flush();
                     send_submit(
                         &mut client,
                         &args.name,
-                        &args.local_path,
+                        &resolved_local_path_display,
                         &args.remote_path,
                         &sbatchscript,
                         &submit_filters,
@@ -153,7 +168,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::Cluster(cluster_args) => {
-            let mut client = AgentClient::connect("http://127.0.0.1:50056").await?;
+            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
             match cluster_args.cmd {
                 ClusterCmd::List(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;

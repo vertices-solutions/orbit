@@ -8,21 +8,26 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const APP_DIR_NAME: &str = "hpcd";
-const CONFIG_FILE_NAME: &str = "hpcd.toml";
-const DATABASE_FILE_NAME: &str = "hpcd.sqlite";
+const APP_DIR_NAME: &str = "hpc";
+const CONFIG_FILE_NAME: &str = "hpc.toml";
+const DATABASE_FILE_NAME: &str = "hpc.sqlite";
 const DEFAULT_JOB_CHECK_INTERVAL_SECS: u64 = 5;
+const DEFAULT_PORT: u16 = 50056;
 
 #[derive(Debug, Default, Deserialize)]
 struct FileConfig {
     database_path: Option<String>,
     job_check_interval_secs: Option<u64>,
+    port: Option<u16>,
+    verbose: Option<bool>,
 }
 
 #[derive(Debug)]
 pub struct Config {
     pub database_path: PathBuf,
     pub job_check_interval_secs: u64,
+    pub port: u16,
+    pub verbose: bool,
     pub config_path: Option<PathBuf>,
 }
 
@@ -30,6 +35,8 @@ pub struct Config {
 pub struct Overrides {
     pub database_path: Option<PathBuf>,
     pub job_check_interval_secs: Option<u64>,
+    pub port: Option<u16>,
+    pub verbose: Option<bool>,
 }
 
 pub fn load(config_path_override: Option<PathBuf>, overrides: Overrides) -> Result<Config> {
@@ -57,12 +64,23 @@ pub fn load(config_path_override: Option<PathBuf>, overrides: Overrides) -> Resu
         },
     };
 
+    let port = overrides
+        .port
+        .or(file_config.port)
+        .unwrap_or(DEFAULT_PORT);
+    if port == 0 {
+        anyhow::bail!("port must be between 1 and 65535");
+    }
+    let verbose = overrides.verbose.or(file_config.verbose).unwrap_or(false);
+
     Ok(Config {
         database_path,
         job_check_interval_secs: overrides
             .job_check_interval_secs
             .or(file_config.job_check_interval_secs)
             .unwrap_or(DEFAULT_JOB_CHECK_INTERVAL_SECS),
+        port,
+        verbose,
         config_path,
     })
 }
@@ -153,10 +171,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpcd.toml");
+        let config_path = config_dir.join("hpc.toml");
         fs::write(
             &config_path,
-            "database_path = \"db/hpcd.sqlite\"\njob_check_interval_secs = 9\n",
+            "database_path = \"db/hpc.sqlite\"\njob_check_interval_secs = 9\n",
         )
         .unwrap();
 
@@ -164,9 +182,10 @@ mod tests {
         let config = load(Some(config_path.clone()), Overrides::default()).unwrap();
         assert_eq!(
             config.database_path,
-            config_dir.join("db").join("hpcd.sqlite")
+            config_dir.join("db").join("hpc.sqlite")
         );
         assert_eq!(config.job_check_interval_secs, 9);
+        assert_eq!(config.port, DEFAULT_PORT);
         assert_eq!(config.config_path, Some(config_path));
     }
 
@@ -175,7 +194,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpcd.toml");
+        let config_path = config_dir.join("hpc.toml");
         fs::write(
             &config_path,
             "database_path = \"db/from_config.sqlite\"\njob_check_interval_secs = 9\n",
@@ -187,6 +206,8 @@ mod tests {
             Overrides {
                 database_path: Some(PathBuf::from("from_flag.sqlite")),
                 job_check_interval_secs: Some(2),
+                port: None,
+                verbose: None,
             },
         )
         .unwrap();
@@ -200,7 +221,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpcd.toml");
+        let config_path = config_dir.join("hpc.toml");
         fs::write(
             &config_path,
             "database_path = \"db/from_config.sqlite\"\njob_check_interval_secs = 9\n",
@@ -212,6 +233,8 @@ mod tests {
             Overrides {
                 database_path: None,
                 job_check_interval_secs: Some(2),
+                port: None,
+                verbose: None,
             },
         )
         .unwrap();
@@ -228,26 +251,111 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpcd.toml");
-        fs::write(&config_path, "database_path = \"db/hpcd.sqlite\"\n").unwrap();
+        let config_path = config_dir.join("hpc.toml");
+        fs::write(&config_path, "database_path = \"db/hpc.sqlite\"\n").unwrap();
 
         let config = load(Some(config_path), Overrides::default()).unwrap();
         assert_eq!(
             config.job_check_interval_secs,
             DEFAULT_JOB_CHECK_INTERVAL_SECS
         );
+        assert_eq!(config.port, DEFAULT_PORT);
+    }
+
+    #[test]
+    fn reads_verbose_from_config() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("hpc.toml");
+        fs::write(
+            &config_path,
+            "database_path = \"db/hpc.sqlite\"\nverbose = true\n",
+        )
+        .unwrap();
+
+        let config = load(Some(config_path), Overrides::default()).unwrap();
+        assert!(config.verbose);
+    }
+
+    #[test]
+    fn reads_port_from_config() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("hpc.toml");
+        fs::write(
+            &config_path,
+            "database_path = \"db/hpc.sqlite\"\nport = 40001\n",
+        )
+        .unwrap();
+
+        let config = load(Some(config_path), Overrides::default()).unwrap();
+        assert_eq!(config.port, 40001);
+    }
+
+    #[test]
+    fn port_override_takes_precedence() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("hpc.toml");
+        fs::write(
+            &config_path,
+            "database_path = \"db/hpc.sqlite\"\nport = 40001\n",
+        )
+        .unwrap();
+
+        let config = load(
+            Some(config_path),
+            Overrides {
+                database_path: None,
+                job_check_interval_secs: None,
+                port: Some(40002),
+                verbose: None,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(config.port, 40002);
+    }
+
+    #[test]
+    fn verbose_override_takes_precedence() {
+        let dir = TempDir::new().unwrap();
+        let config_dir = dir.path().join("config");
+        fs::create_dir_all(&config_dir).unwrap();
+        let config_path = config_dir.join("hpc.toml");
+        fs::write(
+            &config_path,
+            "database_path = \"db/hpc.sqlite\"\nverbose = false\n",
+        )
+        .unwrap();
+
+        let config = load(
+            Some(config_path),
+            Overrides {
+                database_path: None,
+                job_check_interval_secs: None,
+                port: None,
+                verbose: Some(true),
+            },
+        )
+        .unwrap();
+
+        assert!(config.verbose);
     }
 
     #[test]
     fn ensure_database_dir_creates_parent_directory() {
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("nested").join("hpcd.sqlite");
+        let db_path = dir.path().join("nested").join("hpc.sqlite");
         ensure_database_dir(&db_path).unwrap();
         assert!(dir.path().join("nested").is_dir());
     }
 
     #[test]
     fn ensure_database_dir_no_parent_does_not_error() {
-        ensure_database_dir(Path::new("hpcd.sqlite")).unwrap();
+        ensure_database_dir(Path::new("hpc.sqlite")).unwrap();
     }
 }
