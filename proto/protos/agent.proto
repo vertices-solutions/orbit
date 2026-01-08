@@ -113,6 +113,7 @@ message SubmitRequestInit {
   string name = 3; // cluster name - should be something easy to remember
   string sbatchscript = 4;
   repeated SubmitPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
+  bool force_new_directory = 6; // ignore prior remote dir for this local path
 }
 
 enum SubmitPathFilterAction {

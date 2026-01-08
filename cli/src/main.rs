@@ -105,6 +105,7 @@ async fn main() -> anyhow::Result<()> {
                         &args.name,
                         &resolved_local_path_display,
                         &args.remote_path,
+                        args.force_new_directory,
                         &sbatchscript,
                         &submit_filters,
                     )
