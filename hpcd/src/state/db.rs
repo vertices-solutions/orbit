@@ -866,6 +866,28 @@ impl HostStore {
         Ok(rec.try_get::<i64, _>("id")?)
     }
 
+    pub async fn latest_remote_path_for_local_path(
+        &self,
+        host_name: &str,
+        local_path: &str,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            r#"
+            select j.remote_path as remote_path
+            from jobs j
+            join hosts h on j.host_id = h.id
+            where h.name = ?1 and j.local_path = ?2
+            order by j.id desc
+            limit 1
+            "#,
+        )
+        .bind(host_name)
+        .bind(local_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_get::<String, _>("remote_path").unwrap()))
+    }
+
     pub async fn list_jobs_for_host(&self, host_id: i64) -> Result<Vec<JobRecord>> {
         let rows = sqlx::query(
             r#"
@@ -1307,6 +1329,45 @@ mod tests {
         assert!(got.finished_at.is_none());
         assert!(got.terminal_state.is_none());
         assert!(!got.created_at.is_empty());
+    }
+
+    #[tokio::test]
+    async fn latest_remote_path_for_local_path_returns_latest() {
+        let db = HostStore::open_memory().await.unwrap();
+        let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
+        db.insert_host(&host).await.unwrap();
+
+        let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
+        let job1 = NewJob {
+            scheduler_id: Some(40),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run1".into(),
+            stdout_path: "/remote/run1/slurm-40.out".into(),
+            stderr_path: None,
+        };
+        let job2 = NewJob {
+            scheduler_id: Some(41),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run2".into(),
+            stdout_path: "/remote/run2/slurm-41.out".into(),
+            stderr_path: None,
+        };
+        db.insert_job(&job1).await.unwrap();
+        db.insert_job(&job2).await.unwrap();
+
+        let latest = db
+            .latest_remote_path_for_local_path("host-a", "/tmp/project")
+            .await
+            .unwrap();
+        assert_eq!(latest.as_deref(), Some("/remote/run2"));
+
+        let missing = db
+            .latest_remote_path_for_local_path("host-a", "/tmp/missing")
+            .await
+            .unwrap();
+        assert!(missing.is_none());
     }
 
     #[tokio::test]

@@ -1004,14 +1004,16 @@ impl Agent for AgentSvc {
             })?
             .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
 
-        let (local_path, remote_path, name, sbatchscript, filters) = match init.msg {
-            Some(proto::submit_request::Msg::Init(i)) => (
-                i.local_path,
-                i.remote_path,
-                i.name,
-                i.sbatchscript,
-                i.filters,
-            ),
+        let (local_path, remote_path, name, sbatchscript, filters, force_new_directory) =
+            match init.msg {
+                Some(proto::submit_request::Msg::Init(i)) => (
+                    i.local_path,
+                    i.remote_path,
+                    i.name,
+                    i.sbatchscript,
+                    i.filters,
+                    i.force_new_directory,
+                ),
             _ => return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT)),
         };
         let requested_remote_path = remote_path.as_deref().unwrap_or("<default>");
@@ -1070,38 +1072,61 @@ impl Agent for AgentSvc {
         };
 
         let hs = self.hosts();
-        let remote_path = match remote_path.as_deref() {
-            Some(v) if PathBuf::from(v).is_absolute() => {
-                match resolve_submit_remote_path(Some(v), v, "") {
-                    Ok(value) => value,
-                    Err(e) => {
-                        log::warn!(
-                            "submit failed remote_addr={remote_addr} name={name} reason=invalid_remote_path"
-                        );
-                        return Err(e);
-                    }
+        let reuse_remote_path = if remote_path.is_none() && !force_new_directory {
+            match hs
+                .latest_remote_path_for_local_path(&name, &local_path)
+                .await
+            {
+                Ok(value) => value,
+                Err(e) => {
+                    log::warn!(
+                        "submit failed remote_addr={remote_addr} name={name} reason=job_lookup_failed error={e}"
+                    );
+                    return Err(Status::internal(error_codes::INTERNAL_ERROR));
                 }
             }
-            other => {
-                let default_base_path = match get_default_base_path(hs.as_ref(), &name).await {
-                    Ok(value) => value,
-                    Err(e) => {
-                        log::warn!(
-                            "submit failed remote_addr={remote_addr} name={name} reason=default_base_path_unavailable"
-                        );
-                        return Err(e);
+        } else {
+            None
+        };
+        let (remote_path, allow_existing_remote_path) = match reuse_remote_path {
+            Some(value) => (value, true),
+            None => {
+                let resolved = match remote_path.as_deref() {
+                    Some(v) if PathBuf::from(v).is_absolute() => {
+                        match resolve_submit_remote_path(Some(v), v, "") {
+                            Ok(value) => value,
+                            Err(e) => {
+                                log::warn!(
+                                    "submit failed remote_addr={remote_addr} name={name} reason=invalid_remote_path"
+                                );
+                                return Err(e);
+                            }
+                        }
+                    }
+                    other => {
+                        let default_base_path =
+                            match get_default_base_path(hs.as_ref(), &name).await {
+                                Ok(value) => value,
+                                Err(e) => {
+                                    log::warn!(
+                                        "submit failed remote_addr={remote_addr} name={name} reason=default_base_path_unavailable"
+                                    );
+                                    return Err(e);
+                                }
+                            };
+                        let random_suffix = util::random::generate_run_directory_name();
+                        match resolve_submit_remote_path(other, &default_base_path, &random_suffix) {
+                            Ok(value) => value,
+                            Err(e) => {
+                                log::warn!(
+                                    "submit failed remote_addr={remote_addr} name={name} reason=invalid_remote_path"
+                                );
+                                return Err(e);
+                            }
+                        }
                     }
                 };
-                let random_suffix = util::random::generate_run_directory_name();
-                match resolve_submit_remote_path(other, &default_base_path, &random_suffix) {
-                    Ok(value) => value,
-                    Err(e) => {
-                        log::warn!(
-                            "submit failed remote_addr={remote_addr} name={name} reason=invalid_remote_path"
-                        );
-                        return Err(e);
-                    }
-                }
+                (resolved, false)
             }
         };
         log::info!(
@@ -1158,7 +1183,7 @@ impl Agent for AgentSvc {
             }
         };
 
-        if remote_path_exists {
+        if remote_path_exists && !allow_existing_remote_path {
             log::warn!(
                 "submit failed remote_addr={remote_addr} name={name} reason=remote_path_exists remote_path={remote_path}"
             );
