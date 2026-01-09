@@ -99,6 +99,49 @@ fn init_logging(verbose: bool) {
     builder.init();
 }
 
+fn log_config_report(report: &config::ConfigReport) {
+    match (&report.config_path, report.config_path_source) {
+        (Some(path), Some(source)) => {
+            log::info!(
+                "config path: {} (source={}, present={})",
+                path.display(),
+                source.as_str(),
+                report.config_file_present
+            );
+        }
+        (Some(path), None) => {
+            log::info!(
+                "config path: {} (present={})",
+                path.display(),
+                report.config_file_present
+            );
+        }
+        (None, _) => {
+            log::info!("config path: (none)");
+        }
+    }
+    log::info!(
+        "config database_path: {} (source={})",
+        report.database_path.value.display(),
+        report.database_path.source.as_str()
+    );
+    log::info!(
+        "config job_check_interval_secs: {} (source={})",
+        report.job_check_interval_secs.value,
+        report.job_check_interval_secs.source.as_str()
+    );
+    log::info!(
+        "config port: {} (source={})",
+        report.port.value,
+        report.port.source.as_str()
+    );
+    log::info!(
+        "config verbose: {} (source={})",
+        report.verbose.value,
+        report.verbose.source.as_str()
+    );
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut cmd = Opts::command();
@@ -110,7 +153,10 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let opts = Opts::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
-    let config = config::load(
+    let config::LoadResult {
+        config,
+        report,
+    } = config::load_with_report(
         opts.config,
         config::Overrides {
             database_path: opts.database_path,
@@ -120,7 +166,7 @@ async fn main() -> anyhow::Result<()> {
         },
     )?;
     init_logging(config.verbose);
-    log::debug!("config path: {:?}", config.config_path);
+    log_config_report(&report);
     config::ensure_database_dir(&config.database_path)?;
     let db = state::db::HostStore::open(&config.database_path).await?;
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));

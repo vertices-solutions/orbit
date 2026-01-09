@@ -31,6 +31,46 @@ pub struct Config {
     pub config_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigSource {
+    Override,
+    ConfigFile,
+    Default,
+}
+
+impl ConfigSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ConfigSource::Override => "override",
+            ConfigSource::ConfigFile => "config",
+            ConfigSource::Default => "default",
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct ConfigValue<T> {
+    pub value: T,
+    pub source: ConfigSource,
+}
+
+#[derive(Debug)]
+pub struct ConfigReport {
+    pub config_path: Option<PathBuf>,
+    pub config_path_source: Option<ConfigSource>,
+    pub config_file_present: bool,
+    pub database_path: ConfigValue<PathBuf>,
+    pub job_check_interval_secs: ConfigValue<u64>,
+    pub port: ConfigValue<u16>,
+    pub verbose: ConfigValue<bool>,
+}
+
+#[derive(Debug)]
+pub struct LoadResult {
+    pub config: Config,
+    pub report: ConfigReport,
+}
+
 #[derive(Debug, Default)]
 pub struct Overrides {
     pub database_path: Option<PathBuf>,
@@ -40,49 +80,108 @@ pub struct Overrides {
 }
 
 pub fn load(config_path_override: Option<PathBuf>, overrides: Overrides) -> Result<Config> {
+    Ok(load_with_report(config_path_override, overrides)?.config)
+}
+
+pub fn load_with_report(
+    config_path_override: Option<PathBuf>,
+    overrides: Overrides,
+) -> Result<LoadResult> {
     let required = config_path_override.is_some();
-    let config_path = match config_path_override {
-        Some(path) => Some(expand_path(path)),
-        None => default_config_path().ok(),
+    let (config_path, config_path_source) = match config_path_override {
+        Some(path) => (Some(expand_path(path)), Some(ConfigSource::Override)),
+        None => match default_config_path().ok() {
+            Some(path) => (Some(path), Some(ConfigSource::Default)),
+            None => (None, None),
+        },
     };
+    let config_file_present = config_path
+        .as_deref()
+        .map(|path| path.exists())
+        .unwrap_or(false);
 
     let file_config = match config_path.as_deref() {
         Some(path) => read_config_file(path, required)?,
         None => FileConfig::default(),
     };
 
-    let database_path = match overrides.database_path {
-        Some(path) => expand_path(path),
+    let (database_path, database_source) = match overrides.database_path {
+        Some(path) => (expand_path(path), ConfigSource::Override),
         None => match file_config.database_path {
-            Some(raw) => resolve_path(
-                &raw,
-                config_path.as_deref().and_then(|path| path.parent()),
+            Some(raw) => (
+                resolve_path(
+                    &raw,
+                    config_path.as_deref().and_then(|path| path.parent()),
+                ),
+                ConfigSource::ConfigFile,
             ),
-            None => default_database_path().with_context(|| {
-                "failed to resolve default database path; specify --database-path or set database_path in the config file"
-            })?,
+            None => (
+                default_database_path().with_context(|| {
+                    "failed to resolve default database path; specify --database-path or set database_path in the config file"
+                })?,
+                ConfigSource::Default,
+            ),
         },
     };
 
-    let port = overrides
-        .port
-        .or(file_config.port)
-        .unwrap_or(DEFAULT_PORT);
+    let (port, port_source) = match overrides.port {
+        Some(port) => (port, ConfigSource::Override),
+        None => match file_config.port {
+            Some(port) => (port, ConfigSource::ConfigFile),
+            None => (DEFAULT_PORT, ConfigSource::Default),
+        },
+    };
     if port == 0 {
         anyhow::bail!("port must be between 1 and 65535");
     }
-    let verbose = overrides.verbose.or(file_config.verbose).unwrap_or(false);
+    let (verbose, verbose_source) = match overrides.verbose {
+        Some(verbose) => (verbose, ConfigSource::Override),
+        None => match file_config.verbose {
+            Some(verbose) => (verbose, ConfigSource::ConfigFile),
+            None => (false, ConfigSource::Default),
+        },
+    };
 
-    Ok(Config {
+    let (job_check_interval_secs, job_check_interval_source) =
+        match overrides.job_check_interval_secs {
+            Some(secs) => (secs, ConfigSource::Override),
+            None => match file_config.job_check_interval_secs {
+                Some(secs) => (secs, ConfigSource::ConfigFile),
+                None => (DEFAULT_JOB_CHECK_INTERVAL_SECS, ConfigSource::Default),
+            },
+        };
+
+    let config = Config {
         database_path,
-        job_check_interval_secs: overrides
-            .job_check_interval_secs
-            .or(file_config.job_check_interval_secs)
-            .unwrap_or(DEFAULT_JOB_CHECK_INTERVAL_SECS),
+        job_check_interval_secs,
         port,
         verbose,
+        config_path: config_path.clone(),
+    };
+
+    let report = ConfigReport {
         config_path,
-    })
+        config_path_source,
+        config_file_present,
+        database_path: ConfigValue {
+            value: config.database_path.clone(),
+            source: database_source,
+        },
+        job_check_interval_secs: ConfigValue {
+            value: config.job_check_interval_secs,
+            source: job_check_interval_source,
+        },
+        port: ConfigValue {
+            value: config.port,
+            source: port_source,
+        },
+        verbose: ConfigValue {
+            value: config.verbose,
+            source: verbose_source,
+        },
+    };
+
+    Ok(LoadResult { config, report })
 }
 
 pub fn ensure_database_dir(path: &Path) -> Result<()> {
