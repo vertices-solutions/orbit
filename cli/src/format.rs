@@ -47,13 +47,15 @@ pub fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
     let status = job_status(item);
     json!({
         "job_id": item.job_id,
-        "scheduler_id": item.scheduler_id,
+        "local_path": item.local_path.as_str(),
+        "remote_path": item.remote_path.as_str(),
         "name": item.name.as_str(),
         "status": status,
         "is_completed": item.is_completed,
         "terminal_state": item.terminal_state.as_deref(),
         "created_at": item.created_at.as_str(),
         "finished_at": item.finished_at.as_deref(),
+        "scheduler_id": item.scheduler_id,
     })
 }
 
@@ -176,11 +178,11 @@ pub fn format_cluster_details_json(item: &ListClustersUnitResponse) -> anyhow::R
 pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
         "job id",
-        "scheduler id",
-        "cluster name",
+        "cluster id",
         "status",
         "created",
         "finished",
+        "scheduler id",
     ];
     let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
 
@@ -194,11 +196,11 @@ pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
         let finished_at = item.finished_at.clone().unwrap_or_else(|| "-".to_string());
         rows.push((
             job_id,
-            scheduler_id,
             item.name.clone(),
             completed_str.to_string(),
             item.created_at.clone(),
             finished_at,
+            scheduler_id,
         ));
     }
 
@@ -233,7 +235,7 @@ pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
         w2 = widths[2],
         w3 = widths[3],
         w4 = widths[4],
-        w5 = widths[5]
+        w5 = widths[5],
     ));
 
     for row in rows {
@@ -250,7 +252,7 @@ pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
             w2 = widths[2],
             w3 = widths[3],
             w4 = widths[4],
-            w5 = widths[5]
+            w5 = widths[5],
         ));
     }
 
@@ -269,14 +271,16 @@ pub fn format_job_details(item: &ListJobsUnitResponse) -> String {
         .unwrap_or_else(|| "-".to_string());
     let completed_str = job_status(item);
     format!(
-        "job_id: {}\nscheduler_id: {}\nname: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\n",
+        "job_id: {}\nlocal_path: {}\nremote_path: {}\nname: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\nscheduler_id: {}\n",
         item.job_id,
-        scheduler_id,
+        item.local_path.as_str(),
+        item.remote_path.as_str(),
         item.name,
         completed_str,
         item.terminal_state.as_deref().unwrap_or("-"),
         item.created_at,
-        item.finished_at.as_deref().unwrap_or("-")
+        item.finished_at.as_deref().unwrap_or("-"),
+        scheduler_id
     )
 }
 
@@ -324,6 +328,8 @@ mod tests {
             finished_at: Some("2024-01-01T01:00:00Z".to_string()),
             is_completed: completed,
             terminal_state: terminal_state.map(|s| s.to_string()),
+            local_path: "/tmp/project".to_string(),
+            remote_path: "/remote/project".to_string(),
         }
     }
 
