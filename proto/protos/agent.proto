@@ -172,6 +172,7 @@ message ListClustersUnitResponse {
   string name = 7;
   bool accounting_available = 8;
   optional string default_base_path = 9;
+  bool reachable = 10;
 }
 
 message ListJobsRequest {

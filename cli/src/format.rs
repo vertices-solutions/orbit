@@ -35,6 +35,7 @@ pub fn cluster_to_json(item: &ListClustersUnitResponse) -> serde_json::Value {
         "address": cluster_host_string(item),
         "port": item.port,
         "connected": item.connected,
+        "reachable": item.reachable,
         "status": status,
         "identity_path": item.identity_path.as_deref(),
         "accounting_available": item.accounting_available,
@@ -65,14 +66,18 @@ fn str_width(value: &str) -> usize {
 }
 
 pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
-    let headers = ["name", "destination", "status", "accounting"];
-    let mut rows: Vec<(String, String, String, String)> = Vec::new();
+    let headers = ["name", "destination", "status", "reachable", "accounting"];
+    let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
 
     for item in clusters.iter() {
         let ssh_str = cluster_ssh_string(item);
         let connected_str = match item.connected {
             true => "connected",
             false => "disconnected",
+        };
+        let reachable_str = match item.reachable {
+            true => "yes",
+            false => "no",
         };
         let accounting_str = match item.accounting_available {
             true => "enabled",
@@ -82,47 +87,54 @@ pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
             item.name.clone(),
             ssh_str,
             connected_str.to_string(),
+            reachable_str.to_string(),
             accounting_str.to_string(),
         ));
     }
 
-    let mut widths: [usize; 4] = [
+    let mut widths: [usize; 5] = [
         str_width(headers[0]),
         str_width(headers[1]),
         str_width(headers[2]),
         str_width(headers[3]),
+        str_width(headers[4]),
     ];
     for row in rows.iter() {
         widths[0] = widths[0].max(str_width(&row.0));
         widths[1] = widths[1].max(str_width(&row.1));
         widths[2] = widths[2].max(str_width(&row.2));
         widths[3] = widths[3].max(str_width(&row.3));
+        widths[4] = widths[4].max(str_width(&row.4));
     }
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
+        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}\n",
         headers[0],
         headers[1],
         headers[2],
         headers[3],
+        headers[4],
         w0 = widths[0],
         w1 = widths[1],
         w2 = widths[2],
         w3 = widths[3],
+        w4 = widths[4],
     ));
 
     for row in rows {
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}\n",
             row.0,
             row.1,
             row.2,
             row.3,
+            row.4,
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
             w3 = widths[3],
+            w4 = widths[4],
         ));
     }
 
@@ -296,6 +308,7 @@ mod tests {
             port: 22,
             host,
             connected: true,
+            reachable: true,
             name: "cluster-a".to_string(),
             accounting_available: false,
             default_base_path: None,
@@ -358,8 +371,10 @@ mod tests {
         let output = format_clusters_table(&[cluster]);
         assert!(output.contains("name"));
         assert!(output.contains("destination"));
+        assert!(output.contains("reachable"));
         assert!(output.contains("cluster-a"));
         assert!(output.contains("alice@node:22"));
+        assert!(output.contains("yes"));
     }
 
     #[test]
