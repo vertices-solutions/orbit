@@ -14,7 +14,7 @@
 > **⚠️ Alpha Software Warning**
 > hpc is in alpha stage. Expect bugs and interface changes between minor versions.
 
-![demo](docs/assets/basic-demo.gif)
+
 
 `hpc` provides a local-first interface to Slurm over SSH.
 
@@ -26,10 +26,14 @@ It allows you to do supercomputing from the comfort of your local development en
 - **Everything over SSH**: the best part is - `hpc` does everything over SSH!
 
 
+## Demo
+Here's a short demo showcasing the basic flow of hpc:
+[![asciicast](https://asciinema.org/a/00nj8QnJOYamcUvI.svg)](https://asciinema.org/a/00nj8QnJOYamcUvI)
+
 ## Quickstart
 
 ```sh
-# install hpc through Homebrew(https://brew.sh)
+# install hpc through Homebrew (https://brew.sh)
 brew install hpcd-dev/hpc/hpc
 
 # interactively add your first cluster, give it a name you will use to refer to it later
@@ -120,6 +124,9 @@ cargo run -p cli -- --help
 - `proto/` — shared gRPC/protobuf contract and generated types.
   - `proto/protos/` — `.proto` sources.
   - `proto/build.rs` — code generation entrypoint.
+- `scripts` - development scripts.
+- `tests` - end-to-end tests for hpc.
+- `docs` - where documentation and documenting assets for this project go
 
 ## Compatibility
 `hpc` has been tested on clusters with Slurm versions newer than 22.05.8. 
@@ -132,6 +139,10 @@ When creating an issue, make sure to include the following:
 - What version of hpc are you running?
 - What Slurm version is on your cluster?
 - What OS, including version, are you using?
+
+## Known issues
+- Unreachable cluster sometimes causes timeouts of `cluster list` and `cluster get <cluster name>`. This is a known issue that's being worked on
+- No way to cancel a job: 
 
 
 ## License
