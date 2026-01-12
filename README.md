@@ -14,7 +14,7 @@
 > **⚠️ Alpha Software Warning**
 > hpc is in alpha stage. Expect bugs and interface changes between minor versions.
 
-![demo](docs/assets/demo.gif)
+![demo](docs/assets/basic-demo.gif)
 
 `hpc` provides a local-first interface to Slurm over SSH.
 

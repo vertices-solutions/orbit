@@ -136,7 +136,7 @@ git add cli/Cargo.toml hpcd/Cargo.toml proto/Cargo.toml Cargo.lock
 commit_message="Release $new_version"
 git commit -m "$commit_message"
 
-tag="$new_version"
+tag="v$new_version"
 if git show-ref --tags --quiet --verify "refs/tags/$tag"; then
 	echo "error: tag already exists: $tag" >&2
 	exit 1
