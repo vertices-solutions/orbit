@@ -96,7 +96,7 @@ impl SessionManager {
                 &self.params.addr
             );
             // Establish TCP + SSH
-            let handler = ClientHandler;
+            let handler = ClientHandler::new(self.params.host.clone(), self.params.addr);
             let mut handle = russh::client::connect(self.config.clone(), self.params.addr, handler)
                 .await
                 .context("SSH connect failed")?;

@@ -311,7 +311,12 @@ impl Agent for AgentSvc {
             "resolve_home_dir start remote_addr={remote_addr} session_name={session_name_label} username={username} host={host_label} port={port}"
         );
 
+        let host_for_known_hosts = match &addr {
+            Address::Hostname(host) => host.clone(),
+            Address::Ip(host) => host.to_string(),
+        };
         let ssh_params = crate::ssh::SshParams {
+            host: host_for_known_hosts,
             username: username.clone(),
             addr: connection_addr,
             identity_path: identity_path.clone(),
@@ -1760,7 +1765,12 @@ impl Agent for AgentSvc {
                 return Err(e);
             }
         };
+        let host_for_known_hosts = match &addr {
+            Address::Hostname(host) => host.clone(),
+            Address::Ip(host) => host.to_string(),
+        };
         let ssh_params = crate::ssh::SshParams {
+            host: host_for_known_hosts,
             username: username.clone(),
             addr: connection_addr,
             identity_path: identity_path.clone(),
