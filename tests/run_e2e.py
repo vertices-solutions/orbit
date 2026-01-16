@@ -130,6 +130,25 @@ def wait_for_job(orbit_cmd, job_id, timeout_secs, poll_secs):
         time.sleep(poll_secs)
 
 
+def wait_for_job_canceled(orbit_cmd, job_id, timeout_secs, poll_secs):
+    deadline = time.monotonic() + timeout_secs
+    while True:
+        status, terminal_state = job_status(orbit_cmd, job_id)
+        if status == "canceled":
+            if terminal_state not in ("CANCELED", "CANCELLED"):
+                raise RuntimeError(
+                    f"job {job_id} canceled with unexpected terminal_state={terminal_state}"
+                )
+            return
+        if status == "completed":
+            raise RuntimeError(f"job {job_id} completed before cancel")
+        if status == "failed":
+            raise RuntimeError(f"job {job_id} failed before cancel (terminal_state={terminal_state})")
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"timed out waiting for job {job_id} cancel")
+        time.sleep(poll_secs)
+
+
 def sha256_path(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -359,6 +378,14 @@ def main():
                 ],
                 "validate": lambda out: validate_binary_output(out, repo_root),
             },
+            {
+                "id": "05_cancel_job",
+                "path": repo_root / "tests/05_cancel_job",
+                "submit_args": [],
+                "cancel": True,
+                "retrieve": [],
+                "validate": lambda out: None,
+            },
         ]
 
         for project in projects:
@@ -374,6 +401,13 @@ def main():
             job_id = parse_job_id(output)
             job_ids = [job_id]
             primary_job_id = job_id
+            if project.get("cancel"):
+                print(f"{project['id']}: submitted job {job_id}")
+                cancel_cmd = orbit_cmd + ["job", "cancel", str(job_id), "--yes"]
+                run_cmd(cancel_cmd)
+                wait_for_job_canceled(orbit_cmd, job_id, args.timeout, args.poll)
+                print(f"{project['id']}: job {job_id} canceled")
+                continue
             if project["id"] == "01_smoke":
                 remote_path = parse_remote_path(output)
                 conflict_status, conflict_output = run_cmd_status(submit_cmd)

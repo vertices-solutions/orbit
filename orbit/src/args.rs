@@ -59,6 +59,8 @@ pub enum JobCmd {
     Get(JobGetArgs),
     /// Show job logs.
     Logs(JobLogsArgs),
+    /// Cancel a job.
+    Cancel(JobCancelArgs),
     /// List files in a job work directory.
     Ls(JobLsArgs),
     /// Retrieve a file or directory from a job run folder.
@@ -82,6 +84,15 @@ pub struct JobLogsArgs {
     /// Show stderr instead of stdout.
     #[arg(long)]
     pub err: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct JobCancelArgs {
+    /// Job id from the daemon.
+    pub job_id: i64,
+    /// Skip the confirmation prompt.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Args, Debug)]
@@ -268,6 +279,30 @@ mod tests {
             Cmd::Job(job) => match job.cmd {
                 JobCmd::Retrieve(retrieve) => assert!(retrieve.force),
                 _ => panic!("expected retrieve command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_cancel_yes_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "job", "cancel", "12"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Cancel(cancel) => assert!(!cancel.yes),
+                _ => panic!("expected cancel command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_cancel_yes_sets_true() {
+        let args = Cli::parse_from(["orbit", "job", "cancel", "12", "--yes"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Cancel(cancel) => assert!(cancel.yes),
+                _ => panic!("expected cancel command"),
             },
             _ => panic!("expected job command"),
         }

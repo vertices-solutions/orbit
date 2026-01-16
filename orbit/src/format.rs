@@ -302,7 +302,12 @@ pub fn job_status(item: &ListJobsUnitResponse) -> &'static str {
         return "running";
     }
     match item.terminal_state.as_deref() {
-        Some("COMPLETED") => "completed",
+        Some(state) if state.eq_ignore_ascii_case("COMPLETED") => "completed",
+        Some(state)
+            if state.eq_ignore_ascii_case("CANCELED") || state.eq_ignore_ascii_case("CANCELLED") =>
+        {
+            "canceled"
+        }
         Some(_) => "failed",
         None => "completed",
     }
@@ -376,12 +381,14 @@ mod tests {
         let queued = sample_job(false, None, Some("PENDING"));
         let completed = sample_job(true, Some("COMPLETED"), None);
         let failed = sample_job(true, Some("FAILED"), None);
+        let canceled = sample_job(true, Some("CANCELED"), None);
         let completed_unknown = sample_job(true, None, None);
 
         assert_eq!(job_status(&running), "running");
         assert_eq!(job_status(&queued), "queued");
         assert_eq!(job_status(&completed), "completed");
         assert_eq!(job_status(&failed), "failed");
+        assert_eq!(job_status(&canceled), "canceled");
         assert_eq!(job_status(&completed_unknown), "completed");
     }
 
