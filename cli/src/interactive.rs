@@ -19,7 +19,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const DEFAULT_SSH_PORT: u32 = 22;
-const DEFAULT_IDENTITY_PATH: &str = "~/.ssh/id_ed25519";
 const DEFAULT_BASE_PATH: &str = "~/runs";
 const HINT_COLOR: Color = Color::DarkGrey;
 const CONNECT_TIMEOUT_SECS: u64 = 3;
@@ -154,20 +153,30 @@ pub fn resolve_add_cluster_args(
     let mut identity_path = match identity_path {
         Some(value) => value,
         None => {
+            let discovered = find_preferred_identity_path();
             if args.headless {
-                DEFAULT_IDENTITY_PATH.to_string()
+                match discovered {
+                    Some(value) => value,
+                    None => bail!("identity path is required in headless mode"),
+                }
             } else {
                 identity_from_prompt = true;
-                prompt_with_default(
-                    "Identity path",
-                    DEFAULT_IDENTITY_PATH,
-                    "SSH private key path used for authentication.",
-                )?
+                prompt_identity_path(discovered.as_deref())?
             }
         }
     };
     loop {
         let replace_prompt_line = identity_from_prompt && !args.headless;
+        if identity_path.trim().is_empty() {
+            if args.headless {
+                bail!("identity path is required in headless mode");
+            }
+            ensure_tty_for_prompt()?;
+            eprintln!("Identity path cannot be empty.");
+            identity_from_prompt = true;
+            identity_path = prompt_identity_path(None)?;
+            continue;
+        }
         match validate_identity_path_with_feedback(
             &identity_path,
             replace_prompt_line,
@@ -179,14 +188,15 @@ pub fn resolve_add_cluster_args(
                     return Err(err);
                 }
                 ensure_tty_for_prompt()?;
-                eprintln!("Identity path '{identity_path}' is invalid: {err}");
+                let display_path = format_identity_path_display(&identity_path);
+                eprintln!("Identity path '{display_path}' is invalid: {err}");
                 identity_from_prompt = true;
-                let fallback = identity_path.clone();
-                identity_path = prompt_with_default(
-                    "Identity path",
-                    &fallback,
-                    "SSH private key path used for authentication.",
-                )?;
+                let fallback = if identity_path.trim().is_empty() {
+                    None
+                } else {
+                    Some(identity_path.as_str())
+                };
+                identity_path = prompt_identity_path(fallback)?;
             }
         }
     }
@@ -378,6 +388,7 @@ fn validate_identity_path_with_feedback(
         return validate_identity_path(identity_path);
     }
 
+    let display_path = format_identity_path_display(identity_path);
     let use_tty = std::io::stderr().is_terminal();
     if use_tty && replace_prompt_line {
         replace_prompt_line_for_validation()?;
@@ -385,20 +396,20 @@ fn validate_identity_path_with_feedback(
 
     if use_tty {
         let spinner = ValidationSpinner::start(
-            &format!("Validating {identity_path}"),
+            &format!("Validating {display_path}"),
             Duration::from_millis(500),
         );
         let result = validate_identity_path(identity_path);
         spinner.stop();
         match result {
-            Ok(()) => print_identity_path_validated(identity_path, true),
+            Ok(()) => print_identity_path_validated(&display_path, true),
             Err(err) => Err(err),
         }
     } else {
-        eprintln!("Validating {identity_path}");
+        eprintln!("Validating {display_path}");
         let result = validate_identity_path(identity_path);
         match result {
-            Ok(()) => print_identity_path_validated(identity_path, false),
+            Ok(()) => print_identity_path_validated(&display_path, false),
             Err(err) => Err(err),
         }
     }
@@ -475,6 +486,84 @@ fn validate_identity_path(identity_path: &str) -> anyhow::Result<()> {
         bail!("identity path does not look like a private key");
     }
     Ok(())
+}
+
+fn prompt_identity_path(default: Option<&str>) -> anyhow::Result<String> {
+    let (display_default, hint_default) = match default {
+        Some(value) => {
+            let display = format_identity_path_display(value);
+            (Some(display.clone()), display)
+        }
+        None => (None, "<none>".to_string()),
+    };
+    let hint = format_default_hint(&hint_default, "SSH private key path used for authentication.");
+    let input = match display_default.as_deref() {
+        Some(value) => prompt_line_with_default("Identity path: ", &hint, Some(value))?,
+        None => prompt_line("Identity path: ", &hint)?,
+    };
+    Ok(input.trim().to_string())
+}
+
+fn find_preferred_identity_path() -> Option<String> {
+    let home_dir = dirs::home_dir()?;
+    let ssh_dir = home_dir.join(".ssh");
+    let entries = fs::read_dir(ssh_dir).ok()?;
+    let mut ed25519 = Vec::new();
+    let mut other = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or_default();
+        if file_name.ends_with(".pub") {
+            continue;
+        }
+        if matches!(
+            file_name,
+            "authorized_keys" | "known_hosts" | "known_hosts.old" | "config"
+        ) {
+            continue;
+        }
+        let path_str = path.to_string_lossy().into_owned();
+        if validate_identity_path(&path_str).is_err() {
+            continue;
+        }
+        if file_name.to_ascii_lowercase().contains("ed25519") {
+            ed25519.push(path_str);
+        } else {
+            other.push(path_str);
+        }
+    }
+    ed25519.sort();
+    other.sort();
+    ed25519.into_iter().next().or_else(|| other.into_iter().next())
+}
+
+fn format_identity_path_display(path: &str) -> String {
+    let expanded = shellexpand::full(path)
+        .map(|value| value.to_string())
+        .unwrap_or_else(|_| path.to_string());
+    let path_buf = std::path::PathBuf::from(&expanded);
+    let Some(home_dir) = dirs::home_dir() else {
+        return expanded;
+    };
+    let home_display = home_dir.to_string_lossy();
+    if home_display.chars().count() <= 11 {
+        return expanded;
+    }
+    let Ok(relative) = path_buf.strip_prefix(&home_dir) else {
+        return expanded;
+    };
+    if relative.as_os_str().is_empty() {
+        return "~".to_string();
+    }
+    let mut display = std::path::PathBuf::from("~");
+    display.push(relative);
+    display.to_string_lossy().into_owned()
 }
 
 fn looks_like_identity_file(contents: &[u8]) -> bool {
@@ -938,6 +1027,9 @@ impl LineEditor {
 
     fn render(&self, stdout: &mut std::io::Stdout) -> anyhow::Result<()> {
         let buffer_string: String = self.buffer.iter().collect();
+        let term_width = terminal::size().map(|(w, _)| w).unwrap_or(80);
+        let max_cols = term_width.saturating_sub(self.start_col);
+        let available = max_cols.saturating_sub(self.prompt_len) as usize;
         execute!(
             stdout,
             cursor::MoveToColumn(self.start_col),
@@ -946,20 +1038,29 @@ impl LineEditor {
         )?;
         if buffer_string.is_empty() {
             if !self.hint.is_empty() {
+                let hint = truncate_display_text(&self.hint, available);
                 execute!(
                     stdout,
                     SetForegroundColor(HINT_COLOR),
-                    Print(&self.hint),
+                    Print(&hint),
                     ResetColor,
                 )?;
             }
         } else {
-            execute!(stdout, Print(&buffer_string))?;
+            let (visible, _) = visible_buffer_segment(&self.buffer, self.cursor, available);
+            execute!(stdout, Print(visible))?;
         }
+        let cursor_offset = if buffer_string.is_empty() {
+            0
+        } else {
+            let (_, offset) = visible_buffer_segment(&self.buffer, self.cursor, available);
+            offset
+        };
         let cursor_col = self
             .start_col
             .saturating_add(self.prompt_len)
-            .saturating_add(self.cursor.min(u16::MAX as usize) as u16);
+            .saturating_add(cursor_offset.min(u16::MAX as usize) as u16)
+            .min(term_width.saturating_sub(1));
         execute!(stdout, cursor::MoveToColumn(cursor_col))?;
         stdout.flush()?;
         Ok(())
@@ -981,6 +1082,35 @@ impl LineEditor {
     fn into_string(self) -> String {
         self.buffer.into_iter().collect()
     }
+}
+
+fn truncate_display_text(input: &str, max_len: usize) -> String {
+    if max_len == 0 {
+        return String::new();
+    }
+    input.chars().take(max_len).collect()
+}
+
+fn visible_buffer_segment(buffer: &[char], cursor: usize, max_len: usize) -> (String, usize) {
+    if max_len == 0 {
+        return (String::new(), 0);
+    }
+    let len = buffer.len();
+    if len <= max_len {
+        let visible: String = buffer.iter().collect();
+        return (visible, cursor.min(len));
+    }
+    let mut start = 0usize;
+    if cursor >= max_len {
+        start = cursor + 1 - max_len;
+    }
+    if start + max_len > len {
+        start = len - max_len;
+    }
+    let end = (start + max_len).min(len);
+    let visible: String = buffer[start..end].iter().collect();
+    let offset = cursor.saturating_sub(start).min(max_len.saturating_sub(1));
+    (visible, offset)
 }
 
 const ADJECTIVES: &[&str] = &[
@@ -1127,5 +1257,24 @@ mod tests {
         let scientist = parts.next().unwrap_or_default();
         assert!(ADJECTIVES.contains(&adjective));
         assert!(SCIENTISTS.contains(&scientist));
+    }
+
+    #[test]
+    fn format_identity_path_display_uses_tilde_for_long_home() {
+        let home_dir = match dirs::home_dir() {
+            Some(dir) => dir,
+            None => return,
+        };
+        let home_str = home_dir.to_string_lossy();
+        if home_str.chars().count() <= 11 {
+            return;
+        }
+        let path = home_dir.join(".ssh/id_ed25519");
+        let display = format_identity_path_display(&path.to_string_lossy());
+        assert!(
+            display.starts_with("~/"),
+            "expected tilde path, got {display}"
+        );
+        assert!(display.ends_with(".ssh/id_ed25519"));
     }
 }

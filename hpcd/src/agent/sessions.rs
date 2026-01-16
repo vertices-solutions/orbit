@@ -69,8 +69,13 @@ impl SessionCache {
             return Ok(existing);
         }
 
+        let host_label = match &host.address {
+            Address::Ip(addr) => addr.to_string(),
+            Address::Hostname(hostname) => hostname.clone(),
+        };
         let connection_addr = resolve_host_addr(&host.address, host.port, name).await?;
         let ssh_params = SshParams {
+            host: host_label,
             addr: connection_addr,
             username: host.username.clone(),
             identity_path: host.identity_path.clone(),
