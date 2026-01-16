@@ -11,12 +11,13 @@ use crate::stream::{
 use anyhow::bail;
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, DeleteClusterRequest, DeleteClusterResponse,
-    JobLogsRequest, JobLogsRequestInit, ListClustersRequest, ListClustersResponse, ListJobsRequest,
-    ListJobsResponse, LsRequest, LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit,
-    RetrieveJobRequest, RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest,
-    add_cluster_init, add_cluster_request, list_clusters_unit_response, resolve_home_dir_request,
-    resolve_home_dir_request_init, stream_event,
+    AddClusterInit, AddClusterRequest, CancelJobRequest, CancelJobRequestInit, DeleteClusterRequest,
+    DeleteClusterResponse, JobLogsRequest, JobLogsRequestInit, ListClustersRequest,
+    ListClustersResponse, ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit,
+    ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit,
+    SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
+    list_clusters_unit_response, resolve_home_dir_request, resolve_home_dir_request_init,
+    stream_event,
 };
 use std::io::{IsTerminal, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -241,6 +242,41 @@ fn job_logs_error_exit_code(err: &str) -> i32 {
         "not_found" => 3,
         _ => 1,
     }
+}
+
+pub async fn send_job_cancel(
+    client: &mut AgentClient<Channel>,
+    job_id: i64,
+) -> anyhow::Result<()> {
+    let (tx_ans, rx_ans) = mpsc::channel::<CancelJobRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(CancelJobRequest {
+            msg: Some(proto::cancel_job_request::Msg::Init(CancelJobRequestInit {
+                job_id,
+            })),
+        })
+        .await?;
+
+    let response = client
+        .cancel_job(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let inbound = response.into_inner();
+    let tx_mfa = tx_ans.clone();
+    let exit_code = handle_stream_events(inbound, move |answers| {
+        let tx_mfa = tx_mfa.clone();
+        async move {
+            tx_mfa
+                .send(CancelJobRequest {
+                    msg: Some(proto::cancel_job_request::Msg::Mfa(answers)),
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
+        }
+    })
+    .await?;
+    ensure_exit_code(exit_code, "received exit code")
 }
 
 fn job_retrieve_error_exit_code(err: &str) -> i32 {

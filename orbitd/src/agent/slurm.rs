@@ -268,6 +268,7 @@ fn is_slurm_state_terminal(state: &str) -> bool {
     matches!(
         state,
         "COMPLETED"
+            | "CANCELED"
             | "CANCELLED"
             | "FAILED"
             | "TIMEOUT"

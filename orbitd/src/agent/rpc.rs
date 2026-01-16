@@ -21,11 +21,11 @@ use crate::util::reachability;
 use crate::util::remote_path::normalize_path;
 use proto::agent_server::Agent;
 use proto::{
-    AddClusterRequest, DeleteClusterRequest, DeleteClusterResponse, ListClustersRequest,
-    ListClustersResponse, ListClustersUnitResponse, ListJobsRequest, ListJobsResponse,
-    JobLogsRequest, JobLogsRequestInit, LsRequest, LsRequestInit, MfaAnswer, PingReply,
-    PingRequest, RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest,
-    SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event,
+    AddClusterRequest, CancelJobRequest, CancelJobRequestInit, DeleteClusterRequest,
+    DeleteClusterResponse, JobLogsRequest, JobLogsRequestInit, ListClustersRequest,
+    ListClustersResponse, ListClustersUnitResponse, ListJobsRequest, ListJobsResponse, LsRequest,
+    LsRequestInit, MfaAnswer, PingReply, PingRequest, RetrieveJobRequest, RetrieveJobRequestInit,
+    StreamEvent, SubmitRequest, SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event,
     submit_result, submit_status, submit_stream_event,
 };
 use russh_sftp::client::error::Error as SftpError;
@@ -243,6 +243,7 @@ impl Agent for AgentSvc {
     type LsStream = OutStream;
     type RetrieveJobStream = OutStream;
     type JobLogsStream = OutStream;
+    type CancelJobStream = OutStream;
     type SubmitStream = SubmitOutStream;
     type AddClusterStream = OutStream;
     type ResolveHomeDirStream = OutStream;
@@ -1074,6 +1075,263 @@ impl Agent for AgentSvc {
                     }))
                     .await;
             }
+        });
+
+        let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
+        Ok(tonic::Response::new(out))
+    }
+
+    async fn cancel_job(
+        &self,
+        request: tonic::Request<tonic::Streaming<CancelJobRequest>>,
+    ) -> Result<tonic::Response<Self::CancelJobStream>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let mut inbound = request.into_inner();
+
+        let init = inbound
+            .message()
+            .await
+            .map_err(|e| {
+                log::debug!("read error in cancel_job: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
+
+        let job_id = match init.msg {
+            Some(proto::cancel_job_request::Msg::Init(CancelJobRequestInit { job_id })) => job_id,
+            _ => {
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+            }
+        };
+        log::info!("cancel_job start remote_addr={remote_addr} job_id={job_id}");
+
+        let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        tokio::spawn(async move {
+            while let Ok(Some(item)) = inbound.message().await {
+                if let Some(proto::cancel_job_request::Msg::Mfa(ans)) = item.msg
+                    && mfa_tx.send(ans).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
+        let hs = self.hosts();
+        let svc = self.clone();
+        let audit_remote_addr = remote_addr.clone();
+        tokio::spawn(async move {
+            let job = match hs.get_job_by_job_id(job_id).await {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    log::warn!(
+                        "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} reason=job_not_found"
+                    );
+                    let message = format!(
+                        "job {} does not exist; you can list all job with 'orbit job list'",
+                        job_id
+                    );
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(
+                                format!("{message}\n").into_bytes(),
+                            )),
+                        }))
+                        .await;
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::NOT_FOUND.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} reason=db_error"
+                    );
+                    log::debug!("could not fetch job id {job_id}: {e}");
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::INTERNAL_ERROR.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            if job.is_completed {
+                log::warn!(
+                    "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=job_completed",
+                    job.name
+                );
+                let message = format!("job {job_id} is already completed; cancel is not possible");
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            format!("{message}\n").into_bytes(),
+                        )),
+                    }))
+                    .await;
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::CONFLICT.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            let Some(scheduler_id) = job.scheduler_id else {
+                log::warn!(
+                    "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=missing_scheduler_id",
+                    job.name
+                );
+                let message = format!("job {job_id} has no scheduler id; cancel is not possible");
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            format!("{message}\n").into_bytes(),
+                        )),
+                    }))
+                    .await;
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::INTERNAL_ERROR.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            };
+
+            let mgr = match svc.get_sessionmanager(&job.name).await {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=session_unavailable",
+                        job.name
+                    );
+                    let message = match e {
+                        AgentSvcError::UnknownName => error_codes::NOT_FOUND,
+                        AgentSvcError::NetworkError(e) => {
+                            log::debug!("network error for {}: {e}", job.name);
+                            error_codes::NETWORK_ERROR
+                        }
+                        other_error => {
+                            log::debug!(
+                                "unexpected session manager error for {}: {other_error}",
+                                job.name
+                            );
+                            error_codes::INTERNAL_ERROR
+                        }
+                    };
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(message.to_string())),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            if let Err(err) = mgr.ensure_connected(&evt_tx, &mut mfa_rx).await {
+                log::warn!(
+                    "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=connect_failed error={err}",
+                    job.name
+                );
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::code_for_ssh_error(&err).to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            let command = format!("scancel {}", sh_escape(&scheduler_id.to_string()));
+            let (_out, err, code) = match mgr.exec_capture(&command).await {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=exec_failed error={e}",
+                        job.name
+                    );
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::REMOTE_ERROR.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            if code != 0 {
+                let err_text = String::from_utf8_lossy(&err);
+                let detail = if err_text.trim().is_empty() {
+                    format!("exit code {code}")
+                } else {
+                    err_text.trim().to_string()
+                };
+                log::warn!(
+                    "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=remote_error detail={detail}",
+                    job.name
+                );
+                let message = format!("failed to cancel job {job_id}: {detail}");
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            format!("{message}\n").into_bytes(),
+                        )),
+                    }))
+                    .await;
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::REMOTE_ERROR.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            if let Err(e) = hs.mark_job_completed(job_id, Some("CANCELED")).await {
+                log::warn!(
+                    "cancel_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=job_update_failed error={e}",
+                    job.name
+                );
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::INTERNAL_ERROR.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            log::info!(
+                "cancel_job completed remote_addr={audit_remote_addr} job_id={job_id} name={}",
+                job.name
+            );
+            let message = format!("Job {job_id} canceled.\n");
+            let _ = evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::Stdout(message.into_bytes())),
+                }))
+                .await;
+            let _ = evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::ExitCode(0)),
+                }))
+                .await;
         });
 
         let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));

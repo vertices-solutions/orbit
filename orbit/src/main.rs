@@ -5,9 +5,9 @@ use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
 use orbit::args::{Cli, ClusterCmd, Cmd, JobCmd};
 use orbit::client::{
-    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_delete_cluster, send_job_logs,
-    send_job_ls, send_job_retrieve, send_ls, send_ping, send_resolve_home_dir, send_submit,
-    validate_cluster_live,
+    fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_delete_cluster, send_job_cancel,
+    send_job_logs, send_job_ls, send_job_retrieve, send_ls, send_ping, send_resolve_home_dir,
+    send_submit, validate_cluster_live,
 };
 use orbit::config;
 use orbit::filters::submit_filters_from_matches;
@@ -159,6 +159,19 @@ async fn main() -> anyhow::Result<()> {
                     if code != 0 {
                         std::process::exit(code);
                     }
+                }
+                JobCmd::Cancel(args) => {
+                    if !args.yes {
+                        let confirmed = confirm_action(
+                            &format!("Cancel job {}? (yes/no): ", args.job_id),
+                            "Type yes to confirm, no to cancel.",
+                        )?;
+                        if !confirmed {
+                            println!("Cancel canceled.");
+                            return Ok(());
+                        }
+                    }
+                    send_job_cancel(&mut client, args.job_id).await?
                 }
                 JobCmd::Ls(args) => {
                     send_job_ls(&mut client, args.job_id, &args.path, &args.cluster).await?
