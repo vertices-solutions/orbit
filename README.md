@@ -35,7 +35,7 @@ Here's a short demo showcasing the basic flow of `orbit`:
 
 ```sh
 # install orbit through Homebrew (https://brew.sh)
-brew install orbitd-dev/orbit/orbit
+brew install vertices-solutions/orbit/orbit
 
 # interactively add your first cluster, give it a name you will use to refer to it later
 orbit cluster add
@@ -75,7 +75,7 @@ This allows you to:
 First, make sure that you have Homebrew (https://brew.sh) installed.
 
 ```bash
-brew install orbitd-dev/orbit/orbit
+brew install vertices-solutions/orbit/orbit
 ```
 
 This installs both `orbit` (CLI) and `orbitd` (daemon). `brew services` runs the `orbitd` daemon for your user. 
