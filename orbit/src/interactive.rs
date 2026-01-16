@@ -1136,7 +1136,7 @@ mod tests {
         let pid = std::process::id();
         let content = b"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n";
         for idx in 0..1000 {
-            let path = dir.join(format!("hpc_test_identity_{pid}_{idx}.key"));
+            let path = dir.join(format!("orbit_test_identity_{pid}_{idx}.key"));
             let file = OpenOptions::new()
                 .write(true)
                 .create_new(true)

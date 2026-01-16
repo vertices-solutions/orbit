@@ -6,9 +6,9 @@ The sbatch script sets a future start time via `--begin`, which should keep the
 job pending until the time window opens.
 
 Suggested commands:
-- hpc job submit <cluster> tests/91_queued_state
-- hpc job list
-- hpc job get <job_id>
+- orbit job submit <cluster> tests/91_queued_state
+- orbit job list
+- orbit job get <job_id>
 
 Notes:
 - The queued status appears after the daemon's job check loop runs.

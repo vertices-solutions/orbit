@@ -889,7 +889,7 @@ impl Agent for AgentSvc {
                         "job_logs failed remote_addr={audit_remote_addr} job_id={job_id} reason=job_not_found"
                     );
                     let message = format!(
-                        "job {} does not exist; you can list all job with 'hpc job list'",
+                        "job {} does not exist; you can list all job with 'orbit job list'",
                         job_id
                     );
                     let _ = evt_tx

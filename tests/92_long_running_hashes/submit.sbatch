@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hpc-long-hash
+#SBATCH --job-name=orbit-long-hash
 #SBATCH --time=00:10:00
 #SBATCH --mem=256M
 #SBATCH --cpus-per-task=1

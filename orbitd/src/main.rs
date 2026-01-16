@@ -19,14 +19,14 @@ mod util;
 
 #[derive(Parser)]
 #[command(
-    name = "hpcd",
+    name = "orbitd",
     version,
     about,
     long_about = None,
-    after_help = "hpcd server\n\
+    after_help = "orbitd server\n\
 \n\
 Configuration precedence: defaults < config file < command-line flags.\n\
-If --config is omitted, hpcd tries the default config file location; missing default config is OK.\n\
+If --config is omitted, orbitd tries the default config file location; missing default config is OK.\n\
 Paths in the config file are resolved relative to the config file directory; paths passed as flags are resolved relative to the current working directory."
 )]
 struct Opts {
@@ -34,7 +34,7 @@ struct Opts {
         short,
         long,
         value_name = "PATH",
-        help = "Path to a TOML config file. When omitted, hpcd uses the default config file location if available."
+        help = "Path to a TOML config file. When omitted, orbitd uses the default config file location if available."
     )]
     config: Option<PathBuf>,
     #[arg(
@@ -64,12 +64,12 @@ struct Opts {
     port: Option<u16>,
 }
 
-const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗██████╗
-██║  ██║██╔══██╗██╔════╝██╔══██╗
-███████║██████╔╝██║     ██║  ██║
-██╔══██║██╔═══╝ ██║     ██║  ██║
-██║  ██║██║     ╚██████╗██████╔╝
-╚═╝  ╚═╝╚═╝      ╚═════╝╚═════╝
+const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
+██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
+██║  ██║██████╔╝██████╔╝██║    ██║
+██║  ██║██╔══██╗██╔══██╗██║    ██║
+╚█████╔╝██║  ██║██████╔╝██║    ██║
+ ╚════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝    ╚═╝
 
 {before-help}{about-with-newline}{usage-heading} {usage}
 {after-help}
@@ -94,7 +94,7 @@ fn init_logging(verbose: bool) {
     } else {
         builder
             .filter_level(LevelFilter::Off)
-            .filter_module("hpcd", LevelFilter::Info);
+            .filter_module("orbitd", LevelFilter::Info);
     }
     builder.init();
 }

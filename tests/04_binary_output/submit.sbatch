@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hpc-binary
+#SBATCH --job-name=orbit-binary
 #SBATCH --time=00:02:00
 #SBATCH --mem=64M
 #SBATCH --cpus-per-task=1

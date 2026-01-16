@@ -3,36 +3,36 @@
 
 use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
-use cli::args::{Cli, ClusterCmd, Cmd, JobCmd};
-use cli::client::{
+use orbit::args::{Cli, ClusterCmd, Cmd, JobCmd};
+use orbit::client::{
     fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_delete_cluster, send_job_logs,
     send_job_ls, send_job_retrieve, send_ls, send_ping, send_resolve_home_dir, send_submit,
     validate_cluster_live,
 };
-use cli::config;
-use cli::filters::submit_filters_from_matches;
-use cli::format::{
+use orbit::config;
+use orbit::filters::submit_filters_from_matches;
+use orbit::format::{
     cluster_host_string, format_cluster_details, format_cluster_details_json, format_clusters_json,
     format_clusters_table, format_job_details, format_job_details_json, format_jobs_json,
     format_jobs_table,
 };
-use cli::interactive::{
+use orbit::interactive::{
     confirm_action, prompt_default_base_path, resolve_add_cluster_args,
     validate_default_base_path_with_feedback,
 };
-use cli::sbatch::resolve_sbatch_script;
-use cli::stream::print_with_green_check_stdout;
+use orbit::sbatch::resolve_sbatch_script;
+use orbit::stream::print_with_green_check_stdout;
 use proto::ListJobsUnitResponse;
 use proto::agent_client::AgentClient;
 use std::io::Write;
 use std::path::PathBuf;
 
-const HELP_TEMPLATE: &str = r#"██╗  ██╗██████╗  ██████╗
-██║  ██║██╔══██╗██╔════╝
-███████║██████╔╝██║
-██╔══██║██╔═══╝ ██║
-██║  ██║██║     ╚██████╗
-╚═╝  ╚═╝╚═╝      ╚═════╝
+const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
+██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
+██║  ██║██████╔╝██████╔╝██║    ██║
+██║  ██║██╔══██╗██╔══██╗██║    ██║
+╚█████╔╝██║  ██║██████╔╝██║    ██║
+ ╚════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝    ╚═╝
 
 {before-help}{about-with-newline}{usage-heading} {usage}
 

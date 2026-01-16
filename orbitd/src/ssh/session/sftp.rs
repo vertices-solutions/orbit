@@ -105,7 +105,7 @@ impl SessionManager {
     ) -> Result<String> {
         let sftp = self.sftp().await?;
         let path = format!(
-            "/tmp/hpcd_{}.{}",
+            "/tmp/orbitd_{}.{}",
             session_id,
             suffix.trim_start_matches('.')
         );

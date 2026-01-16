@@ -9,8 +9,8 @@ Features covered:
 - job ls and retrieve for result files
 
 Suggested commands:
-- hpc job submit <cluster> tests/01_smoke
-- hpc job logs <job_id>
-- hpc job logs <job_id> --err
-- hpc job ls <job_id> results
-- hpc job retrieve <job_id> results --output ./out/01_smoke
+- orbit job submit <cluster> tests/01_smoke
+- orbit job logs <job_id>
+- orbit job logs <job_id> --err
+- orbit job ls <job_id> results
+- orbit job retrieve <job_id> results --output ./out/01_smoke

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hpc-smoke
+#SBATCH --job-name=orbit-smoke
 #SBATCH --time=00:02:00
 #SBATCH --mem=64M
 #SBATCH --cpus-per-task=1

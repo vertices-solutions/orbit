@@ -8,7 +8,7 @@ Features covered:
 - stderr logging
 
 Suggested commands:
-- hpc job submit <cluster> tests/04_binary_output
-- hpc job ls <job_id> results
-- hpc job retrieve <job_id> results/raw/random.bin --output ./out/04_binary_output --overwrite
-- hpc job retrieve <job_id> results/text --output ./out/04_binary_output --overwrite
+- orbit job submit <cluster> tests/04_binary_output
+- orbit job ls <job_id> results
+- orbit job retrieve <job_id> results/raw/random.bin --output ./out/04_binary_output --overwrite
+- orbit job retrieve <job_id> results/text --output ./out/04_binary_output --overwrite

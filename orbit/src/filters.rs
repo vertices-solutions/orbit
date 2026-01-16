@@ -49,7 +49,7 @@ mod tests {
     #[test]
     fn submit_filters_preserve_flag_order() {
         let matches = Cli::command().get_matches_from([
-            "hpc",
+            "orbit",
             "job",
             "submit",
             "cluster-a",

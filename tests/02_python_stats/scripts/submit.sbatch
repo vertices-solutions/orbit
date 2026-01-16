@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hpc-stats
+#SBATCH --job-name=orbit-stats
 #SBATCH --time=00:02:00
 #SBATCH --mem=128M
 #SBATCH --cpus-per-task=1

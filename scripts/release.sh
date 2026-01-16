@@ -69,7 +69,7 @@ raise SystemExit("version not found")
 PY
 }
 
-crates=(cli hpcd proto)
+crates=(orbit orbitd proto)
 versions=()
 labels=()
 for crate in "${crates[@]}"; do
@@ -123,7 +123,7 @@ fi
 echo "Bumping workspace version to $new_version..."
 cargo release version "$new_version" --workspace --execute --no-confirm
 
-actual_version="$(read_version "$ROOT/cli/Cargo.toml")"
+actual_version="$(read_version "$ROOT/orbit/Cargo.toml")"
 if [[ "$actual_version" != "$new_version" ]]; then
 	echo "error: expected version $new_version but found $actual_version after bump" >&2
 	exit 1
@@ -131,7 +131,7 @@ fi
 
 cargo generate-lockfile
 
-git add cli/Cargo.toml hpcd/Cargo.toml proto/Cargo.toml Cargo.lock
+git add orbit/Cargo.toml orbitd/Cargo.toml proto/Cargo.toml Cargo.lock
 
 commit_message="Release $new_version"
 git commit -m "$commit_message"

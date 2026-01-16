@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hpc-queued
+#SBATCH --job-name=orbit-queued
 #SBATCH --time=00:05:00
 #SBATCH --mem=32M
 #SBATCH --cpus-per-task=1

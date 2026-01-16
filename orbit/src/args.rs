@@ -6,13 +6,13 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Parser)]
-#[command(name = "hpc", version, about, long_about = None)]
+#[command(name = "orbit", version, about, long_about = None)]
 pub struct Cli {
     #[arg(
         short,
         long,
         value_name = "PATH",
-        help = "Path to a TOML config file. When omitted, hpc uses the default config file location if available."
+        help = "Path to a TOML config file. When omitted, orbit uses the default config file location if available."
     )]
     pub config: Option<PathBuf>,
     #[command(subcommand)]
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn job_retrieve_force_defaults_to_false() {
-        let args = Cli::parse_from(["hpc", "job", "retrieve", "12", "output.txt"]);
+        let args = Cli::parse_from(["orbit", "job", "retrieve", "12", "output.txt"]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
                 JobCmd::Retrieve(retrieve) => assert!(!retrieve.force),
@@ -263,7 +263,7 @@ mod tests {
 
     #[test]
     fn job_retrieve_force_sets_true() {
-        let args = Cli::parse_from(["hpc", "job", "retrieve", "12", "output.txt", "--force"]);
+        let args = Cli::parse_from(["orbit", "job", "retrieve", "12", "output.txt", "--force"]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
                 JobCmd::Retrieve(retrieve) => assert!(retrieve.force),

@@ -411,7 +411,7 @@ where
                         submit_result::Status::Submitted => {
                             if let Some(job_id) = result.job_id {
                                 print_with_green_check_stdout(&format!("Job {job_id} submitted!"))?;
-                                println!("Check job status with 'hpc job get {job_id}'");
+                                println!("Check job status with 'orbit job get {job_id}'");
                             } else {
                                 println!("Successfully submitted sbatch script.");
                             }

@@ -8,9 +8,9 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const APP_DIR_NAME: &str = "hpc";
-const CONFIG_FILE_NAME: &str = "hpc.toml";
-const DATABASE_FILE_NAME: &str = "hpc.sqlite";
+const APP_DIR_NAME: &str = "orbit";
+const CONFIG_FILE_NAME: &str = "orbit.toml";
+const DATABASE_FILE_NAME: &str = "orbit.sqlite";
 const DEFAULT_JOB_CHECK_INTERVAL_SECS: u64 = 5;
 const DEFAULT_PORT: u16 = 50056;
 
@@ -28,6 +28,7 @@ pub struct Config {
     pub job_check_interval_secs: u64,
     pub port: u16,
     pub verbose: bool,
+    #[allow(dead_code)]
     pub config_path: Option<PathBuf>,
 }
 
@@ -79,6 +80,7 @@ pub struct Overrides {
     pub verbose: Option<bool>,
 }
 
+#[allow(dead_code)]
 pub fn load(config_path_override: Option<PathBuf>, overrides: Overrides) -> Result<Config> {
     Ok(load_with_report(config_path_override, overrides)?.config)
 }
@@ -270,10 +272,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
-            "database_path = \"db/hpc.sqlite\"\njob_check_interval_secs = 9\n",
+            "database_path = \"db/orbit.sqlite\"\njob_check_interval_secs = 9\n",
         )
         .unwrap();
 
@@ -281,7 +283,7 @@ mod tests {
         let config = load(Some(config_path.clone()), Overrides::default()).unwrap();
         assert_eq!(
             config.database_path,
-            config_dir.join("db").join("hpc.sqlite")
+            config_dir.join("db").join("orbit.sqlite")
         );
         assert_eq!(config.job_check_interval_secs, 9);
         assert_eq!(config.port, DEFAULT_PORT);
@@ -293,7 +295,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
             "database_path = \"db/from_config.sqlite\"\njob_check_interval_secs = 9\n",
@@ -320,7 +322,7 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
             "database_path = \"db/from_config.sqlite\"\njob_check_interval_secs = 9\n",
@@ -350,8 +352,8 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
-        fs::write(&config_path, "database_path = \"db/hpc.sqlite\"\n").unwrap();
+        let config_path = config_dir.join("orbit.toml");
+        fs::write(&config_path, "database_path = \"db/orbit.sqlite\"\n").unwrap();
 
         let config = load(Some(config_path), Overrides::default()).unwrap();
         assert_eq!(
@@ -366,10 +368,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
-            "database_path = \"db/hpc.sqlite\"\nverbose = true\n",
+            "database_path = \"db/orbit.sqlite\"\nverbose = true\n",
         )
         .unwrap();
 
@@ -382,10 +384,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
-            "database_path = \"db/hpc.sqlite\"\nport = 40001\n",
+            "database_path = \"db/orbit.sqlite\"\nport = 40001\n",
         )
         .unwrap();
 
@@ -398,10 +400,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
-            "database_path = \"db/hpc.sqlite\"\nport = 40001\n",
+            "database_path = \"db/orbit.sqlite\"\nport = 40001\n",
         )
         .unwrap();
 
@@ -424,10 +426,10 @@ mod tests {
         let dir = TempDir::new().unwrap();
         let config_dir = dir.path().join("config");
         fs::create_dir_all(&config_dir).unwrap();
-        let config_path = config_dir.join("hpc.toml");
+        let config_path = config_dir.join("orbit.toml");
         fs::write(
             &config_path,
-            "database_path = \"db/hpc.sqlite\"\nverbose = false\n",
+            "database_path = \"db/orbit.sqlite\"\nverbose = false\n",
         )
         .unwrap();
 
@@ -448,13 +450,13 @@ mod tests {
     #[test]
     fn ensure_database_dir_creates_parent_directory() {
         let dir = TempDir::new().unwrap();
-        let db_path = dir.path().join("nested").join("hpc.sqlite");
+        let db_path = dir.path().join("nested").join("orbit.sqlite");
         ensure_database_dir(&db_path).unwrap();
         assert!(dir.path().join("nested").is_dir());
     }
 
     #[test]
     fn ensure_database_dir_no_parent_does_not_error() {
-        ensure_database_dir(Path::new("hpc.sqlite")).unwrap();
+        ensure_database_dir(Path::new("orbit.sqlite")).unwrap();
     }
 }

@@ -8,8 +8,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const APP_DIR_NAME: &str = "hpc";
-const CONFIG_FILE_NAME: &str = "hpc.toml";
+const APP_DIR_NAME: &str = "orbit";
+const CONFIG_FILE_NAME: &str = "orbit.toml";
 const DEFAULT_PORT: u16 = 50056;
 const DEFAULT_HOST: &str = "127.0.0.1";
 

@@ -50,13 +50,13 @@ def start_daemon(daemon_cmd, ping_cmd, timeout_secs, poll_secs):
     last_error = None
     while True:
         if proc.poll() is not None:
-            raise RuntimeError("hpcd exited before becoming ready")
+            raise RuntimeError("orbitd exited before becoming ready")
         status, output = run_cmd_status(ping_cmd)
         if status == 0:
             return proc
         last_error = output.strip() or f"status {status}"
         if time.monotonic() >= deadline:
-            raise RuntimeError(f"hpcd did not become ready: {last_error}")
+            raise RuntimeError(f"orbitd did not become ready: {last_error}")
         time.sleep(poll_secs)
 
 
@@ -111,16 +111,16 @@ def parse_remote_path(output):
     raise RuntimeError("unable to parse remote path from submit output")
 
 
-def job_status(hpc_cmd, job_id):
-    result = run_cmd(hpc_cmd + ["job", "get", str(job_id), "--json"])
+def job_status(orbit_cmd, job_id):
+    result = run_cmd(orbit_cmd + ["job", "get", str(job_id), "--json"])
     data = json.loads(result.stdout)
     return data.get("status"), data.get("terminal_state")
 
 
-def wait_for_job(hpc_cmd, job_id, timeout_secs, poll_secs):
+def wait_for_job(orbit_cmd, job_id, timeout_secs, poll_secs):
     deadline = time.monotonic() + timeout_secs
     while True:
-        status, terminal_state = job_status(hpc_cmd, job_id)
+        status, terminal_state = job_status(orbit_cmd, job_id)
         if status == "completed":
             return
         if status == "failed":
@@ -152,13 +152,13 @@ def validate_smoke(project_out, repo_root):
         raise RuntimeError("smoke: input.sha256 mismatch")
 
 
-def validate_smoke_logs(hpc_cmd, job_id):
-    stdout_logs = run_cmd(hpc_cmd + ["job", "logs", str(job_id)])
+def validate_smoke_logs(orbit_cmd, job_id):
+    stdout_logs = run_cmd(orbit_cmd + ["job", "logs", str(job_id)])
     stdout_output = (stdout_logs.stdout or "") + (stdout_logs.stderr or "")
     if "smoke run on" not in stdout_output:
         raise RuntimeError("smoke: stdout logs missing expected output")
 
-    stderr_logs = run_cmd(hpc_cmd + ["job", "logs", str(job_id), "--err"])
+    stderr_logs = run_cmd(orbit_cmd + ["job", "logs", str(job_id), "--err"])
     stderr_output = (stderr_logs.stdout or "") + (stderr_logs.stderr or "")
     if "stderr check: this should show up in --err logs" not in stderr_output:
         raise RuntimeError("smoke: stderr logs missing expected output")
@@ -241,8 +241,8 @@ def validate_binary_output(project_out, repo_root):
         raise RuntimeError("binary_output: sample_copy.txt mismatch")
 
 
-def build_submit_cmd(hpc_cmd, cluster, project_path, submit_args, headless, extra_args=None):
-    cmd = hpc_cmd + [
+def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, headless, extra_args=None):
+    cmd = orbit_cmd + [
         "job",
         "submit",
         cluster,
@@ -257,17 +257,17 @@ def build_submit_cmd(hpc_cmd, cluster, project_path, submit_args, headless, extr
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run hpc end-to-end test projects.")
-    parser.add_argument("--cluster", required=True, help="Cluster name configured in hpc.")
+    parser = argparse.ArgumentParser(description="Run orbit end-to-end test projects.")
+    parser.add_argument("--cluster", required=True, help="Cluster name configured in orbit.")
     parser.add_argument(
-        "--hpc-bin",
-        default="cargo run -p cli --",
-        help="hpc CLI command (supports quoted strings).",
+        "--orbit-bin",
+        default="cargo run -p orbit --",
+        help="orbit CLI command (supports quoted strings).",
     )
     parser.add_argument(
-        "--hpcd-bin",
-        default="cargo run -p hpcd --",
-        help="hpcd command (supports quoted strings).",
+        "--orbitd-bin",
+        default="cargo run -p orbitd --",
+        help="orbitd command (supports quoted strings).",
     )
     parser.add_argument(
         "--out-dir",
@@ -282,14 +282,14 @@ def main():
     parser.add_argument(
         "--config",
         default="tests/config.toml",
-        help="Path to the hpc/hpcd config file.",
+        help="Path to the orbit/orbitd config file.",
     )
     parser.add_argument("--timeout", type=int, default=600, help="Timeout per job in seconds.")
     parser.add_argument(
         "--daemon-timeout",
         type=int,
         default=240,
-        help="Timeout for hpcd startup in seconds.",
+        help="Timeout for orbitd startup in seconds.",
     )
     parser.add_argument("--poll", type=int, default=3, help="Polling interval in seconds.")
     parser.add_argument("--headless", action="store_true", help="Use headless mode.")
@@ -301,8 +301,8 @@ def main():
         config_path = (repo_root / config_path).resolve()
     if not config_path.is_file():
         raise RuntimeError(f"config file not found: {config_path}")
-    hpc_cmd = command_with_config(args.hpc_bin, config_path)
-    hpcd_cmd = command_with_config(args.hpcd_bin, config_path)
+    orbit_cmd = command_with_config(args.orbit_bin, config_path)
+    orbitd_cmd = command_with_config(args.orbitd_bin, config_path)
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     keep_outputs = args.keep
@@ -310,12 +310,12 @@ def main():
     daemon_proc = None
     try:
         daemon_proc = start_daemon(
-            hpcd_cmd,
-            hpc_cmd + ["ping"],
+            orbitd_cmd,
+            orbit_cmd + ["ping"],
             args.daemon_timeout,
             args.poll,
         )
-        run_cmd(hpc_cmd + ["ping"])
+        run_cmd(orbit_cmd + ["ping"])
 
         projects = [
             {
@@ -363,7 +363,7 @@ def main():
 
         for project in projects:
             submit_cmd = build_submit_cmd(
-                hpc_cmd,
+                orbit_cmd,
                 args.cluster,
                 project["path"],
                 project["submit_args"],
@@ -388,7 +388,7 @@ def main():
                     )
 
                 force_cmd = build_submit_cmd(
-                    hpc_cmd,
+                    orbit_cmd,
                     args.cluster,
                     project["path"],
                     project["submit_args"],
@@ -406,7 +406,7 @@ def main():
                 job_ids.append(force_job_id)
 
                 new_dir_cmd = build_submit_cmd(
-                    hpc_cmd,
+                    orbit_cmd,
                     args.cluster,
                     project["path"],
                     project["submit_args"],
@@ -426,18 +426,18 @@ def main():
 
             for active_job_id in job_ids:
                 print(f"{project['id']}: submitted job {active_job_id}")
-                wait_for_job(hpc_cmd, active_job_id, args.timeout, args.poll)
+                wait_for_job(orbit_cmd, active_job_id, args.timeout, args.poll)
                 print(f"{project['id']}: job {active_job_id} completed")
 
             if project["id"] == "01_smoke":
-                validate_smoke_logs(hpc_cmd, primary_job_id)
+                validate_smoke_logs(orbit_cmd, primary_job_id)
                 print(f"{project['id']}: logs ok")
 
             project_out = out_dir / project["id"] / str(primary_job_id)
             project_out.mkdir(parents=True, exist_ok=True)
 
             for path in project["retrieve"]:
-                retrieve_cmd = hpc_cmd + [
+                retrieve_cmd = orbit_cmd + [
                     "job",
                     "retrieve",
                     str(primary_job_id),

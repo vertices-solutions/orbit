@@ -1,5 +1,5 @@
 [package]
-name = "cli"
+name = "orbit"
 version = "0.6.2"
 edition = "2024"
 license = "AGPL-3.0-only"
@@ -26,5 +26,5 @@ dirs = "6.0.0"
 
 
 [[bin]]
-name = "hpc"
+name = "orbit"
 path = "src/main.rs"

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=hpc-filters
+#SBATCH --job-name=orbit-filters
 #SBATCH --time=00:02:00
 #SBATCH --mem=64M
 #SBATCH --cpus-per-task=1

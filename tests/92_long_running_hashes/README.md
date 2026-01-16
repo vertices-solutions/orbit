@@ -4,9 +4,9 @@ Long-running hashing job that syncs ~100 MiB of random data in 10 files.
 
 Workflow:
 - bash prepare.sh
-- hpc job submit <cluster> tests/92_long_running_hashes
-- hpc job ls <job_id> results
-- hpc job retrieve <job_id> results --output ./out/92_long_running_hashes
+- orbit job submit <cluster> tests/92_long_running_hashes
+- orbit job ls <job_id> results
+- orbit job retrieve <job_id> results --output ./out/92_long_running_hashes
 
 Notes:
 - Data is generated locally under data/ and then transferred with the project sync.

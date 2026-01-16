@@ -1,7 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use anyhow::{Result, anyhow};
+use anyhow::anyhow;
+#[cfg(test)]
+use anyhow::Result;
+#[cfg(test)]
 use proto::{MfaAnswer, SubmitStreamEvent};
 use russh::client::Config;
 use russh::keys::known_hosts::{learn_known_hosts, learn_known_hosts_path};
@@ -9,8 +12,11 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::Mutex;
+#[cfg(test)]
+use tokio::sync::mpsc;
 
+#[cfg(test)]
 use crate::ssh::sync::BoxFuture;
 
 mod auth;
