@@ -49,7 +49,9 @@ struct TerminalGuard;
 impl TerminalGuard {
     fn enter() -> anyhow::Result<Self> {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-            bail!("interactive picker requires a TTY; pass --headless and specify --sbatchscript");
+            bail!(
+                "interactive picker requires a TTY; pass --headless or --non-interactive and specify --sbatchscript"
+            );
         }
         terminal::enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -284,7 +286,7 @@ pub fn resolve_sbatch_script(
         _ => {
             if headless {
                 let mut msg = format!(
-                    "multiple .sbatch files found under '{}' while running in headless mode; specify which one to use with --sbatchscript:\n",
+                    "multiple .sbatch files found under '{}' while running in headless or non-interactive mode; specify which one to use with --sbatchscript:\n",
                     local_path.display()
                 );
                 for script in &relative_scripts {

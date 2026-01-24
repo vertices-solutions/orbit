@@ -3,6 +3,7 @@
 
 use crate::errors::{format_server_error, format_status_error};
 use crate::mfa::collect_mfa_answers;
+use crate::non_interactive::NonInteractiveError;
 use anyhow::bail;
 use crossterm::{
     execute,
@@ -175,6 +176,144 @@ impl ProgressSpinner {
             spinner.stop(None).await;
         }
     }
+}
+
+#[derive(Debug, Default)]
+pub struct CapturedStream {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: Option<i32>,
+    pub error_code: Option<String>,
+}
+
+#[derive(Debug, Default)]
+pub struct SubmitCapture {
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
+    pub exit_code: Option<i32>,
+    pub job_id: Option<i64>,
+    pub remote_path: Option<String>,
+    pub detail: Option<String>,
+    pub error_code: Option<String>,
+}
+
+pub async fn handle_stream_events_capture<S>(mut inbound: S) -> anyhow::Result<CapturedStream>
+where
+    S: Stream<Item = Result<StreamEvent, Status>> + Unpin,
+{
+    let mut captured = CapturedStream::default();
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(bytes) => {
+                    captured.stdout.extend_from_slice(&bytes);
+                }
+                stream_event::Event::Stderr(bytes) => {
+                    captured.stderr.extend_from_slice(&bytes);
+                }
+                stream_event::Event::ExitCode(code) => {
+                    captured.exit_code = Some(code);
+                    break;
+                }
+                stream_event::Event::Mfa(_) => {
+                    return Err(NonInteractiveError::mfa_required(
+                        "MFA required; rerun without --non-interactive",
+                    )
+                    .into());
+                }
+                stream_event::Event::Error(err) => {
+                    captured.error_code = Some(err);
+                    captured.exit_code = Some(1);
+                    break;
+                }
+            },
+            Ok(StreamEvent { event: None }) => log::info!("received empty event"),
+            Err(status) => {
+                let message = format_status_error(&status);
+                captured.stderr.extend_from_slice(message.as_bytes());
+                captured.stderr.push(b'\n');
+                captured.exit_code = Some(1);
+                break;
+            }
+        }
+    }
+
+    Ok(captured)
+}
+
+pub async fn handle_submit_stream_events_capture<S>(
+    mut inbound: S,
+) -> anyhow::Result<SubmitCapture>
+where
+    S: Stream<Item = Result<SubmitStreamEvent, Status>> + Unpin,
+{
+    let mut captured = SubmitCapture::default();
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(SubmitStreamEvent { event: Some(ev) }) => match ev {
+                submit_stream_event::Event::Stdout(bytes) => {
+                    captured.stdout.extend_from_slice(&bytes);
+                }
+                submit_stream_event::Event::Stderr(bytes) => {
+                    captured.stderr.extend_from_slice(&bytes);
+                }
+                submit_stream_event::Event::ExitCode(code) => {
+                    captured.exit_code = Some(code);
+                    break;
+                }
+                submit_stream_event::Event::Mfa(_) => {
+                    return Err(NonInteractiveError::mfa_required(
+                        "MFA required; rerun without --non-interactive",
+                    )
+                    .into());
+                }
+                submit_stream_event::Event::Error(err) => {
+                    captured.error_code = Some(err);
+                    captured.exit_code = Some(1);
+                    break;
+                }
+                submit_stream_event::Event::SubmitStatus(status) => {
+                    let phase = submit_status::Phase::try_from(status.phase)
+                        .unwrap_or(submit_status::Phase::Unspecified);
+                    if phase == submit_status::Phase::Resolved && !status.remote_path.is_empty() {
+                        captured.remote_path = Some(status.remote_path);
+                    }
+                }
+                submit_stream_event::Event::SubmitResult(result) => {
+                    let status = submit_result::Status::try_from(result.status)
+                        .unwrap_or(submit_result::Status::Unspecified);
+                    match status {
+                        submit_result::Status::Submitted => {
+                            captured.job_id = result.job_id;
+                            captured.exit_code = Some(0);
+                        }
+                        submit_result::Status::Failed => {
+                            let detail = result.detail.trim();
+                            if !detail.is_empty() {
+                                captured.detail = Some(detail.to_string());
+                            }
+                            captured.exit_code = Some(1);
+                        }
+                        submit_result::Status::Unspecified => {
+                            captured.detail = Some("submit result missing status".to_string());
+                            captured.exit_code = Some(1);
+                        }
+                    }
+                    break;
+                }
+            },
+            Ok(SubmitStreamEvent { event: None }) => log::info!("received empty event"),
+            Err(status) => {
+                let message = format_status_error(&status);
+                captured.stderr.extend_from_slice(message.as_bytes());
+                captured.stderr.push(b'\n');
+                captured.exit_code = Some(1);
+                break;
+            }
+        }
+    }
+
+    Ok(captured)
 }
 
 pub async fn handle_stream_events<S, F, Fut>(

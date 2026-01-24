@@ -15,6 +15,12 @@ pub struct Cli {
         help = "Path to a TOML config file. When omitted, orbit uses the default config file location if available."
     )]
     pub config: Option<PathBuf>,
+    #[arg(
+        long,
+        global = true,
+        help = "Run without prompts, fail on MFA, and output JSON only."
+    )]
+    pub non_interactive: bool,
     #[command(subcommand)]
     pub cmd: Cmd,
 }
@@ -73,7 +79,7 @@ pub struct JobGetArgs {
     pub job_id: i64,
     #[arg(long)]
     pub cluster: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
     pub json: bool,
 }
 
@@ -99,7 +105,7 @@ pub struct JobCancelArgs {
 pub struct ListJobsArgs {
     #[arg(long)]
     pub cluster: Option<String>,
-    #[arg(long)]
+    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
     pub json: bool,
 }
 
@@ -114,7 +120,7 @@ pub struct JobRetrieveArgs {
     pub overwrite: bool,
     #[arg(long, help = "Retrieve outputs even if the job has not completed.")]
     pub force: bool,
-    #[arg(long)]
+    #[arg(long, help = "Disable prompts and progress output (implied by --non-interactive).")]
     pub headless: bool,
 }
 
@@ -130,7 +136,7 @@ pub struct JobLsArgs {
 
 #[derive(Args, Debug)]
 pub struct ListClustersArgs {
-    #[arg(long)]
+    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
     pub json: bool,
 }
 
@@ -159,7 +165,7 @@ pub enum ClusterCmd {
 #[derive(Args, Debug)]
 pub struct ClusterGetArgs {
     pub name: String,
-    #[arg(long)]
+    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
     pub json: bool,
 }
 
@@ -201,7 +207,10 @@ pub struct SubmitArgs {
     pub name: String,
     pub local_path: String,
     pub sbatchscript: Option<String>,
-    #[arg(long)]
+    #[arg(
+        long,
+        help = "Disable prompts and the sbatch picker (implied by --non-interactive)."
+    )]
     pub headless: bool,
     #[arg(long)]
     pub remote_path: Option<String>,
@@ -235,7 +244,7 @@ pub struct SubmitArgs {
 
 #[derive(Args, Debug)]
 pub struct AddClusterArgs {
-    /// Destination in ssh format: user@host[:port] (required in headless mode)
+    /// Destination in ssh format: user@host[:port] (required in headless or non-interactive mode)
     #[arg(value_name = "DESTINATION")]
     pub destination: Option<String>,
 
@@ -250,7 +259,7 @@ pub struct AddClusterArgs {
     #[arg(long)]
     pub default_base_path: Option<String>,
 
-    /// Disable prompts; missing values must have defaults or the command will fail.
+    /// Disable prompts; missing values must have defaults or the command will fail (implied by --non-interactive).
     #[arg(long)]
     pub headless: bool,
 }
@@ -306,5 +315,12 @@ mod tests {
             },
             _ => panic!("expected job command"),
         }
+    }
+
+    #[test]
+    fn non_interactive_parses_globally() {
+        let args = Cli::parse_from(["orbit", "--non-interactive", "ping"]);
+        assert!(args.non_interactive);
+        assert!(matches!(args.cmd, Cmd::Ping));
     }
 }

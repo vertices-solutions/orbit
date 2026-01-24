@@ -3,10 +3,13 @@
 
 use crate::errors::{format_server_error, format_status_error};
 use crate::mfa::{clear_transient_mfa, collect_mfa_answers, collect_mfa_answers_transient};
+use crate::non_interactive::NonInteractiveError;
 use crate::stream::{
-    MinDurationSpinner, Spinner, SubmitStreamOutcome, ensure_exit_code, handle_stream_events,
-    handle_stream_events_with_progress, handle_submit_stream_events, parse_remote_path_failure,
-    print_with_green_check_stderr, print_with_red_cross_stderr,
+    CapturedStream, MinDurationSpinner, Spinner, SubmitCapture, SubmitStreamOutcome,
+    ensure_exit_code, handle_stream_events, handle_stream_events_capture,
+    handle_stream_events_with_progress, handle_submit_stream_events,
+    handle_submit_stream_events_capture, parse_remote_path_failure, print_with_green_check_stderr,
+    print_with_red_cross_stderr,
 };
 use anyhow::bail;
 use proto::agent_client::AgentClient;
@@ -56,7 +59,7 @@ pub async fn fetch_list_clusters(
         filter: filter.to_string(),
     };
     let response = match timeout(
-        Duration::from_secs(1),
+        Duration::from_secs(5),
         client.list_clusters(list_clusters_request),
     )
     .await
@@ -153,12 +156,46 @@ async fn send_ls_request(
     ensure_exit_code(exit_code, "received exit code")
 }
 
+async fn send_ls_request_capture(
+    client: &mut AgentClient<Channel>,
+    name: String,
+    job_id: Option<i64>,
+    path: Option<String>,
+) -> anyhow::Result<CapturedStream> {
+    let (tx_ans, rx_ans) = mpsc::channel::<LsRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(LsRequest {
+            msg: Some(proto::ls_request::Msg::Init(LsRequestInit {
+                name,
+                path,
+                job_id,
+            })),
+        })
+        .await?;
+
+    let response = client
+        .ls(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let inbound = response.into_inner();
+    handle_stream_events_capture(inbound).await
+}
+
 pub async fn send_ls(
     client: &mut AgentClient<Channel>,
     name: &str,
     path: &Option<String>,
 ) -> anyhow::Result<()> {
     send_ls_request(client, name.to_owned(), None, path.to_owned()).await
+}
+
+pub async fn send_ls_capture(
+    client: &mut AgentClient<Channel>,
+    name: &str,
+    path: &Option<String>,
+) -> anyhow::Result<CapturedStream> {
+    send_ls_request_capture(client, name.to_owned(), None, path.to_owned()).await
 }
 
 pub async fn send_job_ls(
@@ -169,6 +206,16 @@ pub async fn send_job_ls(
 ) -> anyhow::Result<()> {
     let name = cluster.clone().unwrap_or_default();
     send_ls_request(client, name, Some(job_id), path.to_owned()).await
+}
+
+pub async fn send_job_ls_capture(
+    client: &mut AgentClient<Channel>,
+    job_id: i64,
+    path: &Option<String>,
+    cluster: &Option<String>,
+) -> anyhow::Result<CapturedStream> {
+    let name = cluster.clone().unwrap_or_default();
+    send_ls_request_capture(client, name, Some(job_id), path.to_owned()).await
 }
 
 pub async fn send_job_logs(
@@ -236,6 +283,67 @@ pub async fn send_job_logs(
     Ok(exit_code.unwrap_or(0))
 }
 
+pub async fn send_job_logs_capture(
+    client: &mut AgentClient<Channel>,
+    job_id: i64,
+    stderr: bool,
+) -> anyhow::Result<CapturedStream> {
+    let (tx_ans, rx_ans) = mpsc::channel::<JobLogsRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(JobLogsRequest {
+            msg: Some(proto::job_logs_request::Msg::Init(JobLogsRequestInit {
+                job_id,
+                stderr,
+            })),
+        })
+        .await?;
+
+    let response = client
+        .job_logs(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let mut inbound = response.into_inner();
+    let mut captured = CapturedStream::default();
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(proto::StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(bytes) => {
+                    captured.stdout.extend_from_slice(&bytes);
+                }
+                stream_event::Event::Stderr(bytes) => {
+                    captured.stderr.extend_from_slice(&bytes);
+                }
+                stream_event::Event::ExitCode(code) => {
+                    captured.exit_code = Some(code);
+                    break;
+                }
+                stream_event::Event::Mfa(_) => {
+                    return Err(NonInteractiveError::mfa_required(
+                        "MFA required; rerun without --non-interactive",
+                    )
+                    .into());
+                }
+                stream_event::Event::Error(err) => {
+                    captured.error_code = Some(err.clone());
+                    captured.exit_code = Some(job_logs_error_exit_code(&err));
+                    break;
+                }
+            },
+            Ok(proto::StreamEvent { event: None }) => {}
+            Err(status) => {
+                let message = format_status_error(&status);
+                captured.stderr.extend_from_slice(message.as_bytes());
+                captured.stderr.push(b'\n');
+                captured.exit_code = Some(1);
+                break;
+            }
+        }
+    }
+
+    Ok(captured)
+}
+
 fn job_logs_error_exit_code(err: &str) -> i32 {
     match err {
         "invalid_argument" => 2,
@@ -279,6 +387,28 @@ pub async fn send_job_cancel(
     ensure_exit_code(exit_code, "received exit code")
 }
 
+pub async fn send_job_cancel_capture(
+    client: &mut AgentClient<Channel>,
+    job_id: i64,
+) -> anyhow::Result<CapturedStream> {
+    let (tx_ans, rx_ans) = mpsc::channel::<CancelJobRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(CancelJobRequest {
+            msg: Some(proto::cancel_job_request::Msg::Init(CancelJobRequestInit {
+                job_id,
+            })),
+        })
+        .await?;
+
+    let response = client
+        .cancel_job(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let inbound = response.into_inner();
+    handle_stream_events_capture(inbound).await
+}
+
 fn job_retrieve_error_exit_code(err: &str) -> i32 {
     match err {
         "invalid_argument" => 2,
@@ -286,6 +416,11 @@ fn job_retrieve_error_exit_code(err: &str) -> i32 {
         "conflict" => 4,
         _ => 1,
     }
+}
+
+pub struct RetrieveCapture {
+    pub local_target: PathBuf,
+    pub stream: CapturedStream,
 }
 
 fn normalize_path(p: impl AsRef<Path>) -> PathBuf {
@@ -480,6 +615,88 @@ pub async fn send_job_retrieve(
     Ok(code)
 }
 
+pub async fn send_job_retrieve_capture(
+    client: &mut AgentClient<Channel>,
+    job_id: i64,
+    path: &str,
+    output: &Option<PathBuf>,
+    overwrite: bool,
+    force: bool,
+) -> anyhow::Result<RetrieveCapture> {
+    let mut local_base = match output {
+        Some(v) => v.clone(),
+        None => std::env::current_dir()?,
+    };
+    if !local_base.is_absolute() {
+        local_base = std::env::current_dir()?.join(local_base);
+    }
+    let local_path = local_base.to_string_lossy().into_owned();
+    let local_target = resolve_retrieve_local_target(path, &local_base);
+
+    let (tx_ans, rx_ans) = mpsc::channel::<RetrieveJobRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(RetrieveJobRequest {
+            msg: Some(proto::retrieve_job_request::Msg::Init(
+                RetrieveJobRequestInit {
+                    job_id,
+                    path: path.to_owned(),
+                    local_path: Some(local_path),
+                    overwrite,
+                    force,
+                },
+            )),
+        })
+        .await?;
+
+    let response = client
+        .retrieve_job(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let mut inbound = response.into_inner();
+    let mut captured = CapturedStream::default();
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(proto::StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(bytes) => {
+                    captured.stdout.extend_from_slice(&bytes);
+                }
+                stream_event::Event::Stderr(bytes) => {
+                    captured.stderr.extend_from_slice(&bytes);
+                }
+                stream_event::Event::ExitCode(code) => {
+                    captured.exit_code = Some(code);
+                    break;
+                }
+                stream_event::Event::Mfa(_) => {
+                    return Err(NonInteractiveError::mfa_required(
+                        "MFA required; rerun without --non-interactive",
+                    )
+                    .into());
+                }
+                stream_event::Event::Error(err) => {
+                    captured.error_code = Some(err.clone());
+                    captured.exit_code = Some(job_retrieve_error_exit_code(&err));
+                    break;
+                }
+            },
+            Ok(proto::StreamEvent { event: None }) => {}
+            Err(status) => {
+                let message = format_status_error(&status);
+                captured.stderr.extend_from_slice(message.as_bytes());
+                captured.stderr.push(b'\n');
+                captured.exit_code = Some(1);
+                break;
+            }
+        }
+    }
+
+    Ok(RetrieveCapture {
+        local_target,
+        stream: captured,
+    })
+}
+
 pub async fn send_submit(
     client: &mut AgentClient<Channel>,
     name: &str,
@@ -542,6 +759,47 @@ pub async fn send_submit(
     }
 }
 
+pub async fn send_submit_capture(
+    client: &mut AgentClient<Channel>,
+    name: &str,
+    local_path: &str,
+    remote_path: &Option<String>,
+    new_directory: bool,
+    force: bool,
+    sbatchscript: &str,
+    filters: &[SubmitPathFilterRule],
+) -> anyhow::Result<SubmitCapture> {
+    let (tx_ans, rx_ans) = mpsc::channel::<SubmitRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    tx_ans
+        .send(SubmitRequest {
+            msg: Some(proto::submit_request::Msg::Init(proto::SubmitRequestInit {
+                local_path: local_path.to_owned(),
+                remote_path: remote_path.to_owned(),
+                name: name.to_owned(),
+                sbatchscript: sbatchscript.to_owned(),
+                filters: filters.to_vec(),
+                new_directory,
+                force,
+            })),
+        })
+        .await?;
+
+    let response = match client.submit(Request::new(outbound)).await {
+        Ok(response) => response,
+        Err(status) => {
+            let message = if let Some(failure) = parse_remote_path_failure(status.message()) {
+                format!("Remote path: {} - {}", failure.remote_path, failure.reason)
+            } else {
+                format_status_error(&status)
+            };
+            return Err(NonInteractiveError::other_with_exit_code(message, 1).into());
+        }
+    };
+    let inbound = response.into_inner();
+    handle_submit_stream_events_capture(inbound).await
+}
+
 const CHECK_CONNECT_TIMEOUT_SECS: u64 = 3;
 
 fn check_cluster_reachable(host: &str, port: u16) -> anyhow::Result<()> {
@@ -565,6 +823,7 @@ fn check_cluster_reachable(host: &str, port: u16) -> anyhow::Result<()> {
 pub async fn validate_cluster_live(
     client: &mut AgentClient<Channel>,
     cluster: &proto::ListClustersUnitResponse,
+    non_interactive: bool,
 ) -> anyhow::Result<()> {
     let host = match cluster.host.as_ref() {
         Some(list_clusters_unit_response::Host::Hostname(value)) => value.as_str(),
@@ -574,7 +833,11 @@ pub async fn validate_cluster_live(
     let port = u16::try_from(cluster.port)
         .map_err(|_| anyhow::anyhow!("cluster '{}' has invalid port", cluster.name))?;
     let check_message = format!("Checking {}", cluster.name);
-    let mut spinner = Some(Spinner::start(&check_message));
+    let mut spinner = if non_interactive {
+        None
+    } else {
+        Some(Spinner::start(&check_message))
+    };
 
     if let Err(err) = check_cluster_reachable(host, port) {
         if let Some(spinner) = spinner.take() {
@@ -618,6 +881,12 @@ pub async fn validate_cluster_live(
                     if let Some(spinner) = spinner.take() {
                         spinner.stop(None).await;
                     }
+                    if non_interactive {
+                        return Err(NonInteractiveError::mfa_required(
+                            "MFA required; rerun without --non-interactive",
+                        )
+                        .into());
+                    }
                     eprintln!("Connection required: ");
                     let (answers, lines) = collect_mfa_answers_transient(&mfa).await?;
                     tx_mfa
@@ -652,7 +921,9 @@ pub async fn validate_cluster_live(
 
     match exit_code {
         Some(0) => {
-            print_with_green_check_stderr(&format!("{} live", cluster.name))?;
+            if !non_interactive {
+                print_with_green_check_stderr(&format!("{} live", cluster.name))?;
+            }
             Ok(())
         }
         Some(code) => {
@@ -749,6 +1020,49 @@ pub async fn send_add_cluster(
         .await?
     };
     ensure_exit_code(exit_code, "on client side: received exit code")
+}
+
+pub async fn send_add_cluster_capture(
+    client: &mut AgentClient<Channel>,
+    name: &str,
+    username: &str,
+    hostname: &Option<String>,
+    ip: &Option<String>,
+    identity_path: Option<&str>,
+    port: u32,
+    default_base_path: &Option<String>,
+) -> anyhow::Result<CapturedStream> {
+    let (tx_ans, rx_ans) = mpsc::channel::<AddClusterRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    let host: add_cluster_init::Host = match hostname {
+        Some(v) => add_cluster_init::Host::Hostname(v.into()),
+        None => match ip {
+            Some(v) => add_cluster_init::Host::Ipaddr(v.into()),
+            None => anyhow::bail!("both hostname and ip address can't be none"),
+        },
+    };
+    let identity_path_expanded = match identity_path {
+        Some(value) => Some(shellexpand::full(value)?.to_string()),
+        None => None,
+    };
+    let init = AddClusterInit {
+        name: name.to_owned(),
+        username: username.to_owned(),
+        host: Some(host),
+        identity_path: identity_path_expanded,
+        port: port,
+        default_base_path: default_base_path.to_owned(),
+    };
+    let acr = AddClusterRequest {
+        msg: Some(add_cluster_request::Msg::Init(init)),
+    };
+    tx_ans.send(acr).await?;
+    let response = client
+        .add_cluster(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let inbound = response.into_inner();
+    handle_stream_events_capture(inbound).await
 }
 
 pub async fn send_resolve_home_dir(
