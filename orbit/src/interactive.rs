@@ -72,7 +72,7 @@ pub fn resolve_add_cluster_args(
         parsed
     } else {
         if args.headless {
-            bail!("destination is required in headless mode");
+            bail!("destination is required in headless or non-interactive mode");
         }
         loop {
             let input = prompt_destination_value()?;
@@ -157,7 +157,7 @@ pub fn resolve_add_cluster_args(
             if args.headless {
                 match discovered {
                     Some(value) => value,
-                    None => bail!("identity path is required in headless mode"),
+                    None => bail!("identity path is required in headless or non-interactive mode"),
                 }
             } else {
                 identity_from_prompt = true;
@@ -169,7 +169,7 @@ pub fn resolve_add_cluster_args(
         let replace_prompt_line = identity_from_prompt && !args.headless;
         if identity_path.trim().is_empty() {
             if args.headless {
-                bail!("identity path is required in headless mode");
+                bail!("identity path is required in headless or non-interactive mode");
             }
             ensure_tty_for_prompt()?;
             eprintln!("Identity path cannot be empty.");
@@ -676,7 +676,9 @@ fn normalize_option(value: Option<String>) -> Option<String> {
 
 fn ensure_tty_for_prompt() -> anyhow::Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
-        bail!("interactive prompts require a TTY; pass --headless and specify all options");
+        bail!(
+            "interactive prompts require a TTY; pass --headless or --non-interactive and specify all options"
+        );
     }
     Ok(())
 }

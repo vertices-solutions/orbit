@@ -111,9 +111,45 @@ def parse_remote_path(output):
     raise RuntimeError("unable to parse remote path from submit output")
 
 
+def parse_orbit_json(output):
+    data = json.loads(output)
+    if isinstance(data, dict) and "ok" in data:
+        if not data.get("ok"):
+            error = data.get("error", {})
+            message = error.get("message") or "orbit returned an error"
+            raise RuntimeError(message)
+        return data.get("result")
+    return data
+
+
+def parse_json_output(result):
+    stdout = (result.stdout or "").strip()
+    if stdout:
+        try:
+            return parse_orbit_json(stdout)
+        except json.JSONDecodeError:
+            pass
+    stderr = (result.stderr or "").strip()
+    if stderr:
+        return parse_orbit_json(stderr)
+    raise RuntimeError("missing JSON output")
+
+
+def parse_submit_json(result):
+    data = parse_json_output(result)
+    job_id = data.get("job_id")
+    if job_id is None:
+        raise RuntimeError("submit JSON missing job_id")
+    return job_id, data.get("remote_path")
+
+
+def combined_stream_text(data):
+    return (data.get("stdout") or "") + (data.get("stderr") or "")
+
+
 def job_status(orbit_cmd, job_id):
     result = run_cmd(orbit_cmd + ["job", "get", str(job_id), "--json"])
-    data = json.loads(result.stdout)
+    data = parse_json_output(result)
     return data.get("status"), data.get("terminal_state")
 
 
@@ -181,6 +217,20 @@ def validate_smoke_logs(orbit_cmd, job_id):
     stderr_output = (stderr_logs.stdout or "") + (stderr_logs.stderr or "")
     if "stderr check: this should show up in --err logs" not in stderr_output:
         raise RuntimeError("smoke: stderr logs missing expected output")
+
+
+def validate_smoke_logs_json(orbit_cmd, job_id):
+    stdout_logs = parse_json_output(run_cmd(orbit_cmd + ["job", "logs", str(job_id)]))
+    stdout_output = combined_stream_text(stdout_logs)
+    if "smoke run on" not in stdout_output:
+        raise RuntimeError("smoke: stdout logs missing expected output (json)")
+
+    stderr_logs = parse_json_output(
+        run_cmd(orbit_cmd + ["job", "logs", str(job_id), "--err"])
+    )
+    stderr_output = combined_stream_text(stderr_logs)
+    if "stderr check: this should show up in --err logs" not in stderr_output:
+        raise RuntimeError("smoke: stderr logs missing expected output (json)")
 
 
 def validate_python_stats(project_out):
@@ -322,6 +372,7 @@ def main():
         raise RuntimeError(f"config file not found: {config_path}")
     orbit_cmd = command_with_config(args.orbit_bin, config_path)
     orbitd_cmd = command_with_config(args.orbitd_bin, config_path)
+    non_interactive_cmd = orbit_cmd + ["--non-interactive"]
     out_dir = Path(args.out_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     keep_outputs = args.keep
@@ -486,6 +537,43 @@ def main():
 
             project["validate"](project_out)
             print(f"{project['id']}: validation ok")
+
+        ping_result = parse_json_output(run_cmd(non_interactive_cmd + ["ping"]))
+        if ping_result.get("message") != "pong":
+            raise RuntimeError("non-interactive ping returned unexpected response")
+
+        non_interactive_project = repo_root / "tests/01_smoke"
+        submit_cmd = build_submit_cmd(
+            non_interactive_cmd,
+            args.cluster,
+            non_interactive_project,
+            [],
+            args.headless,
+        )
+        submit_result = run_cmd(submit_cmd)
+        job_id, remote_path = parse_submit_json(submit_result)
+        if not remote_path:
+            raise RuntimeError("non-interactive submit missing remote_path")
+        wait_for_job(non_interactive_cmd, job_id, args.timeout, args.poll)
+        print(f"non-interactive: submitted job {job_id}")
+
+        validate_smoke_logs_json(non_interactive_cmd, job_id)
+        print("non-interactive: logs ok")
+
+        non_interactive_out = out_dir / "non_interactive" / str(job_id)
+        non_interactive_out.mkdir(parents=True, exist_ok=True)
+        retrieve_cmd = non_interactive_cmd + [
+            "job",
+            "retrieve",
+            str(job_id),
+            "results",
+            "--output",
+            str(non_interactive_out),
+            "--overwrite",
+        ]
+        run_cmd(retrieve_cmd)
+        validate_smoke(non_interactive_out, repo_root)
+        print("non-interactive: validation ok")
 
         print("All projects completed.")
         return 0

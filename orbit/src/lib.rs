@@ -8,6 +8,8 @@ pub mod errors;
 pub mod filters;
 pub mod format;
 pub mod interactive;
+pub mod interaction;
 pub mod mfa;
+pub mod non_interactive;
 pub mod sbatch;
 pub mod stream;
