@@ -13,6 +13,7 @@ pub enum NonInteractiveErrorKind {
     MissingInput,
     ConfirmationRequired,
     MfaRequired,
+    DaemonUnavailable,
     Other,
 }
 
@@ -22,6 +23,7 @@ impl NonInteractiveErrorKind {
             NonInteractiveErrorKind::MissingInput => "missing_input",
             NonInteractiveErrorKind::ConfirmationRequired => "confirmation_required",
             NonInteractiveErrorKind::MfaRequired => "mfa_required",
+            NonInteractiveErrorKind::DaemonUnavailable => "daemon_unavailable",
             NonInteractiveErrorKind::Other => "error",
         }
     }
@@ -57,6 +59,14 @@ impl NonInteractiveError {
             kind: NonInteractiveErrorKind::MfaRequired,
             message: message.into(),
             exit_code: EXIT_CODE_MFA_REQUIRED,
+        }
+    }
+
+    pub fn daemon_unavailable(message: impl Into<String>) -> Self {
+        Self {
+            kind: NonInteractiveErrorKind::DaemonUnavailable,
+            message: message.into(),
+            exit_code: EXIT_CODE_OTHER,
         }
     }
 

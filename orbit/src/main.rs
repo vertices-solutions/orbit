@@ -33,6 +33,7 @@ use proto::SubmitPathFilterRule;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::PathBuf;
+use tonic::transport::Channel;
 
 const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
 ██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
@@ -69,14 +70,14 @@ async fn main() -> anyhow::Result<()> {
     }
     match cli.cmd {
         Cmd::Ping => {
-            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
+            let mut client = connect_orbitd_interactive(&daemon_endpoint).await?;
             match send_ping(&mut client).await {
                 Ok(()) => println!("pong"),
                 Err(e) => bail!(e),
             }
         }
         Cmd::Job(job_args) => {
-            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
+            let mut client = connect_orbitd_interactive(&daemon_endpoint).await?;
             match job_args.cmd {
                 JobCmd::Submit(args) => {
                     let local_path_buf = PathBuf::from(&args.local_path);
@@ -235,7 +236,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Cmd::Cluster(cluster_args) => {
-            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
+            let mut client = connect_orbitd_interactive(&daemon_endpoint).await?;
             match cluster_args.cmd {
                 ClusterCmd::List(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
@@ -500,6 +501,31 @@ fn coerce_non_interactive_error(err: anyhow::Error) -> NonInteractiveError {
     NonInteractiveError::other(err.to_string())
 }
 
+fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
+    format!(
+        "Could not contact the orbitd server at {daemon_endpoint}. Is it running?"
+    )
+}
+
+async fn connect_orbitd_interactive(
+    daemon_endpoint: &str,
+) -> anyhow::Result<AgentClient<Channel>> {
+    AgentClient::connect(daemon_endpoint.to_string())
+        .await
+        .map_err(|_| anyhow::anyhow!(daemon_unavailable_message(daemon_endpoint)))
+}
+
+async fn connect_orbitd_non_interactive(
+    daemon_endpoint: &str,
+) -> anyhow::Result<AgentClient<Channel>> {
+    AgentClient::connect(daemon_endpoint.to_string())
+        .await
+        .map_err(|_| {
+            NonInteractiveError::daemon_unavailable(daemon_unavailable_message(daemon_endpoint))
+                .into()
+        })
+}
+
 async fn run_non_interactive(
     cli: Cli,
     submit_filters: Vec<SubmitPathFilterRule>,
@@ -528,12 +554,12 @@ async fn run_non_interactive_impl(
 ) -> anyhow::Result<Value> {
     match cli.cmd {
         Cmd::Ping => {
-            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
+            let mut client = connect_orbitd_non_interactive(&daemon_endpoint).await?;
             send_ping(&mut client).await?;
             Ok(json!({ "message": "pong" }))
         }
         Cmd::Job(job_args) => {
-            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
+            let mut client = connect_orbitd_non_interactive(&daemon_endpoint).await?;
             match job_args.cmd {
                 JobCmd::Submit(args) => {
                     let local_path_buf = PathBuf::from(&args.local_path);
@@ -728,7 +754,7 @@ async fn run_non_interactive_impl(
             }
         }
         Cmd::Cluster(cluster_args) => {
-            let mut client = AgentClient::connect(daemon_endpoint.clone()).await?;
+            let mut client = connect_orbitd_non_interactive(&daemon_endpoint).await?;
             match cluster_args.cmd {
                 ClusterCmd::List(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
