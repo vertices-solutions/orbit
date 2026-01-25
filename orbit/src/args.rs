@@ -67,6 +67,8 @@ pub enum JobCmd {
     Logs(JobLogsArgs),
     /// Cancel a job.
     Cancel(JobCancelArgs),
+    /// Clean up a job's remote directory.
+    Cleanup(JobCleanupArgs),
     /// List files in a job work directory.
     Ls(JobLsArgs),
     /// Retrieve a file or directory from a job run folder.
@@ -96,6 +98,21 @@ pub struct JobLogsArgs {
 pub struct JobCancelArgs {
     /// Job id from the daemon.
     pub job_id: i64,
+    /// Skip the confirmation prompt.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
+}
+
+#[derive(Args, Debug)]
+pub struct JobCleanupArgs {
+    /// Job id from the daemon.
+    pub job_id: i64,
+    /// Cancel a running job before cleanup.
+    #[arg(long)]
+    pub force: bool,
+    /// Delete the job record from the local database after cleanup.
+    #[arg(long)]
+    pub full: bool,
     /// Skip the confirmation prompt.
     #[arg(long, short = 'y')]
     pub yes: bool,
@@ -322,5 +339,53 @@ mod tests {
         let args = Cli::parse_from(["orbit", "--non-interactive", "ping"]);
         assert!(args.non_interactive);
         assert!(matches!(args.cmd, Cmd::Ping));
+    }
+
+    #[test]
+    fn job_cleanup_force_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "job", "cleanup", "12"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Cleanup(cleanup) => assert!(!cleanup.force),
+                _ => panic!("expected cleanup command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_cleanup_force_sets_true() {
+        let args = Cli::parse_from(["orbit", "job", "cleanup", "12", "--force"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Cleanup(cleanup) => assert!(cleanup.force),
+                _ => panic!("expected cleanup command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_cleanup_full_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "job", "cleanup", "12"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Cleanup(cleanup) => assert!(!cleanup.full),
+                _ => panic!("expected cleanup command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_cleanup_yes_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "job", "cleanup", "12"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Cleanup(cleanup) => assert!(!cleanup.yes),
+                _ => panic!("expected cleanup command"),
+            },
+            _ => panic!("expected job command"),
+        }
     }
 }

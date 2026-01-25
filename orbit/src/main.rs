@@ -6,10 +6,10 @@ use clap::{CommandFactory, FromArgMatches};
 use orbit::args::{Cli, ClusterCmd, Cmd, JobCmd};
 use orbit::client::{
     fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_add_cluster_capture,
-    send_delete_cluster, send_job_cancel, send_job_cancel_capture, send_job_logs,
-    send_job_logs_capture, send_job_ls, send_job_ls_capture, send_job_retrieve,
-    send_job_retrieve_capture, send_ls, send_ls_capture, send_ping, send_resolve_home_dir,
-    send_submit, send_submit_capture, validate_cluster_live,
+    send_delete_cluster, send_job_cancel, send_job_cancel_capture, send_job_cleanup,
+    send_job_cleanup_capture, send_job_logs, send_job_logs_capture, send_job_ls,
+    send_job_ls_capture, send_job_retrieve, send_job_retrieve_capture, send_ls, send_ls_capture,
+    send_ping, send_resolve_home_dir, send_submit, send_submit_capture, validate_cluster_live,
 };
 use orbit::config;
 use orbit::errors::format_server_error;
@@ -183,6 +183,32 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     send_job_cancel(&mut client, args.job_id).await?
+                }
+                JobCmd::Cleanup(args) => {
+                    if !args.yes {
+                        println!(
+                            "WARNING:\nThis will delete the remote directory for job {}.",
+                            args.job_id
+                        );
+                        if args.force {
+                            println!("The job will be canceled before cleanup.");
+                        } else {
+                            println!("If the job is still running, pass --force to cancel it.");
+                        }
+                        if args.full {
+                            println!("The job record will be deleted from the local database.");
+                        }
+                        println!("This action cannot be undone.");
+                        let confirmed = confirm_action(
+                            "Continue with cleanup? (yes/no): ",
+                            "Type yes to confirm, no to cancel.",
+                        )?;
+                        if !confirmed {
+                            println!("Cleanup canceled.");
+                            return Ok(());
+                        }
+                    }
+                    send_job_cleanup(&mut client, args.job_id, args.force, args.full).await?
                 }
                 JobCmd::Ls(args) => {
                     send_job_ls(&mut client, args.job_id, &args.path, &args.cluster).await?
@@ -622,6 +648,36 @@ async fn run_non_interactive_impl(
                     Ok(json!({
                         "job_id": args.job_id,
                         "status": "canceled",
+                        "stdout": bytes_to_string(&captured.stdout),
+                        "stderr": bytes_to_string(&captured.stderr),
+                    }))
+                }
+                JobCmd::Cleanup(args) => {
+                    if !args.yes {
+                        return Err(NonInteractiveError::confirmation_required(
+                            "confirmation required; pass --yes to proceed in non-interactive mode",
+                        )
+                        .into());
+                    }
+                    let captured = send_job_cleanup_capture(
+                        &mut client,
+                        args.job_id,
+                        args.force,
+                        args.full,
+                    )
+                    .await?;
+                    let exit_code = captured.exit_code.unwrap_or(0);
+                    if exit_code != 0 {
+                        let message = stream_error_message(&captured);
+                        return Err(
+                            NonInteractiveError::other_with_exit_code(message, exit_code).into(),
+                        );
+                    }
+                    Ok(json!({
+                        "job_id": args.job_id,
+                        "status": "cleaned",
+                        "force": args.force,
+                        "full": args.full,
                         "stdout": bytes_to_string(&captured.stdout),
                         "stderr": bytes_to_string(&captured.stderr),
                     }))

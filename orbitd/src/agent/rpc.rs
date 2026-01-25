@@ -21,18 +21,20 @@ use crate::util::reachability;
 use crate::util::remote_path::normalize_path;
 use proto::agent_server::Agent;
 use proto::{
-    AddClusterRequest, CancelJobRequest, CancelJobRequestInit, DeleteClusterRequest,
-    DeleteClusterResponse, JobLogsRequest, JobLogsRequestInit, ListClustersRequest,
-    ListClustersResponse, ListClustersUnitResponse, ListJobsRequest, ListJobsResponse, LsRequest,
-    LsRequestInit, MfaAnswer, PingReply, PingRequest, RetrieveJobRequest, RetrieveJobRequestInit,
-    StreamEvent, SubmitRequest, SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event,
-    submit_result, submit_status, submit_stream_event,
+    AddClusterRequest, CancelJobRequest, CancelJobRequestInit, CleanupJobRequest,
+    CleanupJobRequestInit, DeleteClusterRequest, DeleteClusterResponse, JobLogsRequest,
+    JobLogsRequestInit, ListClustersRequest, ListClustersResponse, ListClustersUnitResponse,
+    ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit, MfaAnswer, PingReply, PingRequest,
+    RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest, SubmitResult,
+    SubmitStatus, SubmitStreamEvent, stream_event, submit_result, submit_status,
+    submit_stream_event,
 };
 use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::protocol::StatusCode as SftpStatusCode;
 use std::net::{IpAddr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use tokio::time::{Duration, sleep};
 use tonic::Status;
 
 async fn fetch_remote_home_dir(
@@ -192,6 +194,36 @@ fn is_local_path_conflict(err: &anyhow::Error) -> bool {
     })
 }
 
+const CLEANUP_CANCEL_POLL_INTERVAL: Duration = Duration::from_secs(2);
+const CLEANUP_CANCEL_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn parse_squeue_state(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|state| state.to_ascii_uppercase())
+}
+
+fn is_invalid_job_id(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("invalid job id")
+}
+
+fn is_unsafe_cleanup_path(remote_path: &str) -> bool {
+    let trimmed = remote_path.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == "/"
+        || trimmed == "~"
+        || trimmed.starts_with("~/")
+        || trimmed.starts_with('~')
+    {
+        return true;
+    }
+    let normalized = normalize_path(trimmed);
+    normalized.as_os_str().is_empty() || normalized == Path::new(std::path::MAIN_SEPARATOR_STR)
+}
+
 async fn send_add_cluster_progress(
     evt_tx: &tokio::sync::mpsc::Sender<Result<StreamEvent, Status>>,
     message: &str,
@@ -244,6 +276,7 @@ impl Agent for AgentSvc {
     type RetrieveJobStream = OutStream;
     type JobLogsStream = OutStream;
     type CancelJobStream = OutStream;
+    type CleanupJobStream = OutStream;
     type SubmitStream = SubmitOutStream;
     type AddClusterStream = OutStream;
     type ResolveHomeDirStream = OutStream;
@@ -1322,6 +1355,467 @@ impl Agent for AgentSvc {
                 job.name
             );
             let message = format!("Job {job_id} canceled.\n");
+            let _ = evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::Stdout(message.into_bytes())),
+                }))
+                .await;
+            let _ = evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::ExitCode(0)),
+                }))
+                .await;
+        });
+
+        let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
+        Ok(tonic::Response::new(out))
+    }
+
+    async fn cleanup_job(
+        &self,
+        request: tonic::Request<tonic::Streaming<CleanupJobRequest>>,
+    ) -> Result<tonic::Response<Self::CleanupJobStream>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let mut inbound = request.into_inner();
+
+        let init = inbound
+            .message()
+            .await
+            .map_err(|e| {
+                log::debug!("read error in cleanup_job: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
+
+        let (job_id, force, full) = match init.msg {
+            Some(proto::cleanup_job_request::Msg::Init(CleanupJobRequestInit {
+                job_id,
+                force,
+                full,
+            })) => (job_id, force, full),
+            _ => {
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+            }
+        };
+        log::info!(
+            "cleanup_job start remote_addr={remote_addr} job_id={job_id} force={force} full={full}"
+        );
+
+        let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        tokio::spawn(async move {
+            while let Ok(Some(item)) = inbound.message().await {
+                if let Some(proto::cleanup_job_request::Msg::Mfa(ans)) = item.msg
+                    && mfa_tx.send(ans).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
+        let hs = self.hosts();
+        let svc = self.clone();
+        let audit_remote_addr = remote_addr.clone();
+        tokio::spawn(async move {
+            let job = match hs.get_job_by_job_id(job_id).await {
+                Ok(Some(v)) => v,
+                Ok(None) => {
+                    log::warn!(
+                        "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} reason=job_not_found"
+                    );
+                    let message = format!(
+                        "job {} does not exist; you can list all job with 'orbit job list'",
+                        job_id
+                    );
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(
+                                format!("{message}\n").into_bytes(),
+                            )),
+                        }))
+                        .await;
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::NOT_FOUND.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+                Err(e) => {
+                    log::warn!(
+                        "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} reason=db_error"
+                    );
+                    log::debug!("could not fetch job id {job_id}: {e}");
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::INTERNAL_ERROR.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            if is_unsafe_cleanup_path(&job.remote_path) {
+                log::warn!(
+                    "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=unsafe_path",
+                    job.name
+                );
+                let message = format!(
+                    "job {job_id} has an unsafe remote path '{}' and cannot be cleaned up",
+                    job.remote_path
+                );
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            format!("{message}\n").into_bytes(),
+                        )),
+                    }))
+                    .await;
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::INVALID_ARGUMENT.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            if !job.is_completed && !force {
+                log::warn!(
+                    "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=job_running",
+                    job.name
+                );
+                let message =
+                    format!("job {job_id} is still running; pass --force to cancel and clean up");
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            format!("{message}\n").into_bytes(),
+                        )),
+                    }))
+                    .await;
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::CONFLICT.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            let mgr = match svc.get_sessionmanager(&job.name).await {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=session_unavailable",
+                        job.name
+                    );
+                    let message = match e {
+                        AgentSvcError::UnknownName => error_codes::NOT_FOUND,
+                        AgentSvcError::NetworkError(e) => {
+                            log::debug!("network error for {}: {e}", job.name);
+                            error_codes::NETWORK_ERROR
+                        }
+                        other_error => {
+                            log::debug!(
+                                "unexpected session manager error for {}: {other_error}",
+                                job.name
+                            );
+                            error_codes::INTERNAL_ERROR
+                        }
+                    };
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(message.to_string())),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            if let Err(err) = mgr.ensure_connected(&evt_tx, &mut mfa_rx).await {
+                log::warn!(
+                    "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=connect_failed error={err}",
+                    job.name
+                );
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::code_for_ssh_error(&err).to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            if !job.is_completed {
+                let Some(scheduler_id) = job.scheduler_id else {
+                    log::warn!(
+                        "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=missing_scheduler_id",
+                        job.name
+                    );
+                    let message =
+                        format!("job {job_id} has no scheduler id; cleanup is not possible");
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(
+                                format!("{message}\n").into_bytes(),
+                            )),
+                        }))
+                        .await;
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::INTERNAL_ERROR.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                };
+
+                let command = format!("scancel {}", sh_escape(&scheduler_id.to_string()));
+                let (_out, err, code) = match mgr.exec_capture(&command).await {
+                    Ok(v) => v,
+                    Err(e) => {
+                        log::warn!(
+                            "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=exec_failed error={e}",
+                            job.name
+                        );
+                        let _ = evt_tx
+                            .send(Ok(StreamEvent {
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::REMOTE_ERROR.to_string(),
+                                )),
+                            }))
+                            .await;
+                        return;
+                    }
+                };
+
+                if code != 0 {
+                    let err_text = String::from_utf8_lossy(&err);
+                    if !is_invalid_job_id(&err_text) {
+                        let detail = if err_text.trim().is_empty() {
+                            format!("exit code {code}")
+                        } else {
+                            err_text.trim().to_string()
+                        };
+                        log::warn!(
+                            "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=remote_error detail={detail}",
+                            job.name
+                        );
+                        let message = format!("failed to cancel job {job_id}: {detail}");
+                        let _ = evt_tx
+                            .send(Ok(StreamEvent {
+                                event: Some(stream_event::Event::Stderr(
+                                    format!("{message}\n").into_bytes(),
+                                )),
+                            }))
+                            .await;
+                        let _ = evt_tx
+                            .send(Ok(StreamEvent {
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::REMOTE_ERROR.to_string(),
+                                )),
+                            }))
+                            .await;
+                        return;
+                    }
+                }
+
+                let start = std::time::Instant::now();
+                loop {
+                    let command = format!("squeue -j {scheduler_id} -h -o %T");
+                    match mgr.exec_capture(&command).await {
+                        Ok((out, err, code)) => {
+                            if code != 0 {
+                                let err_text = String::from_utf8_lossy(&err);
+                                if is_invalid_job_id(&err_text) {
+                                    break;
+                                }
+                                log::warn!(
+                                    "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=remote_error detail={}",
+                                    job.name,
+                                    err_text.trim()
+                                );
+                                let message = format!(
+                                    "failed while waiting for job {job_id} to cancel: {}",
+                                    err_text.trim()
+                                );
+                                let _ = evt_tx
+                                    .send(Ok(StreamEvent {
+                                        event: Some(stream_event::Event::Stderr(
+                                            format!("{message}\n").into_bytes(),
+                                        )),
+                                    }))
+                                    .await;
+                                let _ = evt_tx
+                                    .send(Ok(StreamEvent {
+                                        event: Some(stream_event::Event::Error(
+                                            error_codes::REMOTE_ERROR.to_string(),
+                                        )),
+                                    }))
+                                    .await;
+                                return;
+                            }
+                            let output = String::from_utf8_lossy(&out);
+                            if let Some(state) = parse_squeue_state(&output) {
+                                if crate::agent::slurm::slurm_state_is_terminal(&state) {
+                                    break;
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!(
+                                "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=exec_failed error={e}",
+                                job.name
+                            );
+                            let _ = evt_tx
+                                .send(Ok(StreamEvent {
+                                    event: Some(stream_event::Event::Error(
+                                        error_codes::REMOTE_ERROR.to_string(),
+                                    )),
+                                }))
+                                .await;
+                            return;
+                        }
+                    }
+
+                    if start.elapsed() >= CLEANUP_CANCEL_TIMEOUT {
+                        log::warn!(
+                            "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=cancel_timeout",
+                            job.name
+                        );
+                        let message =
+                            format!("timed out waiting for job {job_id} to cancel");
+                        let _ = evt_tx
+                            .send(Ok(StreamEvent {
+                                event: Some(stream_event::Event::Stderr(
+                                    format!("{message}\n").into_bytes(),
+                                )),
+                            }))
+                            .await;
+                        let _ = evt_tx
+                            .send(Ok(StreamEvent {
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::CONFLICT.to_string(),
+                                )),
+                            }))
+                            .await;
+                        return;
+                    }
+                    sleep(CLEANUP_CANCEL_POLL_INTERVAL).await;
+                }
+
+                if let Err(e) = hs.mark_job_completed(job_id, Some("CANCELED")).await {
+                    log::warn!(
+                        "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=job_update_failed error={e}",
+                        job.name
+                    );
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::INTERNAL_ERROR.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+            }
+
+            let command = format!("rm -rf -- {}", sh_escape(&job.remote_path));
+            let (_out, err, code) = match mgr.exec_capture(&command).await {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!(
+                        "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=exec_failed error={e}",
+                        job.name
+                    );
+                    let _ = evt_tx
+                        .send(Ok(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                error_codes::REMOTE_ERROR.to_string(),
+                            )),
+                        }))
+                        .await;
+                    return;
+                }
+            };
+
+            if code != 0 {
+                let err_text = String::from_utf8_lossy(&err);
+                let detail = if err_text.trim().is_empty() {
+                    format!("exit code {code}")
+                } else {
+                    err_text.trim().to_string()
+                };
+                log::warn!(
+                    "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=remote_error detail={detail}",
+                    job.name
+                );
+                let message = format!(
+                    "failed to remove remote directory for job {job_id}: {detail}"
+                );
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            format!("{message}\n").into_bytes(),
+                        )),
+                    }))
+                    .await;
+                let _ = evt_tx
+                    .send(Ok(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            error_codes::REMOTE_ERROR.to_string(),
+                        )),
+                    }))
+                    .await;
+                return;
+            }
+
+            if full {
+                match hs.delete_job_by_job_id(job_id).await {
+                    Ok(true) => {}
+                    Ok(false) => {
+                        log::warn!(
+                            "cleanup_job remote_addr={audit_remote_addr} job_id={job_id} name={} reason=job_missing_on_delete",
+                            job.name
+                        );
+                    }
+                    Err(e) => {
+                        log::warn!(
+                            "cleanup_job failed remote_addr={audit_remote_addr} job_id={job_id} name={} reason=job_delete_failed error={e}",
+                            job.name
+                        );
+                        let _ = evt_tx
+                            .send(Ok(StreamEvent {
+                                event: Some(stream_event::Event::Error(
+                                    error_codes::INTERNAL_ERROR.to_string(),
+                                )),
+                            }))
+                            .await;
+                        return;
+                    }
+                }
+            }
+
+            log::info!(
+                "cleanup_job completed remote_addr={audit_remote_addr} job_id={job_id} name={} full={full}",
+                job.name
+            );
+            let message = if full {
+                format!("Job {job_id} cleaned up and deleted.\n")
+            } else {
+                format!("Job {job_id} cleaned up.\n")
+            };
             let _ = evt_tx
                 .send(Ok(StreamEvent {
                     event: Some(stream_event::Event::Stdout(message.into_bytes())),

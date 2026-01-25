@@ -1016,6 +1016,19 @@ impl HostStore {
         Ok(())
     }
 
+    pub async fn delete_job_by_job_id(&self, id: i64) -> Result<bool> {
+        let result = sqlx::query(
+            r#"
+            delete from jobs
+            where id = ?1
+            "#,
+        )
+        .bind(id)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() > 0)
+    }
+
     pub async fn update_job_scheduler_state(
         &self,
         id: i64,

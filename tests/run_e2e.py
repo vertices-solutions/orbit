@@ -185,6 +185,19 @@ def wait_for_job_canceled(orbit_cmd, job_id, timeout_secs, poll_secs):
         time.sleep(poll_secs)
 
 
+def cleanup_job_and_validate(orbit_cmd, cluster, job_id, remote_path):
+    if not remote_path:
+        raise RuntimeError(f"missing remote path for job {job_id}")
+    cleanup_cmd = orbit_cmd + ["job", "cleanup", str(job_id), "--yes"]
+    run_cmd(cleanup_cmd)
+    ls_cmd = orbit_cmd + ["cluster", "ls", cluster, remote_path]
+    status, output = run_cmd_status(ls_cmd)
+    if status == 0:
+        raise RuntimeError(
+            f"cleanup did not remove remote path for job {job_id}: {remote_path}\n{output}"
+        )
+
+
 def sha256_path(path):
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -450,7 +463,9 @@ def main():
             result = run_cmd(submit_cmd)
             output = result.stdout + result.stderr
             job_id = parse_job_id(output)
+            remote_path = parse_remote_path(output)
             job_ids = [job_id]
+            job_paths = {job_id: remote_path}
             primary_job_id = job_id
             if project.get("cancel"):
                 print(f"{project['id']}: submitted job {job_id}")
@@ -458,9 +473,12 @@ def main():
                 run_cmd(cancel_cmd)
                 wait_for_job_canceled(orbit_cmd, job_id, args.timeout, args.poll)
                 print(f"{project['id']}: job {job_id} canceled")
+                cleanup_job_and_validate(
+                    orbit_cmd, args.cluster, job_id, job_paths[job_id]
+                )
+                print(f"{project['id']}: cleanup ok for job {job_id}")
                 continue
             if project["id"] == "01_smoke":
-                remote_path = parse_remote_path(output)
                 conflict_status, conflict_output = run_cmd_status(submit_cmd)
                 if conflict_status == 0:
                     raise RuntimeError(
@@ -489,6 +507,7 @@ def main():
                         "force submit did not reuse existing remote path"
                     )
                 job_ids.append(force_job_id)
+                job_paths[force_job_id] = force_remote_path
 
                 new_dir_cmd = build_submit_cmd(
                     orbit_cmd,
@@ -507,6 +526,7 @@ def main():
                         "new-directory submit did not create a new remote path"
                     )
                 job_ids.append(new_dir_job_id)
+                job_paths[new_dir_job_id] = new_dir_remote_path
                 primary_job_id = new_dir_job_id
 
             for active_job_id in job_ids:
@@ -537,6 +557,15 @@ def main():
 
             project["validate"](project_out)
             print(f"{project['id']}: validation ok")
+
+            for cleanup_job_id in job_ids:
+                cleanup_job_and_validate(
+                    orbit_cmd,
+                    args.cluster,
+                    cleanup_job_id,
+                    job_paths[cleanup_job_id],
+                )
+                print(f"{project['id']}: cleanup ok for job {cleanup_job_id}")
 
         ping_result = parse_json_output(run_cmd(non_interactive_cmd + ["ping"]))
         if ping_result.get("message") != "pong":
