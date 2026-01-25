@@ -14,9 +14,20 @@
   <strong>Local first Slurm interface</strong>
 </p>
 
-[![Rust](https://img.shields.io/github/languages/top/vertices-solutions/orbit)](https://www.rust-lang.org/)
-[![License](https://img.shields.io/github/license/vertices-solutions/orbit)](LICENSE)
-[![Coverage](https://codecov.io/gh/vertices-solutions/orbit/graph/badge.svg)](https://codecov.io/gh/vertices-solutions/orbit)
+
+<p align="center">
+  <a href="https://www.rust-lang.org/">
+    <img src="https://img.shields.io/github/languages/top/vertices-solutions/orbit" alt="Rust">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/github/license/vertices-solutions/orbit" alt="License">
+  </a>
+  <a href="https://codecov.io/gh/vertices-solutions/orbit">
+    <img src="https://codecov.io/gh/vertices-solutions/orbit/graph/badge.svg" alt="Coverage">
+  </a>
+</p>
+
+
 
 > [!CAUTION]
 > orbit is in alpha stage. It is quickly maturating every week: we have both unit test coverage and fairly extensive end-to-end tests providing strong guarantees of its performance. However, every once in a while we do find it misbehaving on some edge cases and/or rare Slurm deployment configurations. If you also find any - please, go ahead and report them in issues: see the "Getting help" section for more details.
