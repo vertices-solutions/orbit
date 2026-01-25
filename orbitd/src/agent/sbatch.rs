@@ -96,10 +96,16 @@ pub fn resolve_log_path(
 }
 
 fn parse_flag_value(token: &str, short: &str, long: &str) -> Option<String> {
-    if let Some(value) = token.strip_prefix(short).and_then(|rest| rest.strip_prefix('=')) {
+    if let Some(value) = token
+        .strip_prefix(short)
+        .and_then(|rest| rest.strip_prefix('='))
+    {
         return Some(value.to_string());
     }
-    if let Some(value) = token.strip_prefix(long).and_then(|rest| rest.strip_prefix('=')) {
+    if let Some(value) = token
+        .strip_prefix(long)
+        .and_then(|rest| rest.strip_prefix('='))
+    {
         return Some(value.to_string());
     }
     None

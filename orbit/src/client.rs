@@ -16,10 +16,10 @@ use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, CancelJobRequest, CancelJobRequestInit, CleanupJobRequest,
     CleanupJobRequestInit, DeleteClusterRequest, DeleteClusterResponse, JobLogsRequest,
-    JobLogsRequestInit, ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse,
-    LsRequest, LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
-    RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest, add_cluster_init,
-    add_cluster_request, list_clusters_unit_response, resolve_home_dir_request,
+    JobLogsRequestInit, ListClustersRequest, ListClustersResponse, ListJobsRequest,
+    ListJobsResponse, LsRequest, LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit,
+    RetrieveJobRequest, RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest,
+    add_cluster_init, add_cluster_request, list_clusters_unit_response, resolve_home_dir_request,
     resolve_home_dir_request_init, stream_event,
 };
 use std::io::{IsTerminal, Write};
@@ -27,8 +27,8 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Component, Path, PathBuf};
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
-use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, transport::Channel};
 
 pub async fn send_ping(client: &mut AgentClient<Channel>) -> anyhow::Result<()> {
@@ -352,10 +352,7 @@ fn job_logs_error_exit_code(err: &str) -> i32 {
     }
 }
 
-pub async fn send_job_cancel(
-    client: &mut AgentClient<Channel>,
-    job_id: i64,
-) -> anyhow::Result<()> {
+pub async fn send_job_cancel(client: &mut AgentClient<Channel>, job_id: i64) -> anyhow::Result<()> {
     let (tx_ans, rx_ans) = mpsc::channel::<CancelJobRequest>(16);
     let outbound = ReceiverStream::new(rx_ans);
     tx_ans
@@ -1264,8 +1261,7 @@ pub async fn send_resolve_home_dir(
         eprintln!("Connected to cluster");
     }
 
-    let home_raw =
-        String::from_utf8(stdout).map_err(|e| anyhow::anyhow!("invalid UTF-8: {e}"))?;
+    let home_raw = String::from_utf8(stdout).map_err(|e| anyhow::anyhow!("invalid UTF-8: {e}"))?;
     let home = home_raw.trim();
     if home.is_empty() {
         bail!("remote home directory is empty");

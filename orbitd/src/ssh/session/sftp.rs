@@ -79,11 +79,7 @@ impl SessionManager {
                                     e
                                 );
                             } else {
-                                log::warn!(
-                                    "error when setting metadata for path {}: {}",
-                                    &cur,
-                                    e
-                                );
+                                log::warn!("error when setting metadata for path {}: {}", &cur, e);
                             }
                         }
                     };

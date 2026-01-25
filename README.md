@@ -22,6 +22,9 @@
   <a href="LICENSE">
     <img src="https://img.shields.io/github/license/vertices-solutions/orbit" alt="License">
   </a>
+  <a href="https://github.com/vertices-solutions/orbit/actions/workflows/ci.yml">
+    <img src="https://github.com/vertices-solutions/orbit/actions/workflows/ci.yml/badge.svg?branch=main" alt="Tests">
+  </a>
   <a href="https://codecov.io/gh/vertices-solutions/orbit">
     <img src="https://codecov.io/gh/vertices-solutions/orbit/graph/badge.svg" alt="Coverage">
   </a>
@@ -30,13 +33,16 @@
 
 
 > [!CAUTION]
-> orbit is in alpha stage. It is quickly maturating every week: we have both unit test coverage and fairly extensive end-to-end tests providing strong guarantees of its performance. However, every once in a while we do find it misbehaving on some edge cases and/or rare Slurm deployment configurations. If you also find any - please, go ahead and report them in issues: see the "Getting help" section for more details.
+> `orbit` is in alpha stage. 
+> It is quickly growing and maturating week after week: we have both unit test coverage and fairly extensive end-to-end tests providing strong guarantees of its performance. However, every once in a while we do find it misbehaving on some edge cases and/or rare Slurm deployment configurations. 
+> If you also encounter any bugs, problems or undesired behaviors in `orbit` - please, go ahead and report them in issues.
+> See the "Getting help" section for more details.
 
 
 `orbit` provides a local-first interface to Slurm over SSH.
 
 
-Here's a short demo showcasing the basic flow of `orbit`:
+It aims to provide you with a single-command job submission over ssh:
 [![asciicast](https://asciinema.org/a/00nj8QnJOYamcUvI.svg)](https://asciinema.org/a/00nj8QnJOYamcUvI)
 
 ## Introduction

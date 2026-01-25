@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use anyhow::bail;
 use crate::interaction;
 use crate::non_interactive::NonInteractiveError;
+use anyhow::bail;
 use proto::{MfaAnswer, MfaPrompt};
 use std::io::Write;
 
@@ -30,9 +30,7 @@ pub async fn collect_mfa_answers(mfa: &MfaPrompt) -> anyhow::Result<MfaAnswer> {
     Ok(MfaAnswer { responses })
 }
 
-pub async fn collect_mfa_answers_transient(
-    mfa: &MfaPrompt,
-) -> anyhow::Result<(MfaAnswer, usize)> {
+pub async fn collect_mfa_answers_transient(mfa: &MfaPrompt) -> anyhow::Result<(MfaAnswer, usize)> {
     if interaction::is_non_interactive() {
         bail!(NonInteractiveError::mfa_required(
             "MFA required; rerun without --non-interactive"

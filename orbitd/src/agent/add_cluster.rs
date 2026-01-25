@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use crate::state::db::Address;
 use crate::agent::error_codes;
+use crate::state::db::Address;
 use crate::util::net;
 use crate::util::remote_path::normalize_path;
 use proto::add_cluster_init;

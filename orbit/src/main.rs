@@ -19,17 +19,17 @@ use orbit::format::{
     format_clusters_json, format_clusters_table, format_job_details, format_job_details_json,
     format_jobs_json, format_jobs_table, format_json, job_to_json,
 };
+use orbit::interaction;
 use orbit::interactive::{
     confirm_action, prompt_default_base_path, resolve_add_cluster_args,
     validate_default_base_path_with_feedback,
 };
-use orbit::interaction;
 use orbit::non_interactive::{NonInteractiveError, json_error, json_ok};
 use orbit::sbatch::resolve_sbatch_script;
 use orbit::stream::{CapturedStream, SubmitCapture, print_with_green_check_stdout};
 use proto::ListJobsUnitResponse;
-use proto::agent_client::AgentClient;
 use proto::SubmitPathFilterRule;
+use proto::agent_client::AgentClient;
 use serde_json::{Value, json};
 use std::io::Write;
 use std::path::PathBuf;
@@ -263,9 +263,7 @@ async fn main() -> anyhow::Result<()> {
                         print!("{}", format_cluster_details(cluster));
                     }
                 }
-                ClusterCmd::Ls(args) => {
-                    send_ls(&mut client, &args.name, &args.path).await?
-                }
+                ClusterCmd::Ls(args) => send_ls(&mut client, &args.name, &args.path).await?,
                 ClusterCmd::Add(args) => {
                     println!("Adding new cluster...");
                     let headless = args.headless;
@@ -317,9 +315,7 @@ async fn main() -> anyhow::Result<()> {
                         loop {
                             let base_path = prompt_default_base_path(&home_dir)?;
                             match validate_default_base_path_with_feedback(
-                                &base_path,
-                                true,
-                                headless,
+                                &base_path, true, headless,
                             ) {
                                 Ok(()) => {
                                     resolved.default_base_path = Some(base_path);
@@ -502,14 +498,10 @@ fn coerce_non_interactive_error(err: anyhow::Error) -> NonInteractiveError {
 }
 
 fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
-    format!(
-        "Could not contact the orbitd server at {daemon_endpoint}. Is it running?"
-    )
+    format!("Could not contact the orbitd server at {daemon_endpoint}. Is it running?")
 }
 
-async fn connect_orbitd_interactive(
-    daemon_endpoint: &str,
-) -> anyhow::Result<AgentClient<Channel>> {
+async fn connect_orbitd_interactive(daemon_endpoint: &str) -> anyhow::Result<AgentClient<Channel>> {
     AgentClient::connect(daemon_endpoint.to_string())
         .await
         .map_err(|_| anyhow::anyhow!(daemon_unavailable_message(daemon_endpoint)))
@@ -581,12 +573,9 @@ async fn run_non_interactive_impl(
                             local_path_buf.display()
                         )
                     })?;
-                    let sbatchscript = resolve_sbatch_script(
-                        &local_path_buf,
-                        args.sbatchscript.as_deref(),
-                        true,
-                    )
-                    .map_err(|err| NonInteractiveError::missing_input(err.to_string()))?;
+                    let sbatchscript =
+                        resolve_sbatch_script(&local_path_buf, args.sbatchscript.as_deref(), true)
+                            .map_err(|err| NonInteractiveError::missing_input(err.to_string()))?;
                     let resolved_local_path_display = resolved_local_path.display().to_string();
                     let captured = send_submit_capture(
                         &mut client,
@@ -689,13 +678,9 @@ async fn run_non_interactive_impl(
                         )
                         .into());
                     }
-                    let captured = send_job_cleanup_capture(
-                        &mut client,
-                        args.job_id,
-                        args.force,
-                        args.full,
-                    )
-                    .await?;
+                    let captured =
+                        send_job_cleanup_capture(&mut client, args.job_id, args.force, args.full)
+                            .await?;
                     let exit_code = captured.exit_code.unwrap_or(0);
                     if exit_code != 0 {
                         let message = stream_error_message(&captured);

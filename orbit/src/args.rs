@@ -131,13 +131,19 @@ pub struct JobRetrieveArgs {
     /// Job id from the daemon.
     pub job_id: i64,
     pub path: String,
-    #[arg(long, help = "Directory where the requested file or directory will be placed.")]
+    #[arg(
+        long,
+        help = "Directory where the requested file or directory will be placed."
+    )]
     pub output: Option<PathBuf>,
     #[arg(long, help = "Overwrite existing local files.")]
     pub overwrite: bool,
     #[arg(long, help = "Retrieve outputs even if the job has not completed.")]
     pub force: bool,
-    #[arg(long, help = "Disable prompts and progress output (implied by --non-interactive).")]
+    #[arg(
+        long,
+        help = "Disable prompts and progress output (implied by --non-interactive)."
+    )]
     pub headless: bool,
 }
 

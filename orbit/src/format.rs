@@ -304,7 +304,8 @@ pub fn job_status(item: &ListJobsUnitResponse) -> &'static str {
     match item.terminal_state.as_deref() {
         Some(state) if state.eq_ignore_ascii_case("COMPLETED") => "completed",
         Some(state)
-            if state.eq_ignore_ascii_case("CANCELED") || state.eq_ignore_ascii_case("CANCELLED") =>
+            if state.eq_ignore_ascii_case("CANCELED")
+                || state.eq_ignore_ascii_case("CANCELLED") =>
         {
             "canceled"
         }

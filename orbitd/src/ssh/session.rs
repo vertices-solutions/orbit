@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use anyhow::anyhow;
 #[cfg(test)]
 use anyhow::Result;
+use anyhow::anyhow;
 #[cfg(test)]
 use proto::{MfaAnswer, SubmitStreamEvent};
 use russh::client::Config;

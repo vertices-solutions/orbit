@@ -115,13 +115,8 @@ async fn needs_connect_true_without_handle() {
 fn verify_server_key_accepts_known_host() {
     let tmp = tempdir().unwrap();
     let path = tmp.path().join("known_hosts");
-    let key_b64 =
-        "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
-    fs::write(
-        &path,
-        format!("example.com ssh-ed25519 {key_b64}\n"),
-    )
-    .unwrap();
+    let key_b64 = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    fs::write(&path, format!("example.com ssh-ed25519 {key_b64}\n")).unwrap();
     let key = russh::keys::parse_public_key_base64(key_b64).unwrap();
     let addr = "203.0.113.10:22".parse::<SocketAddr>().unwrap();
 
@@ -133,8 +128,7 @@ fn verify_server_key_accepts_known_host() {
 fn verify_server_key_accepts_ip_fallback() {
     let tmp = tempdir().unwrap();
     let path = tmp.path().join("known_hosts");
-    let key_b64 =
-        "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    let key_b64 = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     fs::write(&path, format!("203.0.113.10 ssh-ed25519 {key_b64}\n")).unwrap();
     let key = russh::keys::parse_public_key_base64(key_b64).unwrap();
     let addr = "203.0.113.10:22".parse::<SocketAddr>().unwrap();
@@ -147,8 +141,7 @@ fn verify_server_key_accepts_ip_fallback() {
 fn verify_server_key_learns_unknown_host() {
     let tmp = tempdir().unwrap();
     let path = tmp.path().join("known_hosts");
-    let key_b64 =
-        "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    let key_b64 = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
     let key = russh::keys::parse_public_key_base64(key_b64).unwrap();
     let addr = "203.0.113.10:22".parse::<SocketAddr>().unwrap();
 
@@ -164,10 +157,8 @@ fn verify_server_key_learns_unknown_host() {
 fn verify_server_key_rejects_changed_key() {
     let tmp = tempdir().unwrap();
     let path = tmp.path().join("known_hosts");
-    let key_b64 =
-        "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
-    let changed_key_b64 =
-        "AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
+    let key_b64 = "AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ";
+    let changed_key_b64 = "AAAAC3NzaC1lZDI1NTE5AAAAILIG2T/B0l0gaqj3puu510tu9N1OkQ4znY3LYuEm5zCF";
     fs::write(&path, format!("example.com ssh-ed25519 {key_b64}\n")).unwrap();
     let changed_key = russh::keys::parse_public_key_base64(changed_key_b64).unwrap();
     let addr = "203.0.113.10:22".parse::<SocketAddr>().unwrap();

@@ -241,9 +241,7 @@ where
     Ok(captured)
 }
 
-pub async fn handle_submit_stream_events_capture<S>(
-    mut inbound: S,
-) -> anyhow::Result<SubmitCapture>
+pub async fn handle_submit_stream_events_capture<S>(mut inbound: S) -> anyhow::Result<SubmitCapture>
 where
     S: Stream<Item = Result<SubmitStreamEvent, Status>> + Unpin,
 {
@@ -751,7 +749,7 @@ fn parse_remote_path_in_use(message: &str) -> Option<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_remote_path_failure, parse_remote_path_in_use, REMOTE_PATH_IN_USE_REASON};
+    use super::{REMOTE_PATH_IN_USE_REASON, parse_remote_path_failure, parse_remote_path_in_use};
 
     #[test]
     fn parse_remote_path_in_use_extracts_path() {

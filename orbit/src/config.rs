@@ -41,10 +41,7 @@ pub fn load(config_path_override: Option<PathBuf>) -> Result<Config> {
         anyhow::bail!("port must be between 1 and 65535");
     }
 
-    Ok(Config {
-        port,
-        config_path,
-    })
+    Ok(Config { port, config_path })
 }
 
 pub fn daemon_endpoint(config_path_override: Option<PathBuf>) -> Result<String> {

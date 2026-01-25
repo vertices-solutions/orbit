@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use crate::agent::error_codes;
 use crate::ssh::{SyncFilterAction, SyncFilterRule};
 use crate::state::db::{HostRecord, HostStore, JobRecord};
-use crate::agent::error_codes;
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
 use proto::{SubmitPathFilterAction, SubmitPathFilterRule, list_clusters_unit_response};
 use tonic::Status;

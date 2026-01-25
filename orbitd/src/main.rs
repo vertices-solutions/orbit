@@ -153,10 +153,7 @@ async fn main() -> anyhow::Result<()> {
         None
     };
     let opts = Opts::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
-    let config::LoadResult {
-        config,
-        report,
-    } = config::load_with_report(
+    let config::LoadResult { config, report } = config::load_with_report(
         opts.config,
         config::Overrides {
             database_path: opts.database_path,

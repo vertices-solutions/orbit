@@ -411,9 +411,7 @@ impl HostStore {
         let mut stderr_notnull = false;
 
         for row in &columns {
-            let name = row
-                .try_get::<String, _>("name")
-                .unwrap_or_default();
+            let name = row.try_get::<String, _>("name").unwrap_or_default();
             match name.as_str() {
                 "terminal_state" => has_terminal_state = true,
                 "scheduler_state" => has_scheduler_state = true,

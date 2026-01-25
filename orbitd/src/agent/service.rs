@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use crate::agent::error_codes;
 use crate::agent::sessions::{DefaultSessionFactory, SessionCache, SessionFactory};
 use crate::agent::types::{AgentSvcError, OutStream};
-use crate::agent::error_codes;
 use crate::ssh::SessionManager;
 use crate::ssh::receiver_to_stream;
 use crate::state::db::{HostStore, JobRecord};
@@ -11,8 +11,8 @@ use proto::stream_event;
 use proto::{MfaAnswer, StreamEvent};
 use std::collections::HashMap;
 use std::sync::Arc;
-use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
+use time::format_description::well_known::Rfc3339;
 use tokio::time::Duration;
 use tonic::Status;
 
@@ -125,11 +125,7 @@ impl AgentSvc {
                             }
                         }
                         Err(e) => {
-                            log::debug!(
-                                "failed to parse created_at for job {}: {}",
-                                job.id,
-                                e
-                            );
+                            log::debug!("failed to parse created_at for job {}: {}", job.id, e);
                         }
                     }
                 }
@@ -163,9 +159,7 @@ impl AgentSvc {
                             continue;
                         }
                         None => {
-                            log::debug!(
-                                "sacct returned no terminal state for {name} job {job_id}"
-                            );
+                            log::debug!("sacct returned no terminal state for {name} job {job_id}");
                         }
                     };
 

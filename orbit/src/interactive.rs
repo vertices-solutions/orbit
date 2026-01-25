@@ -11,8 +11,8 @@ use crossterm::terminal::{self, ClearType};
 use rand::prelude::IndexedRandom;
 use ratatui::symbols::braille;
 use std::collections::HashSet;
-use std::io::{IsTerminal, Read, Write};
 use std::fs;
+use std::io::{IsTerminal, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::thread;
@@ -84,7 +84,8 @@ pub fn resolve_add_cluster_args(
                 }
             };
             let display = format_destination_display(&parsed)?;
-            if let Err(_) = validate_destination_with_feedback(&parsed, &display, true, args.headless)
+            if let Err(_) =
+                validate_destination_with_feedback(&parsed, &display, true, args.headless)
             {
                 eprintln!("Please, provide a valid connection string");
                 continue;
@@ -123,12 +124,8 @@ pub fn resolve_add_cluster_args(
     };
     loop {
         let replace_prompt_line = name_from_prompt && !args.headless;
-        match validate_name_with_feedback(
-            &name,
-            existing_names,
-            replace_prompt_line,
-            args.headless,
-        ) {
+        match validate_name_with_feedback(&name, existing_names, replace_prompt_line, args.headless)
+        {
             Ok(()) => break,
             Err(err) => {
                 if args.headless {
@@ -323,10 +320,8 @@ fn validate_destination_with_feedback(
     }
 
     if use_tty {
-        let spinner = ValidationSpinner::start(
-            &format!("Validating {display}"),
-            Duration::from_millis(500),
-        );
+        let spinner =
+            ValidationSpinner::start(&format!("Validating {display}"), Duration::from_millis(500));
         let result = validate_destination_reachability(destination);
         spinner.stop();
         match result {
@@ -351,7 +346,10 @@ fn validate_name_with_feedback(
 ) -> anyhow::Result<()> {
     if headless {
         if existing_names.contains(name) {
-            bail!("cluster '{}' already exists; use 'cluster set' to update it", name);
+            bail!(
+                "cluster '{}' already exists; use 'cluster set' to update it",
+                name
+            );
         }
         return Ok(());
     }
@@ -367,13 +365,19 @@ fn validate_name_with_feedback(
         let taken = existing_names.contains(name);
         spinner.stop();
         if taken {
-            bail!("cluster '{}' already exists; use 'cluster set' to update it", name);
+            bail!(
+                "cluster '{}' already exists; use 'cluster set' to update it",
+                name
+            );
         }
         print_name_validated(name, true)
     } else {
         eprintln!("Validating {name}");
         if existing_names.contains(name) {
-            bail!("cluster '{}' already exists; use 'cluster set' to update it", name);
+            bail!(
+                "cluster '{}' already exists; use 'cluster set' to update it",
+                name
+            );
         }
         print_name_validated(name, false)
     }
@@ -469,13 +473,13 @@ fn validate_default_base_path(base_path: &str) -> anyhow::Result<()> {
 
 fn validate_identity_path(identity_path: &str) -> anyhow::Result<()> {
     let expanded = shellexpand::full(identity_path)?.to_string();
-    let metadata = fs::metadata(&expanded)
-        .map_err(|_| anyhow::anyhow!("identity path does not exist"))?;
+    let metadata =
+        fs::metadata(&expanded).map_err(|_| anyhow::anyhow!("identity path does not exist"))?;
     if !metadata.is_file() {
         bail!("identity path is not a file");
     }
-    let mut file = fs::File::open(&expanded)
-        .map_err(|_| anyhow::anyhow!("identity path is not readable"))?;
+    let mut file =
+        fs::File::open(&expanded).map_err(|_| anyhow::anyhow!("identity path is not readable"))?;
     let mut contents = Vec::new();
     file.read_to_end(&mut contents)
         .map_err(|_| anyhow::anyhow!("identity path is not readable"))?;
@@ -496,7 +500,10 @@ fn prompt_identity_path(default: Option<&str>) -> anyhow::Result<String> {
         }
         None => (None, "<none>".to_string()),
     };
-    let hint = format_default_hint(&hint_default, "SSH private key path used for authentication.");
+    let hint = format_default_hint(
+        &hint_default,
+        "SSH private key path used for authentication.",
+    );
     let input = match display_default.as_deref() {
         Some(value) => prompt_line_with_default("Identity path: ", &hint, Some(value))?,
         None => prompt_line("Identity path: ", &hint)?,
@@ -540,7 +547,10 @@ fn find_preferred_identity_path() -> Option<String> {
     }
     ed25519.sort();
     other.sort();
-    ed25519.into_iter().next().or_else(|| other.into_iter().next())
+    ed25519
+        .into_iter()
+        .next()
+        .or_else(|| other.into_iter().next())
 }
 
 fn format_identity_path_display(path: &str) -> String {
@@ -1136,13 +1146,11 @@ mod tests {
     fn write_test_identity_file() -> std::io::Result<String> {
         let dir = std::env::temp_dir();
         let pid = std::process::id();
-        let content = b"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n";
+        let content =
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n";
         for idx in 0..1000 {
             let path = dir.join(format!("orbit_test_identity_{pid}_{idx}.key"));
-            let file = OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path);
+            let file = OpenOptions::new().write(true).create_new(true).open(&path);
             let mut file = match file {
                 Ok(file) => file,
                 Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
@@ -1185,7 +1193,10 @@ mod tests {
         let resolved = resolve_add_cluster_args(args, &HashSet::new()).unwrap();
         assert_eq!(resolved.port, port as u32);
         assert_eq!(resolved.identity_path, identity_path);
-        assert_eq!(resolved.default_base_path.as_deref(), Some(DEFAULT_BASE_PATH));
+        assert_eq!(
+            resolved.default_base_path.as_deref(),
+            Some(DEFAULT_BASE_PATH)
+        );
         assert_eq!(resolved.username, "alex");
         assert_eq!(resolved.name, "localhost");
     }
@@ -1215,9 +1226,10 @@ mod tests {
     #[test]
     fn parse_destination_requires_username() {
         let err = parse_destination("example.com:2222").unwrap_err();
-        assert!(err
-            .to_string()
-            .contains("destination must be in user@host[:port] format"));
+        assert!(
+            err.to_string()
+                .contains("destination must be in user@host[:port] format")
+        );
     }
 
     #[test]

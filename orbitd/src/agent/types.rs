@@ -7,7 +7,6 @@ use thiserror::Error as ThisError;
 use tokio_stream::Stream;
 use tonic::Status;
 
-
 pub type OutStream =
     Pin<Box<dyn Stream<Item = Result<StreamEvent, Status>> + Send + Sync + 'static>>;
 pub type SubmitOutStream =

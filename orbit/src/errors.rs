@@ -31,17 +31,15 @@ pub fn format_status_error(status: &Status) -> String {
         return message.to_string();
     }
     match status.code() {
-        Code::Cancelled => describe_error_code(CANCELED).unwrap_or("Canceled.").to_string(),
-        Code::Unauthenticated => {
-            describe_error_code(AUTHENTICATION_FAILURE)
-                .unwrap_or("Authentication failed.")
-                .to_string()
-        }
-        Code::PermissionDenied => {
-            describe_error_code(PERMISSION_DENIED)
-                .unwrap_or("Permission denied.")
-                .to_string()
-        }
+        Code::Cancelled => describe_error_code(CANCELED)
+            .unwrap_or("Canceled.")
+            .to_string(),
+        Code::Unauthenticated => describe_error_code(AUTHENTICATION_FAILURE)
+            .unwrap_or("Authentication failed.")
+            .to_string(),
+        Code::PermissionDenied => describe_error_code(PERMISSION_DENIED)
+            .unwrap_or("Permission denied.")
+            .to_string(),
         Code::Unavailable => describe_error_code(NETWORK_ERROR)
             .unwrap_or("Network error.")
             .to_string(),
@@ -51,9 +49,9 @@ pub fn format_status_error(status: &Status) -> String {
 
 fn describe_error_code(code: &str) -> Option<&'static str> {
     match code {
-        AUTHENTICATION_FAILURE => Some(
-            "Authentication failed. Check your username, SSH key, and MFA responses.",
-        ),
+        AUTHENTICATION_FAILURE => {
+            Some("Authentication failed. Check your username, SSH key, and MFA responses.")
+        }
         CONNECTION_FAILURE => Some("Could not establish an SSH connection to the cluster."),
         NETWORK_ERROR => Some("Network error while resolving or reaching the cluster."),
         INVALID_ARGUMENT => Some("Invalid input; check the command arguments."),
