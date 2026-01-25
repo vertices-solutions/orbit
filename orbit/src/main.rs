@@ -208,7 +208,11 @@ async fn main() -> anyhow::Result<()> {
                             return Ok(());
                         }
                     }
-                    send_job_cleanup(&mut client, args.job_id, args.force, args.full).await?
+                    let exit_code =
+                        send_job_cleanup(&mut client, args.job_id, args.force, args.full).await?;
+                    if exit_code != 0 {
+                        std::process::exit(exit_code);
+                    }
                 }
                 JobCmd::Ls(args) => {
                     send_job_ls(&mut client, args.job_id, &args.path, &args.cluster).await?

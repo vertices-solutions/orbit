@@ -1501,9 +1501,7 @@ impl Agent for AgentSvc {
                     .await;
                 let _ = evt_tx
                     .send(Ok(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            error_codes::CONFLICT.to_string(),
-                        )),
+                        event: Some(stream_event::Event::ExitCode(1)),
                     }))
                     .await;
                 return;

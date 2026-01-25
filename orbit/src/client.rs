@@ -414,7 +414,7 @@ pub async fn send_job_cleanup(
     job_id: i64,
     force: bool,
     full: bool,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<i32> {
     let (tx_ans, rx_ans) = mpsc::channel::<CleanupJobRequest>(16);
     let outbound = ReceiverStream::new(rx_ans);
     tx_ans
@@ -447,7 +447,7 @@ pub async fn send_job_cleanup(
         }
     })
     .await?;
-    ensure_exit_code(exit_code, "received exit code")
+    Ok(exit_code.unwrap_or(0))
 }
 
 pub async fn send_job_cleanup_capture(
