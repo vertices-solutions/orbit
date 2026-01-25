@@ -1,19 +1,25 @@
-<div align="left">
+## Orbit
+<table align="center"><tr><td>
 
-```
+```text
 ██████╗ ██████╗ ██████╗ ██╗ ████████╗
 ██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
 ██║  ██║██████╔╝██████╔╝██║    ██║
 ██║  ██║██╔══██╗██╔══██╗██║    ██║
 ╚█████╔╝██║  ██║██████╔╝██║    ██║
  ╚════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝    ╚═╝
-```
-</div>
+ ```
+</td> </tr> </table> 
+<p align="center">
+  <strong>Local first Slurm interface</strong>
+</p>
 
+[![Rust](https://img.shields.io/github/languages/top/vertices-solutions/orbit)](https://www.rust-lang.org/)
+[![License](https://img.shields.io/github/license/vertices-solutions/orbit)](LICENSE)
+[![Coverage](https://codecov.io/gh/vertices-solutions/orbit/graph/badge.svg)](https://codecov.io/gh/vertices-solutions/orbit)
 
-> **⚠️ Alpha Software Warning**
-> orbit is in alpha stage. Expect bugs and interface changes between minor versions.
-
+> [!CAUTION]
+> orbit is in alpha stage. It is quickly maturating every week: we have both unit test coverage and fairly extensive end-to-end tests providing strong guarantees of its performance. However, every once in a while we do find it misbehaving on some edge cases and/or rare Slurm deployment configurations. If you also find any - please, go ahead and report them in issues: see the "Getting help" section for more details.
 
 
 `orbit` provides a local-first interface to Slurm over SSH.
@@ -143,7 +149,6 @@ When creating an issue, make sure to include the following:
 
 ## Known issues
 - Unreachable cluster sometimes causes timeouts of `cluster list` and `cluster get <cluster name>`. This is a known issue that's being worked on
-- No way to cancel a job: 
 
 
 ## License
