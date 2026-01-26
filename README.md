@@ -46,6 +46,20 @@
 It aims to provide you with a single-command job submission over ssh:
 [![asciicast](https://asciinema.org/a/UZn9Aj4FxCrdLe8h.svg)](https://asciinema.org/a/UZn9Aj4FxCrdLe8h)
 
+
+## Motivation
+Can supercomputing feel like using a local Python or R interpreter?
+
+On most Slurm clusters, the development loop is remote-first: SSH in, juggle environments, submit jobs, wait, read logs, repeat. That’s friction you don’t need when you’re trying to do research.
+
+`orbit` is a local-first interface for Slurm. It lets you:
+- Develop locally while running jobs remotely on the cluster;
+- Submit, monitor, and debug jobs from your machine;
+- Automate common workflows;
+- Keep your code in a local git repo as the single source of truth;
+- Integrate with your existing tools (neovim/VS Code/notebooks/CI).
+
+
 ## Introduction
 
 `orbit` allows you to do supercomputing from the comfort of your local development environment. 
@@ -79,17 +93,6 @@ orbit job get 1
 
 ```
 
-## Motivation
-
-Submitting jobs to an HPC cluster usually means repeatedly doing the same glue work: copying a project to the cluster, picking the right `sbatch` script, dealing with interactive auth, and remembering where outputs landed, then rsync'ing them back.
-
-`orbit` keeps that workflow local, repeatable, and scriptable: you talk to a local daemon, and it takes care of the remote side.
-This allows you to:
-- Automate your supercomputing workflows;
-- Use supercomputers together with your favourite developer tools;
-- Give AI agents access to supercomputing;
-- Keep code in a local git repository serving as a single source of truth;
-- And anything else that will come to your mind!
 
 
 
