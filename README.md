@@ -32,6 +32,7 @@
 
 
 
+
 > [!CAUTION]
 > `orbit` is in alpha stage. 
 > It is quickly growing and maturating week after week: we have both unit test coverage and fairly extensive end-to-end tests providing strong guarantees of its performance. However, every once in a while we do find it misbehaving on some edge cases and/or rare Slurm deployment configurations. 
@@ -43,7 +44,7 @@
 
 
 It aims to provide you with a single-command job submission over ssh:
-[![asciicast](https://asciinema.org/a/00nj8QnJOYamcUvI.svg)](https://asciinema.org/a/00nj8QnJOYamcUvI)
+[![asciicast](https://asciinema.org/a/UZn9Aj4FxCrdLe8h.svg)](https://asciinema.org/a/UZn9Aj4FxCrdLe8h)
 
 ## Introduction
 
