@@ -57,7 +57,7 @@ On most Slurm clusters, the development loop is remote-first: SSH in, juggle env
 - Submit, monitor, and debug jobs from your machine;
 - Automate common workflows;
 - Keep your code in a local git repo as the single source of truth;
-- Integrate with your existing tools (neovim/VS Code/notebooks/CI).
+- Integrate with your existing tools (neovim, VS Code, or literally anything else - it's local!).
 
 
 ## Introduction
@@ -110,7 +110,7 @@ This installs both `orbit` (CLI) and `orbitd` (daemon). `brew services` runs the
 ### Build from source
 
 - Install a Rust toolchain that supports Edition 2024.
-- Build the workspace: `cargo build`
+- Build the workspace: `cargo build --release`
 - Install binaries locally:
   - `cargo install --path orbit` (installs `orbit`)
   - `cargo install --path orbitd` (installs `orbitd`)
@@ -140,7 +140,7 @@ cargo test
 cargo build
 
 # run the daemon and use a local config pointing to testing-specific database.
-cargo run -p orbitd --release -- --config test.toml
+cargo run -p orbitd -- --config test.toml
 
 # use the client
 cargo run -p orbit -- --help
@@ -170,6 +170,7 @@ When creating an issue, make sure to include the following:
 
 ## Known issues
 - Unreachable cluster sometimes causes timeouts of `cluster list` and `cluster get <cluster name>`. This is a known issue that's being worked on
+- `orbit` and `orbitd` are tightly coupled; decoupling them and improving the gRPC API documentation will be a major focus of work after v1.0 release.
 
 
 ## License
