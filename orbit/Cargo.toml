@@ -10,6 +10,7 @@ tonic = { workspace = true }
 tonic-types = { workspace = true }
 proto = { path = "../proto" }
 clap = { version = "4.5.46", features = ["derive", "wrap_help"] }
+clap_complete = "4.5.0"
 anyhow = "1.0.99"
 tokio-stream = "0.1.17"
 log = "0.4.27"

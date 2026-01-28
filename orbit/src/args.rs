@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use clap::{Args, Parser, Subcommand};
+use clap_complete::Shell;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -29,10 +30,18 @@ pub struct Cli {
 pub enum Cmd {
     /// Check that the daemon is reachable.
     Ping,
-    /// Submit jobs, inspect status, and retrieve outputs.
+    /// Operations on jobs: submit job, inspect its status, and retrieve its outputs and results.
     Job(JobArgs),
-    /// Add clusters and manage their configuration.
+    /// Operations on clusters: add, delete, poll, and manage clusters.
     Cluster(ClusterArgs),
+    /// Generate shell completions.
+    Completions(CompletionsArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct CompletionsArgs {
+    #[arg(value_enum)]
+    pub shell: Shell,
 }
 
 #[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, Deserialize)]
@@ -392,6 +401,15 @@ mod tests {
                 _ => panic!("expected cleanup command"),
             },
             _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn completions_shell_parses() {
+        let args = Cli::parse_from(["orbit", "completions", "bash"]);
+        match args.cmd {
+            Cmd::Completions(completions) => assert!(matches!(completions.shell, Shell::Bash)),
+            _ => panic!("expected completions command"),
         }
     }
 }
