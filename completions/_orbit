@@ -1,0 +1,807 @@
+#compdef orbit
+
+autoload -U is-at-least
+
+_orbit() {
+    typeset -A opt_args
+    typeset -a _arguments_options
+    local ret=1
+
+    if is-at-least 5.2; then
+        _arguments_options=(-s -S -C)
+    else
+        _arguments_options=(-s -C)
+    fi
+
+    local context curcontext="$curcontext" state line
+    _arguments "${_arguments_options[@]}" : \
+'-c+[Path to a TOML config file. When omitted, orbit uses the default config file location if available.]:PATH:_files' \
+'--config=[Path to a TOML config file. When omitted, orbit uses the default config file location if available.]:PATH:_files' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'-V[Print version]' \
+'--version[Print version]' \
+":: :_orbit_commands" \
+"*::: :->orbit" \
+&& ret=0
+    case $state in
+    (orbit)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-command-$line[1]:"
+        case $line[1] in
+            (ping)
+_arguments "${_arguments_options[@]}" : \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(job)
+_arguments "${_arguments_options[@]}" : \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_orbit__job_commands" \
+"*::: :->job" \
+&& ret=0
+
+    case $state in
+    (job)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-job-command-$line[1]:"
+        case $line[1] in
+            (submit)
+_arguments "${_arguments_options[@]}" : \
+'--remote-path=[]:REMOTE_PATH:_default' \
+'*--include=[Include paths matching PATTERN. Rules are checked in the order they appear across --include/--exclude; the first match wins, and unmatched paths are included. Patterns match the path relative to the submit root with '\''/'\'' separators. A pattern without '\''/'\'' matches the basename anywhere; a pattern with '\''/'\'' but no leading '\''/'\'' is treated as \`**/PATTERN\`. A leading '\''/'\'' anchors to the root, and a trailing '\''/'\'' matches directories only (and prunes their contents). Globs support \`*\`, \`?\`, \`**\`, \`\[\]\`, \`{}\`]:PATTERN:_default' \
+'*--exclude=[Exclude paths matching PATTERN. Rules are checked in the order they appear across --include/--exclude; the first match wins, and unmatched paths are included. Patterns match the path relative to the submit root with '\''/'\'' separators. A pattern without '\''/'\'' matches the basename anywhere; a pattern with '\''/'\'' but no leading '\''/'\'' is treated as \`**/PATTERN\`. A leading '\''/'\'' anchors to the root, and a trailing '\''/'\'' matches directories only (and prunes their contents). Globs support \`*\`, \`?\`, \`**\`, \`\[\]\`, \`{}\`]:PATTERN:_default' \
+'--headless[Disable prompts and the sbatch picker (implied by --non-interactive).]' \
+'--new-directory[Always create a new remote directory, even if this local path was submitted before]' \
+'--force[Allow submitting into a remote directory even if another job is running there]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name:_default' \
+':local_path:_default' \
+'::sbatchscript:_default' \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+'--cluster=[]:CLUSTER:_default' \
+'--json[Output JSON (implied by --non-interactive).]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'--cluster=[]:CLUSTER:_default' \
+'--json[Output JSON (implied by --non-interactive).]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':job_id -- Job id from the daemon:_default' \
+&& ret=0
+;;
+(logs)
+_arguments "${_arguments_options[@]}" : \
+'--err[Show stderr instead of stdout]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':job_id -- Job id from the daemon:_default' \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+'-y[Skip the confirmation prompt]' \
+'--yes[Skip the confirmation prompt]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':job_id -- Job id from the daemon:_default' \
+&& ret=0
+;;
+(cleanup)
+_arguments "${_arguments_options[@]}" : \
+'--force[Cancel a running job before cleanup]' \
+'--full[Delete the job record from the local database after cleanup]' \
+'-y[Skip the confirmation prompt]' \
+'--yes[Skip the confirmation prompt]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':job_id -- Job id from the daemon:_default' \
+&& ret=0
+;;
+(ls)
+_arguments "${_arguments_options[@]}" : \
+'--cluster=[]:CLUSTER:_default' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':job_id -- Job id from the daemon:_default' \
+'::path -- Path to list (absolute or relative to the job root):_default' \
+&& ret=0
+;;
+(retrieve)
+_arguments "${_arguments_options[@]}" : \
+'--output=[Directory where the requested file or directory will be placed.]:OUTPUT:_files' \
+'--overwrite[Overwrite existing local files.]' \
+'--force[Retrieve outputs even if the job has not completed.]' \
+'--headless[Disable prompts and progress output (implied by --non-interactive).]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':job_id -- Job id from the daemon:_default' \
+':path:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_orbit__job__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-job-help-command-$line[1]:"
+        case $line[1] in
+            (submit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(logs)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cleanup)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ls)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(retrieve)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(cluster)
+_arguments "${_arguments_options[@]}" : \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+":: :_orbit__cluster_commands" \
+"*::: :->cluster" \
+&& ret=0
+
+    case $state in
+    (cluster)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-cluster-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+'--json[Output JSON (implied by --non-interactive).]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+'--json[Output JSON (implied by --non-interactive).]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name:_default' \
+&& ret=0
+;;
+(ls)
+_arguments "${_arguments_options[@]}" : \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name:_default' \
+'::path -- Path to list (absolute or relative to the default base path):_default' \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+'--name=[Friendly cluster name you’ll use in other commands (e.g. "gpu01" or "lab-cluster")]:NAME:_default' \
+'--identity-path=[Defaults to ~/.ssh/id_ed25519]:IDENTITY_PATH:_default' \
+'--default-base-path=[]:DEFAULT_BASE_PATH:_default' \
+'--headless[Disable prompts; missing values must have defaults or the command will fail (implied by --non-interactive)]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+'::destination -- Destination in ssh format\: user@host\[\:port\] (required in headless or non-interactive mode):_default' \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+'--ip=[Use a remote IP address as input]:IP:_default' \
+'--port=[]:PORT:_default' \
+'--identity-path=[]:IDENTITY_PATH:_default' \
+'--default-base-path=[]:DEFAULT_BASE_PATH:_default' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name:_default' \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+'-y[Skip the confirmation prompt]' \
+'--yes[Skip the confirmation prompt]' \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':name:_default' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_orbit__cluster__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-cluster-help-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ls)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+'--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
+'-h[Print help]' \
+'--help[Print help]' \
+':shell:(bash elvish fish powershell zsh)' \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+":: :_orbit__help_commands" \
+"*::: :->help" \
+&& ret=0
+
+    case $state in
+    (help)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-help-command-$line[1]:"
+        case $line[1] in
+            (ping)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(job)
+_arguments "${_arguments_options[@]}" : \
+":: :_orbit__help__job_commands" \
+"*::: :->job" \
+&& ret=0
+
+    case $state in
+    (job)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-help-job-command-$line[1]:"
+        case $line[1] in
+            (submit)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(logs)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cancel)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(cleanup)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ls)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(retrieve)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(cluster)
+_arguments "${_arguments_options[@]}" : \
+":: :_orbit__help__cluster_commands" \
+"*::: :->cluster" \
+&& ret=0
+
+    case $state in
+    (cluster)
+        words=($line[1] "${words[@]}")
+        (( CURRENT += 1 ))
+        curcontext="${curcontext%:*:*}:orbit-help-cluster-command-$line[1]:"
+        case $line[1] in
+            (list)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(get)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(ls)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(add)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(set)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(delete)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+(completions)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+(help)
+_arguments "${_arguments_options[@]}" : \
+&& ret=0
+;;
+        esac
+    ;;
+esac
+;;
+        esac
+    ;;
+esac
+}
+
+(( $+functions[_orbit_commands] )) ||
+_orbit_commands() {
+    local commands; commands=(
+'ping:Check that the daemon is reachable' \
+'job:Submit jobs, inspect status, and retrieve outputs' \
+'cluster:Add clusters and manage their configuration' \
+'completions:Generate shell completions' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'orbit commands' commands "$@"
+}
+(( $+functions[_orbit__cluster_commands] )) ||
+_orbit__cluster_commands() {
+    local commands; commands=(
+'list:List clusters' \
+'get:Show cluster details' \
+'ls:List files on a cluster' \
+'add:Add a new cluster' \
+'set:Update cluster parameters' \
+'delete:Delete a cluster and its job records' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'orbit cluster commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__add_commands] )) ||
+_orbit__cluster__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster add commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__delete_commands] )) ||
+_orbit__cluster__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster delete commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__get_commands] )) ||
+_orbit__cluster__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster get commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help_commands] )) ||
+_orbit__cluster__help_commands() {
+    local commands; commands=(
+'list:List clusters' \
+'get:Show cluster details' \
+'ls:List files on a cluster' \
+'add:Add a new cluster' \
+'set:Update cluster parameters' \
+'delete:Delete a cluster and its job records' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'orbit cluster help commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__add_commands] )) ||
+_orbit__cluster__help__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help add commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__delete_commands] )) ||
+_orbit__cluster__help__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help delete commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__get_commands] )) ||
+_orbit__cluster__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help get commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__help_commands] )) ||
+_orbit__cluster__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help help commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__list_commands] )) ||
+_orbit__cluster__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help list commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__ls_commands] )) ||
+_orbit__cluster__help__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help ls commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__help__set_commands] )) ||
+_orbit__cluster__help__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster help set commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__list_commands] )) ||
+_orbit__cluster__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster list commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__ls_commands] )) ||
+_orbit__cluster__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster ls commands' commands "$@"
+}
+(( $+functions[_orbit__cluster__set_commands] )) ||
+_orbit__cluster__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit cluster set commands' commands "$@"
+}
+(( $+functions[_orbit__completions_commands] )) ||
+_orbit__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit completions commands' commands "$@"
+}
+(( $+functions[_orbit__help_commands] )) ||
+_orbit__help_commands() {
+    local commands; commands=(
+'ping:Check that the daemon is reachable' \
+'job:Submit jobs, inspect status, and retrieve outputs' \
+'cluster:Add clusters and manage their configuration' \
+'completions:Generate shell completions' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'orbit help commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster_commands] )) ||
+_orbit__help__cluster_commands() {
+    local commands; commands=(
+'list:List clusters' \
+'get:Show cluster details' \
+'ls:List files on a cluster' \
+'add:Add a new cluster' \
+'set:Update cluster parameters' \
+'delete:Delete a cluster and its job records' \
+    )
+    _describe -t commands 'orbit help cluster commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster__add_commands] )) ||
+_orbit__help__cluster__add_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help cluster add commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster__delete_commands] )) ||
+_orbit__help__cluster__delete_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help cluster delete commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster__get_commands] )) ||
+_orbit__help__cluster__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help cluster get commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster__list_commands] )) ||
+_orbit__help__cluster__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help cluster list commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster__ls_commands] )) ||
+_orbit__help__cluster__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help cluster ls commands' commands "$@"
+}
+(( $+functions[_orbit__help__cluster__set_commands] )) ||
+_orbit__help__cluster__set_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help cluster set commands' commands "$@"
+}
+(( $+functions[_orbit__help__completions_commands] )) ||
+_orbit__help__completions_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help completions commands' commands "$@"
+}
+(( $+functions[_orbit__help__help_commands] )) ||
+_orbit__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help help commands' commands "$@"
+}
+(( $+functions[_orbit__help__job_commands] )) ||
+_orbit__help__job_commands() {
+    local commands; commands=(
+'submit:Submit a project to a cluster' \
+'list:List jobs' \
+'get:Show job details' \
+'logs:Show job logs' \
+'cancel:Cancel a job' \
+'cleanup:Clean up a job'\''s remote directory' \
+'ls:List files in a job work directory' \
+'retrieve:Retrieve a file or directory from a job run folder' \
+    )
+    _describe -t commands 'orbit help job commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__cancel_commands] )) ||
+_orbit__help__job__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job cancel commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__cleanup_commands] )) ||
+_orbit__help__job__cleanup_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job cleanup commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__get_commands] )) ||
+_orbit__help__job__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job get commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__list_commands] )) ||
+_orbit__help__job__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job list commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__logs_commands] )) ||
+_orbit__help__job__logs_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job logs commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__ls_commands] )) ||
+_orbit__help__job__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job ls commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__retrieve_commands] )) ||
+_orbit__help__job__retrieve_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job retrieve commands' commands "$@"
+}
+(( $+functions[_orbit__help__job__submit_commands] )) ||
+_orbit__help__job__submit_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help job submit commands' commands "$@"
+}
+(( $+functions[_orbit__help__ping_commands] )) ||
+_orbit__help__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit help ping commands' commands "$@"
+}
+(( $+functions[_orbit__job_commands] )) ||
+_orbit__job_commands() {
+    local commands; commands=(
+'submit:Submit a project to a cluster' \
+'list:List jobs' \
+'get:Show job details' \
+'logs:Show job logs' \
+'cancel:Cancel a job' \
+'cleanup:Clean up a job'\''s remote directory' \
+'ls:List files in a job work directory' \
+'retrieve:Retrieve a file or directory from a job run folder' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'orbit job commands' commands "$@"
+}
+(( $+functions[_orbit__job__cancel_commands] )) ||
+_orbit__job__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job cancel commands' commands "$@"
+}
+(( $+functions[_orbit__job__cleanup_commands] )) ||
+_orbit__job__cleanup_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job cleanup commands' commands "$@"
+}
+(( $+functions[_orbit__job__get_commands] )) ||
+_orbit__job__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job get commands' commands "$@"
+}
+(( $+functions[_orbit__job__help_commands] )) ||
+_orbit__job__help_commands() {
+    local commands; commands=(
+'submit:Submit a project to a cluster' \
+'list:List jobs' \
+'get:Show job details' \
+'logs:Show job logs' \
+'cancel:Cancel a job' \
+'cleanup:Clean up a job'\''s remote directory' \
+'ls:List files in a job work directory' \
+'retrieve:Retrieve a file or directory from a job run folder' \
+'help:Print this message or the help of the given subcommand(s)' \
+    )
+    _describe -t commands 'orbit job help commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__cancel_commands] )) ||
+_orbit__job__help__cancel_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help cancel commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__cleanup_commands] )) ||
+_orbit__job__help__cleanup_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help cleanup commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__get_commands] )) ||
+_orbit__job__help__get_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help get commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__help_commands] )) ||
+_orbit__job__help__help_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help help commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__list_commands] )) ||
+_orbit__job__help__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help list commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__logs_commands] )) ||
+_orbit__job__help__logs_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help logs commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__ls_commands] )) ||
+_orbit__job__help__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help ls commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__retrieve_commands] )) ||
+_orbit__job__help__retrieve_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help retrieve commands' commands "$@"
+}
+(( $+functions[_orbit__job__help__submit_commands] )) ||
+_orbit__job__help__submit_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job help submit commands' commands "$@"
+}
+(( $+functions[_orbit__job__list_commands] )) ||
+_orbit__job__list_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job list commands' commands "$@"
+}
+(( $+functions[_orbit__job__logs_commands] )) ||
+_orbit__job__logs_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job logs commands' commands "$@"
+}
+(( $+functions[_orbit__job__ls_commands] )) ||
+_orbit__job__ls_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job ls commands' commands "$@"
+}
+(( $+functions[_orbit__job__retrieve_commands] )) ||
+_orbit__job__retrieve_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job retrieve commands' commands "$@"
+}
+(( $+functions[_orbit__job__submit_commands] )) ||
+_orbit__job__submit_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit job submit commands' commands "$@"
+}
+(( $+functions[_orbit__ping_commands] )) ||
+_orbit__ping_commands() {
+    local commands; commands=()
+    _describe -t commands 'orbit ping commands' commands "$@"
+}
+
+if [ "$funcstack[1]" = "_orbit" ]; then
+    _orbit "$@"
+else
+    compdef _orbit orbit
+fi

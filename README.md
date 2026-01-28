@@ -115,6 +115,32 @@ This installs both `orbit` (CLI) and `orbitd` (daemon). `brew services` runs the
   - `cargo install --path orbit` (installs `orbit`)
   - `cargo install --path orbitd` (installs `orbitd`)
 
+## Shell completions
+
+`orbit` can generate completions for bash and zsh:
+
+```bash
+orbit completions bash > completions/orbit.bash
+orbit completions zsh > completions/_orbit
+```
+
+To install them in your shell:
+
+```bash
+# bash (requires bash-completion)
+mkdir -p ~/.local/share/bash-completion/completions
+orbit completions bash > ~/.local/share/bash-completion/completions/orbit
+
+# zsh
+mkdir -p ~/.zsh/completions
+orbit completions zsh > ~/.zsh/completions/_orbit
+grep -q "orbit completions" ~/.zshrc || cat >> ~/.zshrc <<'EOF'
+# orbit completions
+fpath=(~/.zsh/completions $fpath)
+autoload -Uz compinit && compinit
+EOF
+```
+
 ## Configuration
 
 Configuration file used by both CLI and server components is located in:

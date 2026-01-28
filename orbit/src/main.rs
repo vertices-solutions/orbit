@@ -3,6 +3,7 @@
 
 use anyhow::bail;
 use clap::{CommandFactory, FromArgMatches};
+use clap_complete::generate;
 use orbit::args::{Cli, ClusterCmd, Cmd, JobCmd};
 use orbit::client::{
     fetch_list_clusters, fetch_list_jobs, send_add_cluster, send_add_cluster_capture,
@@ -56,12 +57,23 @@ fn apply_help_template_recursively(cmd: &mut clap::Command) {
     *cmd = owned;
 }
 
+fn generate_shell_completions(shell: clap_complete::Shell) {
+    let mut cmd = Cli::command();
+    apply_help_template_recursively(&mut cmd);
+    let bin_name = cmd.get_name().to_owned();
+    generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let mut cmd = Cli::command();
     apply_help_template_recursively(&mut cmd);
     let matches = cmd.get_matches();
     let cli = Cli::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    if let Cmd::Completions(args) = &cli.cmd {
+        generate_shell_completions(args.shell);
+        return Ok(());
+    }
     let submit_filters = submit_filters_from_matches(&matches);
     let daemon_endpoint = config::daemon_endpoint(cli.config.clone())?;
     if cli.non_interactive {
@@ -438,6 +450,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Cmd::Completions(_) => unreachable!("completions handled before daemon connection"),
     }
     Ok(())
 }
@@ -741,7 +754,7 @@ async fn run_non_interactive_impl(
         Cmd::Cluster(cluster_args) => {
             let mut client = connect_orbitd_non_interactive(&daemon_endpoint).await?;
             match cluster_args.cmd {
-                ClusterCmd::List(args) => {
+                ClusterCmd::List(_args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let data: Vec<Value> = response.clusters.iter().map(cluster_to_json).collect();
                     Ok(Value::Array(data))
@@ -911,5 +924,6 @@ async fn run_non_interactive_impl(
                 }
             }
         }
+        Cmd::Completions(_) => unreachable!("completions handled before daemon connection"),
     }
 }
