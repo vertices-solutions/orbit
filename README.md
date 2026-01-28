@@ -103,6 +103,7 @@ First, make sure that you have Homebrew (https://brew.sh) installed.
 
 ```bash
 brew install vertices-solutions/orbit/orbit
+brew services start orbit
 ```
 
 This installs both `orbit` (CLI) and `orbitd` (daemon). `brew services` runs the `orbitd` daemon for your user. 
