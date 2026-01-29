@@ -219,10 +219,8 @@ message DeleteClusterResponse {
 
 message SetClusterInit {
   string name = 1;
-  oneof host {
-    string hostname = 2;
-    string ipaddr = 3;
-  }
+  optional string host = 2;
+  optional string username = 3;
   optional uint32 port = 4;
   optional string identity_path = 5;
   optional string default_base_path = 6;

@@ -685,6 +685,17 @@ fn parse_resolve_home_host(
     }
 }
 
+fn parse_set_cluster_host(host: &str) -> Result<Address, Status> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+    }
+    match trimmed.parse::<IpAddr>() {
+        Ok(ip) => Ok(Address::Ip(ip)),
+        Err(_) => Ok(Address::Hostname(trimmed.to_string())),
+    }
+}
+
 fn format_remote_addr(addr: Option<SocketAddr>) -> String {
     addr.map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string())
@@ -2967,10 +2978,15 @@ impl Agent for AgentSvc {
                 Status::unknown(error_codes::INTERNAL_ERROR)
             })?
             .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
-        let (name, host, port, identity_path, default_base_path) = match init.msg {
-            Some(proto::set_cluster_request::Msg::Init(i)) => {
-                (i.name, i.host, i.port, i.identity_path, i.default_base_path)
-            }
+        let (name, host, username, port, identity_path, default_base_path) = match init.msg {
+            Some(proto::set_cluster_request::Msg::Init(i)) => (
+                i.name,
+                i.host,
+                i.username,
+                i.port,
+                i.identity_path,
+                i.default_base_path,
+            ),
             _ => {
                 return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
             }
@@ -2998,18 +3014,18 @@ impl Agent for AgentSvc {
         };
 
         let addr = match host {
-            Some(proto::set_cluster_init::Host::Hostname(v)) => Address::Hostname(v),
-            Some(proto::set_cluster_init::Host::Ipaddr(addr)) => {
-                let ip: IpAddr = match addr.parse() {
-                    Ok(v) => v,
-                    Err(e) => {
-                        log::debug!("could not parse ip address {}: {:?}", addr, e);
-                        return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
-                    }
-                };
-                Address::Ip(ip)
-            }
+            Some(value) => parse_set_cluster_host(&value)?,
             None => existing.address.clone(),
+        };
+        let username = match username {
+            Some(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+                }
+                trimmed.to_string()
+            }
+            None => existing.username.clone(),
         };
         let identity_path = identity_path.or_else(|| existing.identity_path.clone());
         let default_base_path = match default_base_path {
@@ -3056,7 +3072,7 @@ impl Agent for AgentSvc {
         };
         let ssh_params = crate::ssh::SshParams {
             host: host_for_known_hosts,
-            username: existing.username.clone(),
+            username: username.clone(),
             addr: connection_addr,
             identity_path: identity_path.clone(),
             keepalive_secs: 60,
@@ -3071,7 +3087,7 @@ impl Agent for AgentSvc {
             hs,
             remote_addr,
             name,
-            existing.username,
+            username,
             addr,
             port,
             identity_path,

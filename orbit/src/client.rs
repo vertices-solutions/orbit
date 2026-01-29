@@ -21,7 +21,7 @@ use proto::{
     RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit, SetClusterRequest,
     SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
     list_clusters_unit_response, resolve_home_dir_request, resolve_home_dir_request_init,
-    set_cluster_init, set_cluster_request, stream_event,
+    set_cluster_request, stream_event,
 };
 use std::io::{IsTerminal, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -549,7 +549,6 @@ pub async fn send_job_retrieve(
     output: &Option<PathBuf>,
     overwrite: bool,
     force: bool,
-    headless: bool,
 ) -> anyhow::Result<i32> {
     let display_name = Path::new(path)
         .file_name()
@@ -584,15 +583,13 @@ pub async fn send_job_retrieve(
         })
         .await?;
 
-    let mut spinner = if !headless && use_tty {
+    let mut spinner = if use_tty {
         Some(MinDurationSpinner::start(
             &retrieve_message,
             min_spinner_duration,
         ))
-    } else if !headless {
-        eprintln!("{retrieve_message}");
-        None
     } else {
+        eprintln!("{retrieve_message}");
         None
     };
 
@@ -641,7 +638,7 @@ pub async fn send_job_retrieve(
                         })
                         .await
                         .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))?;
-                    if !headless && use_tty {
+                    if use_tty {
                         spinner = Some(MinDurationSpinner::start(
                             &retrieve_message,
                             min_spinner_duration,
@@ -1135,26 +1132,23 @@ pub async fn send_add_cluster_capture(
 pub async fn send_set_cluster(
     client: &mut AgentClient<Channel>,
     name: &str,
-    hostname: &Option<String>,
-    ip: &Option<String>,
+    host: &Option<String>,
+    username: Option<&str>,
     identity_path: Option<&str>,
-    port: u32,
+    port: Option<u32>,
     default_base_path: &Option<String>,
 ) -> anyhow::Result<()> {
     let (tx_ans, rx_ans) = mpsc::channel::<SetClusterRequest>(16);
     let outbound = ReceiverStream::new(rx_ans);
-    let host = match hostname {
-        Some(v) => Some(set_cluster_init::Host::Hostname(v.into())),
-        None => ip.as_ref().map(|v| set_cluster_init::Host::Ipaddr(v.into())),
-    };
     let identity_path_expanded = match identity_path {
         Some(value) => Some(shellexpand::full(value)?.to_string()),
         None => None,
     };
     let init = SetClusterInit {
         name: name.to_owned(),
-        host,
-        port: Some(port),
+        host: host.clone(),
+        username: username.map(|value| value.to_string()),
+        port,
         identity_path: identity_path_expanded,
         default_base_path: default_base_path.to_owned(),
     };
@@ -1186,26 +1180,23 @@ pub async fn send_set_cluster(
 pub async fn send_set_cluster_capture(
     client: &mut AgentClient<Channel>,
     name: &str,
-    hostname: &Option<String>,
-    ip: &Option<String>,
+    host: &Option<String>,
+    username: Option<&str>,
     identity_path: Option<&str>,
-    port: u32,
+    port: Option<u32>,
     default_base_path: &Option<String>,
 ) -> anyhow::Result<CapturedStream> {
     let (tx_ans, rx_ans) = mpsc::channel::<SetClusterRequest>(16);
     let outbound = ReceiverStream::new(rx_ans);
-    let host = match hostname {
-        Some(v) => Some(set_cluster_init::Host::Hostname(v.into())),
-        None => ip.as_ref().map(|v| set_cluster_init::Host::Ipaddr(v.into())),
-    };
     let identity_path_expanded = match identity_path {
         Some(value) => Some(shellexpand::full(value)?.to_string()),
         None => None,
     };
     let init = SetClusterInit {
         name: name.to_owned(),
-        host,
-        port: Some(port),
+        host: host.clone(),
+        username: username.map(|value| value.to_string()),
+        port,
         identity_path: identity_path_expanded,
         default_base_path: default_base_path.to_owned(),
     };

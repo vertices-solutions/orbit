@@ -111,8 +111,8 @@ clear
 printf "Orbit demo: add cluster, submit job, check state, view logs\n"
 
 pause
-explain "Add the winery cluster (non-interactive, all parameters provided)."
-run "$ORBIT_BIN" cluster add --headless "$DESTINATION" \
+explain "Add the winery cluster (all parameters provided)."
+run "$ORBIT_BIN" cluster add "$DESTINATION" \
   --name "$CLUSTER_NAME" \
   --identity-path "$IDENTITY_PATH" \
   --default-base-path "$DEFAULT_BASE_PATH"

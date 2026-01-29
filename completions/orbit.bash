@@ -227,7 +227,7 @@ _orbit() {
             return 0
             ;;
         orbit__cluster__add)
-            opts="-h --name --identity-path --default-base-path --headless --non-interactive --help [DESTINATION]"
+            opts="-h --name --identity-path --default-base-path --non-interactive --help [DESTINATION]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -421,16 +421,12 @@ _orbit() {
             return 0
             ;;
         orbit__cluster__set)
-            opts="-h --ip --port --identity-path --default-base-path --non-interactive --help <NAME>"
+            opts="-h --host --username --port --identity-path --default-base-path --non-interactive --help <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
-                --ip)
-                    COMPREPLY=($(compgen -f "${cur}"))
-                    return 0
-                    ;;
                 --port)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -995,7 +991,7 @@ _orbit() {
             return 0
             ;;
         orbit__job__retrieve)
-            opts="-h --output --overwrite --force --headless --non-interactive --help <JOB_ID> <PATH>"
+            opts="-h --output --overwrite --force --non-interactive --help <JOB_ID> <PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1013,7 +1009,7 @@ _orbit() {
             return 0
             ;;
         orbit__job__submit)
-            opts="-h --headless --remote-path --new-directory --force --include --exclude --non-interactive --help <NAME> <LOCAL_PATH> [SBATCHSCRIPT]"
+            opts="-h --remote-path --new-directory --force --include --exclude --non-interactive --help <NAME> <LOCAL_PATH> [SBATCHSCRIPT]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0

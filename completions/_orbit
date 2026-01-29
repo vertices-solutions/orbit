@@ -58,7 +58,6 @@ _arguments "${_arguments_options[@]}" : \
 '--remote-path=[]:REMOTE_PATH:_default' \
 '*--include=[Include paths matching PATTERN. Rules are checked in the order they appear across --include/--exclude; the first match wins, and unmatched paths are included. Patterns match the path relative to the submit root with '\''/'\'' separators. A pattern without '\''/'\'' matches the basename anywhere; a pattern with '\''/'\'' but no leading '\''/'\'' is treated as \`**/PATTERN\`. A leading '\''/'\'' anchors to the root, and a trailing '\''/'\'' matches directories only (and prunes their contents). Globs support \`*\`, \`?\`, \`**\`, \`\[\]\`, \`{}\`]:PATTERN:_default' \
 '*--exclude=[Exclude paths matching PATTERN. Rules are checked in the order they appear across --include/--exclude; the first match wins, and unmatched paths are included. Patterns match the path relative to the submit root with '\''/'\'' separators. A pattern without '\''/'\'' matches the basename anywhere; a pattern with '\''/'\'' but no leading '\''/'\'' is treated as \`**/PATTERN\`. A leading '\''/'\'' anchors to the root, and a trailing '\''/'\'' matches directories only (and prunes their contents). Globs support \`*\`, \`?\`, \`**\`, \`\[\]\`, \`{}\`]:PATTERN:_default' \
-'--headless[Disable prompts and the sbatch picker (implied by --non-interactive).]' \
 '--new-directory[Always create a new remote directory, even if this local path was submitted before]' \
 '--force[Allow submitting into a remote directory even if another job is running there]' \
 '--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
@@ -134,7 +133,6 @@ _arguments "${_arguments_options[@]}" : \
 '--output=[Directory where the requested file or directory will be placed.]:OUTPUT:_files' \
 '--overwrite[Overwrite existing local files.]' \
 '--force[Retrieve outputs even if the job has not completed.]' \
-'--headless[Disable prompts and progress output (implied by --non-interactive).]' \
 '--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
 '-h[Print help]' \
 '--help[Print help]' \
@@ -244,16 +242,16 @@ _arguments "${_arguments_options[@]}" : \
 '--name=[Friendly cluster name you’ll use in other commands (e.g. "gpu01" or "lab-cluster")]:NAME:_default' \
 '--identity-path=[Defaults to ~/.ssh/id_ed25519]:IDENTITY_PATH:_default' \
 '--default-base-path=[]:DEFAULT_BASE_PATH:_default' \
-'--headless[Disable prompts; missing values must have defaults or the command will fail (implied by --non-interactive)]' \
 '--non-interactive[Run without prompts, fail on MFA, and output JSON only.]' \
 '-h[Print help]' \
 '--help[Print help]' \
-'::destination -- Destination in ssh format\: user@host\[\:port\] (required in headless or non-interactive mode):_default' \
+'::destination -- Destination in ssh format\: user@host\[\:port\] (required in non-interactive mode):_default' \
 && ret=0
 ;;
 (set)
 _arguments "${_arguments_options[@]}" : \
-'--ip=[Use a remote IP address as input]:IP:_default' \
+'--host=[Use a remote host (hostname or IP address)]:HOST:_default' \
+'--username=[Use a different username for SSH]:USERNAME:_default' \
 '--port=[]:PORT:_default' \
 '--identity-path=[]:IDENTITY_PATH:_default' \
 '--default-base-path=[]:DEFAULT_BASE_PATH:_default' \

@@ -149,11 +149,6 @@ pub struct JobRetrieveArgs {
     pub overwrite: bool,
     #[arg(long, help = "Retrieve outputs even if the job has not completed.")]
     pub force: bool,
-    #[arg(
-        long,
-        help = "Disable prompts and progress output (implied by --non-interactive)."
-    )]
-    pub headless: bool,
 }
 
 #[derive(Args, Debug)]
@@ -212,9 +207,13 @@ pub struct ClusterLsArgs {
 pub struct SetClusterArgs {
     pub name: String,
 
-    /// Use a remote IP address as input
-    #[arg(long, value_name = "IP")]
-    pub ip: Option<String>,
+    /// Use a remote host (hostname or IP address)
+    #[arg(long)]
+    pub host: Option<String>,
+
+    /// Use a different username for SSH
+    #[arg(long)]
+    pub username: Option<String>,
 
     #[arg(long)]
     pub port: Option<u32>,
@@ -239,11 +238,6 @@ pub struct SubmitArgs {
     pub name: String,
     pub local_path: String,
     pub sbatchscript: Option<String>,
-    #[arg(
-        long,
-        help = "Disable prompts and the sbatch picker (implied by --non-interactive)."
-    )]
-    pub headless: bool,
     #[arg(long)]
     pub remote_path: Option<String>,
     /// Always create a new remote directory, even if this local path was submitted before.
@@ -276,7 +270,7 @@ pub struct SubmitArgs {
 
 #[derive(Args, Debug)]
 pub struct AddClusterArgs {
-    /// Destination in ssh format: user@host[:port] (required in headless or non-interactive mode)
+    /// Destination in ssh format: user@host[:port] (required in non-interactive mode)
     #[arg(value_name = "DESTINATION")]
     pub destination: Option<String>,
 
@@ -290,10 +284,6 @@ pub struct AddClusterArgs {
 
     #[arg(long)]
     pub default_base_path: Option<String>,
-
-    /// Disable prompts; missing values must have defaults or the command will fail (implied by --non-interactive).
-    #[arg(long)]
-    pub headless: bool,
 }
 
 #[cfg(test)]
