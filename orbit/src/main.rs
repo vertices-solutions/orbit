@@ -10,7 +10,8 @@ use orbit::client::{
     send_delete_cluster, send_job_cancel, send_job_cancel_capture, send_job_cleanup,
     send_job_cleanup_capture, send_job_logs, send_job_logs_capture, send_job_ls,
     send_job_ls_capture, send_job_retrieve, send_job_retrieve_capture, send_ls, send_ls_capture,
-    send_ping, send_resolve_home_dir, send_submit, send_submit_capture, validate_cluster_live,
+    send_ping, send_resolve_home_dir, send_set_cluster, send_set_cluster_capture, send_submit,
+    send_submit_capture, validate_cluster_live,
 };
 use orbit::config;
 use orbit::errors::format_server_error;
@@ -357,6 +358,19 @@ async fn main() -> anyhow::Result<()> {
                     println!("Cluster {} added successfully!", resolved.name);
                 }
                 ClusterCmd::Set(args) => {
+                    let mut updated_fields = Vec::new();
+                    if let Some(value) = args.ip.as_deref() {
+                        updated_fields.push(("ip".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.port {
+                        updated_fields.push(("port".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.identity_path.as_deref() {
+                        updated_fields.push(("identity_path".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.default_base_path.as_deref() {
+                        updated_fields.push(("default_base_path".to_string(), value.to_string()));
+                    }
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let Some(cluster) = response
                         .clusters
@@ -404,18 +418,19 @@ async fn main() -> anyhow::Result<()> {
                         .default_base_path
                         .clone()
                         .or_else(|| cluster.default_base_path.clone());
-                    send_add_cluster(
+                    send_set_cluster(
                         &mut client,
                         &cluster.name,
-                        &cluster.username,
                         &hostname,
                         &ip,
                         identity_path.as_deref(),
                         port,
                         &default_base_path,
-                        false,
                     )
-                    .await?
+                    .await?;
+                    for (key, value) in updated_fields {
+                        println!("Set {key}={value} successfully");
+                    }
                 }
                 ClusterCmd::Delete(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
@@ -883,10 +898,9 @@ async fn run_non_interactive_impl(
                         .default_base_path
                         .clone()
                         .or_else(|| cluster.default_base_path.clone());
-                    let captured = send_add_cluster_capture(
+                    let captured = send_set_cluster_capture(
                         &mut client,
                         &cluster.name,
-                        &cluster.username,
                         &hostname,
                         &ip,
                         identity_path.as_deref(),

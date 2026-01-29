@@ -50,6 +50,7 @@ pub fn daemon_endpoint(config_path_override: Option<PathBuf>) -> Result<String> 
 }
 
 fn read_config_file(path: &Path, required: bool) -> Result<FileConfig> {
+    // TODO: should this be an associated function of FileConfig?
     if !path.exists() {
         if required {
             anyhow::bail!("config file not found at {}", path.display());
