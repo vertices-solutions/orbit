@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use crate::args::AddClusterArgs;
+use crate::interaction;
 use anyhow::bail;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -51,12 +52,13 @@ pub fn resolve_add_cluster_args(
     args: AddClusterArgs,
     existing_names: &HashSet<String>,
 ) -> anyhow::Result<ResolvedAddClusterArgs> {
+    let non_interactive = interaction::is_non_interactive();
     let destination = normalize_option(args.destination);
     let name = normalize_option(args.name);
     let identity_path = normalize_option(args.identity_path);
     let default_base_path = normalize_option(args.default_base_path);
 
-    let needs_prompt = !args.headless
+    let needs_prompt = !non_interactive
         && (destination.is_none()
             || name.is_none()
             || identity_path.is_none()
@@ -68,11 +70,11 @@ pub fn resolve_add_cluster_args(
     let parsed_destination = if let Some(value) = destination.as_deref() {
         let parsed = parse_destination(value)?;
         let display = format_destination_display(&parsed)?;
-        validate_destination_with_feedback(&parsed, &display, false, args.headless)?;
+        validate_destination_with_feedback(&parsed, &display, false)?;
         parsed
     } else {
-        if args.headless {
-            bail!("destination is required in headless or non-interactive mode");
+        if non_interactive {
+            bail!("destination is required in non-interactive mode");
         }
         loop {
             let input = prompt_destination_value()?;
@@ -85,7 +87,7 @@ pub fn resolve_add_cluster_args(
             };
             let display = format_destination_display(&parsed)?;
             if let Err(_) =
-                validate_destination_with_feedback(&parsed, &display, true, args.headless)
+                validate_destination_with_feedback(&parsed, &display, true)
             {
                 eprintln!("Please, provide a valid connection string");
                 continue;
@@ -109,7 +111,7 @@ pub fn resolve_add_cluster_args(
     let mut name = match name {
         Some(value) => value,
         None => {
-            if args.headless {
+            if non_interactive {
                 default_name_for_host(hostname.as_deref(), ip.as_deref())?
             } else {
                 let default_name = generate_random_name();
@@ -123,12 +125,12 @@ pub fn resolve_add_cluster_args(
         }
     };
     loop {
-        let replace_prompt_line = name_from_prompt && !args.headless;
-        match validate_name_with_feedback(&name, existing_names, replace_prompt_line, args.headless)
+        let replace_prompt_line = name_from_prompt && !non_interactive;
+        match validate_name_with_feedback(&name, existing_names, replace_prompt_line)
         {
             Ok(()) => break,
             Err(err) => {
-                if args.headless {
+                if non_interactive {
                     return Err(err);
                 }
                 ensure_tty_for_prompt()?;
@@ -151,10 +153,10 @@ pub fn resolve_add_cluster_args(
         Some(value) => value,
         None => {
             let discovered = find_preferred_identity_path();
-            if args.headless {
+            if non_interactive {
                 match discovered {
                     Some(value) => value,
-                    None => bail!("identity path is required in headless or non-interactive mode"),
+                    None => bail!("identity path is required in non-interactive mode"),
                 }
             } else {
                 identity_from_prompt = true;
@@ -163,10 +165,10 @@ pub fn resolve_add_cluster_args(
         }
     };
     loop {
-        let replace_prompt_line = identity_from_prompt && !args.headless;
+        let replace_prompt_line = identity_from_prompt && !non_interactive;
         if identity_path.trim().is_empty() {
-            if args.headless {
-                bail!("identity path is required in headless or non-interactive mode");
+            if non_interactive {
+                bail!("identity path is required in non-interactive mode");
             }
             ensure_tty_for_prompt()?;
             eprintln!("Identity path cannot be empty.");
@@ -174,14 +176,10 @@ pub fn resolve_add_cluster_args(
             identity_path = prompt_identity_path(None)?;
             continue;
         }
-        match validate_identity_path_with_feedback(
-            &identity_path,
-            replace_prompt_line,
-            args.headless,
-        ) {
+        match validate_identity_path_with_feedback(&identity_path, replace_prompt_line) {
             Ok(()) => break,
             Err(err) => {
-                if args.headless {
+                if non_interactive {
                     return Err(err);
                 }
                 ensure_tty_for_prompt()?;
@@ -201,7 +199,7 @@ pub fn resolve_add_cluster_args(
     let default_base_path = match default_base_path {
         Some(value) => Some(value),
         None => {
-            if args.headless {
+            if non_interactive {
                 Some(DEFAULT_BASE_PATH.to_string())
             } else {
                 None
@@ -308,9 +306,8 @@ fn validate_destination_with_feedback(
     destination: &ParsedDestination,
     display: &str,
     replace_prompt_line: bool,
-    headless: bool,
 ) -> anyhow::Result<()> {
-    if headless {
+    if interaction::is_non_interactive() {
         return validate_destination_reachability(destination);
     }
 
@@ -342,9 +339,8 @@ fn validate_name_with_feedback(
     name: &str,
     existing_names: &HashSet<String>,
     replace_prompt_line: bool,
-    headless: bool,
 ) -> anyhow::Result<()> {
-    if headless {
+    if interaction::is_non_interactive() {
         if existing_names.contains(name) {
             bail!(
                 "cluster '{}' already exists; use 'cluster set' to update it",
@@ -386,9 +382,8 @@ fn validate_name_with_feedback(
 fn validate_identity_path_with_feedback(
     identity_path: &str,
     replace_prompt_line: bool,
-    headless: bool,
 ) -> anyhow::Result<()> {
-    if headless {
+    if interaction::is_non_interactive() {
         return validate_identity_path(identity_path);
     }
 
@@ -422,9 +417,8 @@ fn validate_identity_path_with_feedback(
 pub fn validate_default_base_path_with_feedback(
     base_path: &str,
     replace_prompt_line: bool,
-    headless: bool,
 ) -> anyhow::Result<()> {
-    if headless {
+    if interaction::is_non_interactive() {
         return validate_default_base_path(base_path);
     }
 
@@ -687,7 +681,7 @@ fn normalize_option(value: Option<String>) -> Option<String> {
 fn ensure_tty_for_prompt() -> anyhow::Result<()> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!(
-            "interactive prompts require a TTY; pass --headless or --non-interactive and specify all options"
+            "interactive prompts require a TTY; pass --non-interactive and specify all options"
         );
     }
     Ok(())
@@ -1142,6 +1136,32 @@ mod tests {
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::net::TcpListener;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    static NON_INTERACTIVE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock_non_interactive() -> MutexGuard<'static, ()> {
+        NON_INTERACTIVE_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("failed to lock non-interactive test mutex")
+    }
+
+    struct NonInteractiveGuard {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NonInteractiveGuard {
+        fn drop(&mut self) {
+            interaction::set_non_interactive(false);
+        }
+    }
+
+    fn set_non_interactive_for_test() -> NonInteractiveGuard {
+        let lock = lock_non_interactive();
+        interaction::set_non_interactive(true);
+        NonInteractiveGuard { _lock: lock }
+    }
 
     fn write_test_identity_file() -> std::io::Result<String> {
         let dir = std::env::temp_dir();
@@ -1166,7 +1186,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_add_cluster_headless_defaults() {
+    fn resolve_add_cluster_non_interactive_defaults() {
+        let _guard = set_non_interactive_for_test();
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(listener) => listener,
             Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -1187,7 +1208,6 @@ mod tests {
             name: None,
             identity_path: Some(identity_path.clone()),
             default_base_path: None,
-            headless: true,
         };
 
         let resolved = resolve_add_cluster_args(args, &HashSet::new()).unwrap();
@@ -1202,13 +1222,13 @@ mod tests {
     }
 
     #[test]
-    fn resolve_add_cluster_headless_requires_destination() {
+    fn resolve_add_cluster_non_interactive_requires_destination() {
+        let _guard = set_non_interactive_for_test();
         let args = AddClusterArgs {
             destination: None,
             name: None,
             identity_path: Some("~/.ssh/id_rsa".into()),
             default_base_path: None,
-            headless: true,
         };
 
         let err = resolve_add_cluster_args(args, &HashSet::new()).unwrap_err();
@@ -1233,7 +1253,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_add_cluster_headless_destination_reachable() {
+    fn resolve_add_cluster_non_interactive_destination_reachable() {
+        let _guard = set_non_interactive_for_test();
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(listener) => listener,
             Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => {
@@ -1254,7 +1275,6 @@ mod tests {
             name: Some("local".into()),
             identity_path: Some(identity_path),
             default_base_path: None,
-            headless: true,
         };
 
         let resolved = resolve_add_cluster_args(args, &HashSet::new()).unwrap();

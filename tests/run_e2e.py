@@ -323,7 +323,7 @@ def validate_binary_output(project_out, repo_root):
         raise RuntimeError("binary_output: sample_copy.txt mismatch")
 
 
-def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, headless, extra_args=None):
+def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, extra_args=None):
     cmd = orbit_cmd + [
         "job",
         "submit",
@@ -333,8 +333,6 @@ def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, headless, ex
     cmd.extend(submit_args)
     if extra_args:
         cmd.extend(extra_args)
-    if headless:
-        cmd.append("--headless")
     return cmd
 
 
@@ -374,7 +372,6 @@ def main():
         help="Timeout for orbitd startup in seconds.",
     )
     parser.add_argument("--poll", type=int, default=3, help="Polling interval in seconds.")
-    parser.add_argument("--headless", action="store_true", help="Use headless mode.")
     args = parser.parse_args()
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -458,7 +455,6 @@ def main():
                 args.cluster,
                 project["path"],
                 project["submit_args"],
-                args.headless,
             )
             result = run_cmd(submit_cmd)
             output = result.stdout + result.stderr
@@ -495,7 +491,6 @@ def main():
                     args.cluster,
                     project["path"],
                     project["submit_args"],
-                    args.headless,
                     extra_args=["--force"],
                 )
                 force_result = run_cmd(force_cmd)
@@ -514,7 +509,6 @@ def main():
                     args.cluster,
                     project["path"],
                     project["submit_args"],
-                    args.headless,
                     extra_args=["--new-directory"],
                 )
                 new_dir_result = run_cmd(new_dir_cmd)
@@ -551,8 +545,6 @@ def main():
                     str(project_out),
                     "--overwrite",
                 ]
-                if args.headless:
-                    retrieve_cmd.append("--headless")
                 run_cmd(retrieve_cmd)
 
             project["validate"](project_out)
@@ -577,7 +569,6 @@ def main():
             args.cluster,
             non_interactive_project,
             [],
-            args.headless,
         )
         submit_result = run_cmd(submit_cmd)
         job_id, remote_path = parse_submit_json(submit_result)

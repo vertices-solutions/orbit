@@ -25,8 +25,8 @@ use proto::{
     CleanupJobRequestInit, DeleteClusterRequest, DeleteClusterResponse, JobLogsRequest,
     JobLogsRequestInit, ListClustersRequest, ListClustersResponse, ListClustersUnitResponse,
     ListJobsRequest, ListJobsResponse, LsRequest, LsRequestInit, MfaAnswer, PingReply, PingRequest,
-    RetrieveJobRequest, RetrieveJobRequestInit, StreamEvent, SubmitRequest, SubmitResult,
-    SubmitStatus, SubmitStreamEvent, stream_event, submit_result, submit_status,
+    RetrieveJobRequest, RetrieveJobRequestInit, SetClusterRequest, StreamEvent, SubmitRequest,
+    SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event, submit_result, submit_status,
     submit_stream_event,
 };
 use russh_sftp::client::error::Error as SftpError;
@@ -108,6 +108,433 @@ fn resolve_default_base_path(
     }
 
     Ok(Some(raw))
+}
+
+async fn cluster_upsert_task(
+    evt_tx: tokio::sync::mpsc::Sender<Result<StreamEvent, Status>>,
+    mut mfa_rx: tokio::sync::mpsc::Receiver<MfaAnswer>,
+    sessions: Arc<crate::agent::sessions::SessionCache>,
+    hs: Arc<crate::state::db::HostStore>,
+    remote_addr: String,
+    name: String,
+    username: String,
+    addr: Address,
+    port: u16,
+    identity_path: Option<String>,
+    default_base_path: Option<String>,
+    ssh_params: crate::ssh::SshParams,
+    emit_progress: bool,
+) {
+    let host_label = format_address(&addr);
+    let default_base_path_label = default_base_path.as_deref().unwrap_or("<none>");
+    log::info!(
+        "cluster_upsert start remote_addr={remote_addr} name={name} username={username} host={host_label} port={port} default_base_path={default_base_path_label}"
+    );
+    let audit_remote_addr = remote_addr.clone();
+    let audit_name = name.clone();
+    let audit_host_label = host_label.clone();
+    let reachability_addr = addr.clone();
+    let reachability_port = port;
+    let reachable = match reachability::check_host_reachable(&reachability_addr, reachability_port)
+        .await
+    {
+        Ok(value) => value,
+        Err(err) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=reachability_failed error={err}"
+            );
+            let status = match &reachability_addr {
+                Address::Hostname(hostname) => map_net_error(hostname, err),
+                Address::Ip(_) => Status::aborted(error_codes::NETWORK_ERROR),
+            };
+            let _ = evt_tx.send(Err(status)).await;
+            return;
+        }
+    };
+    if !reachable {
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=host_unreachable"
+        );
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::NETWORK_ERROR)))
+            .await;
+        return;
+    }
+    let sm = match sessions.get(&name).await {
+        Some(existing) if existing.matches_params(&ssh_params) => existing,
+        _ => Arc::new(crate::ssh::SessionManager::new(ssh_params)),
+    };
+    if let Err(e) = sm.ensure_connected(&evt_tx, &mut mfa_rx).await {
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=connect_failed error={e}"
+        );
+        log::debug!("failed to connect to {name}: {e}");
+        let code = error_codes::code_for_ssh_error(&e);
+        let _ = evt_tx.send(Err(Status::aborted(code))).await;
+        return;
+    };
+
+    let home_dir = match fetch_remote_home_dir(&sm, &name).await {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=home_dir_failed error_code={:?}",
+                e.code()
+            );
+            let _ = evt_tx.send(Err(e)).await;
+            return;
+        }
+    };
+    let (out, err, code) = match sm
+        .exec_capture(crate::agent::managers::DETERMINE_HPC_WORKLOAD_MANAGERS_CMD)
+        .await
+    {
+        Ok((vo, ve, ec)) => (vo, ve, ec),
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=wlm_metadata_failed error={e}"
+            );
+            log::debug!("failed to gather cluster metadata for {name}: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+
+    if code != 0 {
+        let err_message =
+            String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=wlm_metadata_exit code={code}"
+        );
+        log::debug!(
+            "failed to gather cluster metadata for {name}: exit {}: {}",
+            code,
+            err_message
+        );
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+            .await;
+        return;
+    }
+    let out = match String::from_utf8(out) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=wlm_metadata_decode_failed error={e}"
+            );
+            log::debug!("failed to gather cluster metadata for {name}: decode error: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+
+    let wlms = crate::agent::managers::parse_wlms(&out);
+    if !wlms.contains(&crate::agent::managers::WorkloadManager::Slurm) {
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=unsupported_scheduler"
+        );
+        log::debug!(
+            "no supported workload managers found on {name}; identified: {:?}",
+            wlms
+        );
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+            .await;
+        return;
+    }
+    if emit_progress {
+        send_add_cluster_progress(&evt_tx, "Scheduler: Slurm").await;
+    }
+    let (out, err, code) = match sm.exec_capture(crate::agent::os::GATHER_OS_INFO_CMD).await {
+        Ok((vo, ve, ec)) => (vo, ve, ec),
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_failed error={e}"
+            );
+            log::debug!("failed to gather cluster os metadata for {name}: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+
+    if code != 0 {
+        let err_message =
+            String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_exit code={code}"
+        );
+        log::debug!(
+            "failed to gather cluster os metadata for {name}: exit {}: {}",
+            code,
+            err_message
+        );
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+            .await;
+        return;
+    }
+    let out = match String::from_utf8(out) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_decode_failed error={e}"
+            );
+            log::debug!("failed to gather cluster os metadata for {name}: decode error: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+
+    let os_info = match crate::agent::os::parse_distro_info(&out) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_parse_failed error={e}"
+            );
+            log::debug!("failed to gather cluster os metadata for {name}: parse error: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+    let os_label = format!("OS: {} {}", os_info.id.as_str(), os_info.version.as_str());
+    if emit_progress {
+        send_add_cluster_progress(&evt_tx, &os_label).await;
+    }
+    let kernel_label = format!("Kernel: {}", os_info.kernel.as_str());
+    if emit_progress {
+        send_add_cluster_progress(&evt_tx, &kernel_label).await;
+    }
+    let distro_info = crate::state::db::Distro {
+        name: os_info.id,
+        version: os_info.version,
+    };
+
+    let (out, err, code) = match sm
+        .exec_capture(crate::agent::slurm::DETERMINE_SLURM_VERSION_CMD)
+        .await
+    {
+        Ok((vo, ve, ec)) => (vo, ve, ec),
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_failed error={e}"
+            );
+            log::debug!("failed to gather slurm version for {name}: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+
+    if code != 0 {
+        let err_message =
+            String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_exit code={code}"
+        );
+        log::debug!(
+            "failed to gather slurm version for {name}: exit {}: {}",
+            code,
+            err_message
+        );
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+            .await;
+        return;
+    }
+    let out = match String::from_utf8(out) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_decode_failed error={e}"
+            );
+            log::debug!("failed to gather slurm version for {name}: decode error: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+    let mut parts = out.split_whitespace();
+    if parts.next().is_none() {
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_unexpected_output"
+        );
+        log::debug!("failed to gather slurm version for {name}: unexpected output: {out}");
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+            .await;
+        return;
+    }
+
+    let slurm_version: crate::state::db::SlurmVersion = match parts.next() {
+        Some(v) => match v.parse() {
+            Ok(vv) => vv,
+            Err(e) => {
+                log::warn!(
+                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_parse_failed error={e:?}"
+                );
+                log::debug!("failed to parse slurm version for {name}: '{e:?}'");
+                let _ = evt_tx
+                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                    .await;
+                return;
+            }
+        },
+        None => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_missing"
+            );
+            log::debug!(
+                "failed to gather slurm version for {name}: unexpected output: {out}"
+            );
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+    if emit_progress {
+        send_add_cluster_progress(&evt_tx, &format!("Slurm: {slurm_version}")).await;
+    }
+    let (out, err, code) = match sm.exec_capture("scontrol show config").await {
+        Ok((vo, ve, ec)) => (vo, ve, ec),
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_config_failed error={e}"
+            );
+            log::debug!("failed to gather cluster config for {name}: {e}");
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    };
+    if code != 0 {
+        log::warn!(
+            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_config_exit code={code}"
+        );
+        log::debug!(
+            "failed to run `scontrol show config` on {name}: {}",
+            String::from_utf8_lossy(&err)
+        );
+        let _ = evt_tx
+            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+            .await;
+        return;
+    }
+    let config = String::from_utf8_lossy(&out);
+    let accounting_enabled =
+        crate::agent::slurm::parse_accounting_enabled_from_scontrol(&config).unwrap_or_else(|| {
+            log::warn!("unable to determine accounting storage type for {name}, assuming disabled");
+            false
+        });
+    let accounting_state = if accounting_enabled { "enabled" } else { "disabled" };
+    if emit_progress {
+        send_add_cluster_progress(&evt_tx, &format!("Accounting: {accounting_state}")).await;
+    }
+
+    let resolved_default_base_path = match resolve_default_base_path(default_base_path, &home_dir) {
+        Ok(v) => v,
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_invalid error_code={:?}",
+                e.code()
+            );
+            let _ = evt_tx.send(Err(e)).await;
+            return;
+        }
+    };
+    let normalized_default_base_path =
+        match normalize_default_base_path(resolved_default_base_path) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!(
+                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_invalid error_code={:?}",
+                    e.code()
+                );
+                let _ = evt_tx.send(Err(e)).await;
+                return;
+            }
+        };
+    if let Some(ref dbp) = normalized_default_base_path {
+        let command = format!("mkdir -p {}", dbp.to_string_lossy());
+        let (_, err, code) = match sm.exec_capture(&command).await {
+            Ok((vo, ve, ec)) => (vo, ve, ec),
+            Err(e) => {
+                log::warn!(
+                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_create_failed error={e}"
+                );
+                log::debug!("failed to execute command `{}` on {}: {}", command, name, e);
+                let _ = evt_tx
+                    .send(Err(Status::internal(error_codes::REMOTE_ERROR)))
+                    .await;
+                return;
+            }
+        };
+        if code != 0 {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_create_exit code={code}"
+            );
+            log::debug!(
+                "failed to create default_base_path on {}: {}",
+                name,
+                String::from_utf8_lossy(&err)
+            );
+            let _ = evt_tx
+                .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
+                .await;
+            return;
+        }
+    }
+
+    let new_host = crate::state::db::NewHost {
+        username,
+        name: name.clone(),
+        address: addr.clone(),
+        distro: distro_info,
+        kernel_version: os_info.kernel,
+        slurm: slurm_version,
+        port,
+        identity_path,
+        accounting_available: accounting_enabled,
+        default_base_path: normalized_default_base_path
+            .clone()
+            .map(|v| v.to_string_lossy().into_owned()),
+    };
+    match hs.upsert_host(&new_host).await {
+        Ok(v) => {
+            log::info!(
+                "cluster_upsert completed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} host_id={v}"
+            );
+            log::debug!("successfully upserted host with id {v}")
+        }
+        Err(e) => {
+            log::warn!(
+                "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=host_upsert_failed error={e}"
+            );
+            log::debug!("failed to upsert host {name}: {e}");
+            let _ = evt_tx
+                .send(Ok(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        error_codes::INTERNAL_ERROR.to_string(),
+                    )),
+                }))
+                .await;
+        }
+    };
+
+    sessions.insert(name.clone(), sm.clone()).await;
 }
 
 fn is_sftp_missing_path(err: &anyhow::Error) -> bool {
@@ -258,6 +685,17 @@ fn parse_resolve_home_host(
     }
 }
 
+fn parse_set_cluster_host(host: &str) -> Result<Address, Status> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+    }
+    match trimmed.parse::<IpAddr>() {
+        Ok(ip) => Ok(Address::Ip(ip)),
+        Err(_) => Ok(Address::Hostname(trimmed.to_string())),
+    }
+}
+
 fn format_remote_addr(addr: Option<SocketAddr>) -> String {
     addr.map(|value| value.to_string())
         .unwrap_or_else(|| "unknown".to_string())
@@ -279,6 +717,7 @@ impl Agent for AgentSvc {
     type CleanupJobStream = OutStream;
     type SubmitStream = SubmitOutStream;
     type AddClusterStream = OutStream;
+    type SetClusterStream = OutStream;
     type ResolveHomeDirStream = OutStream;
 
     async fn ping(
@@ -2455,19 +2894,14 @@ impl Agent for AgentSvc {
             Ok(value) => value,
             Err(e) => {
                 log::warn!(
-                    "cluster_upsert failed remote_addr={remote_addr} name={name} reason=invalid_host"
+                    "add_cluster failed remote_addr={remote_addr} name={name} reason=invalid_host"
                 );
                 return Err(e);
             }
         };
-        let host_label = format_address(&addr);
-        let default_base_path_label = default_base_path.as_deref().unwrap_or("<none>");
-        log::info!(
-            "cluster_upsert start remote_addr={remote_addr} name={name} username={username} host={host_label} port={port} default_base_path={default_base_path_label}"
-        );
         let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
 
-        let (mfa_tx, mut mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        let (mfa_tx, mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::add_cluster_request::Msg::Mfa(ans)) = item.msg
@@ -2482,10 +2916,146 @@ impl Agent for AgentSvc {
             Ok(value) => value,
             Err(e) => {
                 log::warn!(
-                    "cluster_upsert failed remote_addr={remote_addr} name={name} reason=invalid_port"
+                    "add_cluster failed remote_addr={remote_addr} name={name} reason=invalid_port"
                 );
                 return Err(e);
             }
+        };
+        let connection_addr = match resolve_host_addr(&addr, port).await {
+            Ok(value) => value,
+            Err(e) => {
+                log::warn!(
+                    "add_cluster failed remote_addr={remote_addr} name={name} reason=host_resolution_failed error={e}"
+                );
+                return Err(e);
+            }
+        };
+        let host_for_known_hosts = match &addr {
+            Address::Hostname(host) => host.clone(),
+            Address::Ip(host) => host.to_string(),
+        };
+        let ssh_params = crate::ssh::SshParams {
+            host: host_for_known_hosts,
+            username: username.clone(),
+            addr: connection_addr,
+            identity_path: identity_path.clone(),
+            keepalive_secs: 60,
+            ki_submethods: None,
+        };
+        let hs = self.hosts();
+        let sessions = self.sessions();
+        tokio::spawn(cluster_upsert_task(
+            evt_tx,
+            mfa_rx,
+            sessions,
+            hs,
+            remote_addr,
+            name,
+            username,
+            addr,
+            port,
+            identity_path,
+            default_base_path,
+            ssh_params,
+            true,
+        ));
+        let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
+        Ok(tonic::Response::new(out))
+    }
+
+    async fn set_cluster(
+        &self,
+        request: tonic::Request<tonic::Streaming<SetClusterRequest>>,
+    ) -> Result<tonic::Response<Self::SetClusterStream>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+
+        let mut inbound = request.into_inner();
+        let init = inbound
+            .message()
+            .await
+            .map_err(|e| {
+                log::debug!("read error in set_cluster: {e}");
+                Status::unknown(error_codes::INTERNAL_ERROR)
+            })?
+            .ok_or_else(|| Status::invalid_argument(error_codes::INVALID_ARGUMENT))?;
+        let (name, host, username, port, identity_path, default_base_path) = match init.msg {
+            Some(proto::set_cluster_request::Msg::Init(i)) => (
+                i.name,
+                i.host,
+                i.username,
+                i.port,
+                i.identity_path,
+                i.default_base_path,
+            ),
+            _ => {
+                return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+            }
+        };
+        let name = name.trim().to_string();
+        if name.is_empty() {
+            log::warn!("set_cluster failed remote_addr={remote_addr} reason=empty_name");
+            return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+        }
+
+        let existing = match self.hosts().get_by_name(&name).await {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                log::warn!(
+                    "set_cluster failed remote_addr={remote_addr} name={name} reason=not_found"
+                );
+                return Err(Status::invalid_argument(error_codes::NOT_FOUND));
+            }
+            Err(e) => {
+                log::error!(
+                    "set_cluster failed remote_addr={remote_addr} name={name} reason=db_error error={e}"
+                );
+                return Err(Status::internal(error_codes::INTERNAL_ERROR));
+            }
+        };
+
+        let addr = match host {
+            Some(value) => parse_set_cluster_host(&value)?,
+            None => existing.address.clone(),
+        };
+        let username = match username {
+            Some(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(Status::invalid_argument(error_codes::INVALID_ARGUMENT));
+                }
+                trimmed.to_string()
+            }
+            None => existing.username.clone(),
+        };
+        let identity_path = identity_path.or_else(|| existing.identity_path.clone());
+        let default_base_path = match default_base_path {
+            Some(value) => Some(value),
+            None => existing.default_base_path.clone(),
+        };
+        let (evt_tx, evt_rx) = tokio::sync::mpsc::channel::<Result<StreamEvent, Status>>(64);
+
+        let (mfa_tx, mfa_rx) = tokio::sync::mpsc::channel::<MfaAnswer>(16);
+        tokio::spawn(async move {
+            while let Ok(Some(item)) = inbound.message().await {
+                if let Some(proto::set_cluster_request::Msg::Mfa(ans)) = item.msg
+                    && mfa_tx.send(ans).await.is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        let port = match port {
+            Some(port) => match parse_add_cluster_port(port) {
+                Ok(value) => value,
+                Err(e) => {
+                    log::warn!(
+                        "cluster_upsert failed remote_addr={remote_addr} name={name} reason=invalid_port"
+                    );
+                    return Err(e);
+                }
+            },
+            None => existing.port,
         };
         let connection_addr = match resolve_host_addr(&addr, port).await {
             Ok(value) => value,
@@ -2510,423 +3080,21 @@ impl Agent for AgentSvc {
         };
         let hs = self.hosts();
         let sessions = self.sessions();
-        let audit_remote_addr = remote_addr.clone();
-        let audit_name = name.clone();
-        let audit_host_label = host_label.clone();
-        let reachability_addr = addr.clone();
-        let reachability_port = port;
-        tokio::spawn(async move {
-            let reachable = match reachability::check_host_reachable(
-                &reachability_addr,
-                reachability_port,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=reachability_failed error={err}"
-                    );
-                    let status = match &reachability_addr {
-                        Address::Hostname(hostname) => map_net_error(hostname, err),
-                        Address::Ip(_) => Status::aborted(error_codes::NETWORK_ERROR),
-                    };
-                    let _ = evt_tx.send(Err(status)).await;
-                    return;
-                }
-            };
-            if !reachable {
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=host_unreachable"
-                );
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::NETWORK_ERROR)))
-                    .await;
-                return;
-            }
-            let sm = match sessions.get(&name).await {
-                Some(existing) if existing.matches_params(&ssh_params) => existing,
-                _ => Arc::new(crate::ssh::SessionManager::new(ssh_params)),
-            };
-            if let Err(e) = sm.ensure_connected(&evt_tx, &mut mfa_rx).await {
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=connect_failed error={e}"
-                );
-                log::debug!("failed to connect to {name}: {e}");
-                let code = error_codes::code_for_ssh_error(&e);
-                let _ = evt_tx.send(Err(Status::aborted(code))).await;
-                return;
-            };
-
-            let home_dir = match fetch_remote_home_dir(&sm, &name).await {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=home_dir_failed error_code={:?}",
-                        e.code()
-                    );
-                    let _ = evt_tx.send(Err(e)).await;
-                    return;
-                }
-            };
-            let (out, err, code) = match sm
-                .exec_capture(crate::agent::managers::DETERMINE_HPC_WORKLOAD_MANAGERS_CMD)
-                .await
-            {
-                Ok((vo, ve, ec)) => (vo, ve, ec),
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=wlm_metadata_failed error={e}"
-                    );
-                    log::debug!("failed to gather cluster metadata for {name}: {e}");
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-
-            if code != 0 {
-                let err_message =
-                    String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=wlm_metadata_exit code={code}"
-                );
-                log::debug!(
-                    "failed to gather cluster metadata for {name}: exit {}: {}",
-                    code,
-                    err_message
-                );
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                    .await;
-                return;
-            }
-            let out = match String::from_utf8(out) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=wlm_metadata_decode_failed error={e}"
-                    );
-                    log::debug!("failed to gather cluster metadata for {name}: decode error: {e}");
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-
-            let wlms = crate::agent::managers::parse_wlms(&out);
-            if !wlms.contains(&crate::agent::managers::WorkloadManager::Slurm) {
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=unsupported_scheduler"
-                );
-                log::debug!(
-                    "no supported workload managers found on {name}; identified: {:?}",
-                    wlms
-                );
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                    .await;
-                return;
-            }
-            send_add_cluster_progress(&evt_tx, "Scheduler: Slurm").await;
-            let (out, err, code) = match sm.exec_capture(crate::agent::os::GATHER_OS_INFO_CMD).await
-            {
-                Ok((vo, ve, ec)) => (vo, ve, ec),
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_failed error={e}"
-                    );
-                    log::debug!("failed to gather cluster os metadata for {name}: {e}");
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-
-            if code != 0 {
-                let err_message =
-                    String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_exit code={code}"
-                );
-                log::debug!(
-                    "failed to gather cluster os metadata for {name}: exit {}: {}",
-                    code,
-                    err_message
-                );
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                    .await;
-                return;
-            }
-            let out = match String::from_utf8(out) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_decode_failed error={e}"
-                    );
-                    log::debug!(
-                        "failed to gather cluster os metadata for {name}: decode error: {e}"
-                    );
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-
-            let os_info = match crate::agent::os::parse_distro_info(&out) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=os_metadata_parse_failed error={e}"
-                    );
-                    log::debug!(
-                        "failed to gather cluster os metadata for {name}: parse error: {e}"
-                    );
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-            let os_label = format!("OS: {} {}", os_info.id.as_str(), os_info.version.as_str());
-            send_add_cluster_progress(&evt_tx, &os_label).await;
-            let kernel_label = format!("Kernel: {}", os_info.kernel.as_str());
-            send_add_cluster_progress(&evt_tx, &kernel_label).await;
-            let distro_info = crate::state::db::Distro {
-                name: os_info.id,
-                version: os_info.version,
-            };
-
-            let (out, err, code) = match sm
-                .exec_capture(crate::agent::slurm::DETERMINE_SLURM_VERSION_CMD)
-                .await
-            {
-                Ok((vo, ve, ec)) => (vo, ve, ec),
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_failed error={e}"
-                    );
-                    log::debug!("failed to gather slurm version for {name}: {e}");
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-
-            if code != 0 {
-                let err_message =
-                    String::from_utf8(err).unwrap_or("<error message could not be decoded>".into());
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_exit code={code}"
-                );
-                log::debug!(
-                    "failed to gather slurm version for {name}: exit {}: {}",
-                    code,
-                    err_message
-                );
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                    .await;
-                return;
-            }
-            let out = match String::from_utf8(out) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_decode_failed error={e}"
-                    );
-                    log::debug!("failed to gather slurm version for {name}: decode error: {e}");
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-            let mut parts = out.split_whitespace();
-            if parts.next().is_none() {
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_unexpected_output"
-                );
-                log::debug!("failed to gather slurm version for {name}: unexpected output: {out}");
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                    .await;
-                return;
-            }
-
-            let slurm_version: crate::state::db::SlurmVersion = match parts.next() {
-                Some(v) => match v.parse() {
-                    Ok(vv) => vv,
-                    Err(e) => {
-                        log::warn!(
-                            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_parse_failed error={e:?}"
-                        );
-                        log::debug!("failed to parse slurm version for {name}: '{e:?}'");
-                        let _ = evt_tx
-                            .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                            .await;
-                        return;
-                    }
-                },
-                None => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_version_missing"
-                    );
-                    log::debug!(
-                        "failed to gather slurm version for {name}: unexpected output: {out}"
-                    );
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-            send_add_cluster_progress(&evt_tx, &format!("Slurm: {slurm_version}")).await;
-            let (out, err, code) = match sm.exec_capture("scontrol show config").await {
-                Ok((vo, ve, ec)) => (vo, ve, ec),
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_config_failed error={e}"
-                    );
-                    log::debug!("failed to gather cluster config for {name}: {e}");
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            };
-            if code != 0 {
-                log::warn!(
-                    "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=slurm_config_exit code={code}"
-                );
-                log::debug!(
-                    "failed to run `scontrol show config` on {name}: {}",
-                    String::from_utf8_lossy(&err)
-                );
-                let _ = evt_tx
-                    .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                    .await;
-                return;
-            }
-            let config = String::from_utf8_lossy(&out);
-            let accounting_enabled = crate::agent::slurm::parse_accounting_enabled_from_scontrol(
-                &config,
-            )
-            .unwrap_or_else(|| {
-                log::warn!(
-                    "unable to determine accounting storage type for {name}, assuming disabled"
-                );
-                false
-            });
-            let accounting_state = if accounting_enabled {
-                "enabled"
-            } else {
-                "disabled"
-            };
-            send_add_cluster_progress(&evt_tx, &format!("Accounting: {accounting_state}")).await;
-
-            let resolved_default_base_path = match resolve_default_base_path(
-                default_base_path,
-                &home_dir,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_invalid error_code={:?}",
-                        e.code()
-                    );
-                    let _ = evt_tx.send(Err(e)).await;
-                    return;
-                }
-            };
-            let normalized_default_base_path = match normalize_default_base_path(
-                resolved_default_base_path,
-            ) {
-                Ok(v) => v,
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_invalid error_code={:?}",
-                        e.code()
-                    );
-                    let _ = evt_tx.send(Err(e)).await;
-                    return;
-                }
-            };
-            if let Some(ref dbp) = normalized_default_base_path {
-                let command = format!("mkdir -p {}", dbp.to_string_lossy());
-                let (_, err, code) = match sm.exec_capture(&command).await {
-                    Ok((vo, ve, ec)) => (vo, ve, ec),
-                    Err(e) => {
-                        log::warn!(
-                            "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_create_failed error={e}"
-                        );
-                        log::debug!("failed to execute command `{}` on {}: {}", command, name, e);
-                        let _ = evt_tx
-                            .send(Err(Status::internal(error_codes::REMOTE_ERROR)))
-                            .await;
-                        return;
-                    }
-                };
-                if code != 0 {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=default_base_path_create_exit code={code}"
-                    );
-                    log::debug!(
-                        "failed to create default_base_path on {}: {}",
-                        name,
-                        String::from_utf8_lossy(&err)
-                    );
-                    let _ = evt_tx
-                        .send(Err(Status::aborted(error_codes::REMOTE_ERROR)))
-                        .await;
-                    return;
-                }
-            }
-
-            let new_host = crate::state::db::NewHost {
-                username,
-                name: name.clone(),
-                address: addr.clone(),
-                distro: distro_info,
-                kernel_version: os_info.kernel,
-                slurm: slurm_version,
-                port,
-                identity_path,
-                accounting_available: accounting_enabled,
-                default_base_path: normalized_default_base_path
-                    .clone()
-                    .map(|v| v.to_string_lossy().into_owned()),
-            };
-            match hs.upsert_host(&new_host).await {
-                Ok(v) => {
-                    log::info!(
-                        "cluster_upsert completed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} host_id={v}"
-                    );
-                    log::debug!("successfully upserted host with id {v}")
-                }
-                Err(e) => {
-                    log::warn!(
-                        "cluster_upsert failed remote_addr={audit_remote_addr} name={audit_name} host={audit_host_label} reason=host_upsert_failed error={e}"
-                    );
-                    log::debug!("failed to upsert host {name}: {e}");
-                    let _ = evt_tx
-                        .send(Ok(StreamEvent {
-                            event: Some(stream_event::Event::Error(
-                                error_codes::INTERNAL_ERROR.to_string(),
-                            )),
-                        }))
-                        .await;
-                }
-            };
-
-            sessions.insert(name.clone(), sm.clone()).await;
-        });
+        tokio::spawn(cluster_upsert_task(
+            evt_tx,
+            mfa_rx,
+            sessions,
+            hs,
+            remote_addr,
+            name,
+            username,
+            addr,
+            port,
+            identity_path,
+            default_base_path,
+            ssh_params,
+            false,
+        ));
         let out: OutStream = Box::pin(crate::ssh::receiver_to_stream(evt_rx));
         Ok(tonic::Response::new(out))
     }

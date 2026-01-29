@@ -217,6 +217,22 @@ message DeleteClusterResponse {
   bool deleted = 1;
 }
 
+message SetClusterInit {
+  string name = 1;
+  optional string host = 2;
+  optional string username = 3;
+  optional uint32 port = 4;
+  optional string identity_path = 5;
+  optional string default_base_path = 6;
+}
+
+message SetClusterRequest {
+  oneof msg {
+    SetClusterInit init = 1;
+    MfaAnswer mfa = 2;
+  }
+}
+
 message ListJobsUnitResponse {
   string name = 1;
   int64 job_id = 2;
@@ -269,5 +285,6 @@ service Agent {
   rpc ResolveHomeDir(stream ResolveHomeDirRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
+  rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
 }

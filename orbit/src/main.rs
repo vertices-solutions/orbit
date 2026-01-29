@@ -10,7 +10,8 @@ use orbit::client::{
     send_delete_cluster, send_job_cancel, send_job_cancel_capture, send_job_cleanup,
     send_job_cleanup_capture, send_job_logs, send_job_logs_capture, send_job_ls,
     send_job_ls_capture, send_job_retrieve, send_job_retrieve_capture, send_ls, send_ls_capture,
-    send_ping, send_resolve_home_dir, send_submit, send_submit_capture, validate_cluster_live,
+    send_ping, send_resolve_home_dir, send_set_cluster, send_set_cluster_capture, send_submit,
+    send_submit_capture, validate_cluster_live,
 };
 use orbit::config;
 use orbit::errors::format_server_error;
@@ -114,7 +115,6 @@ async fn main() -> anyhow::Result<()> {
                     let sbatchscript = resolve_sbatch_script(
                         &local_path_buf,
                         args.sbatchscript.as_deref(),
-                        args.headless,
                     )?;
                     let resolved_local_path_display = resolved_local_path.display().to_string();
                     print_with_green_check_stdout(&format!(
@@ -238,7 +238,6 @@ async fn main() -> anyhow::Result<()> {
                         &args.output,
                         args.overwrite,
                         args.force,
-                        args.headless,
                     )
                     .await?;
                     if code != 0 {
@@ -278,7 +277,6 @@ async fn main() -> anyhow::Result<()> {
                 ClusterCmd::Ls(args) => send_ls(&mut client, &args.name, &args.path).await?,
                 ClusterCmd::Add(args) => {
                     println!("Adding new cluster...");
-                    let headless = args.headless;
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let existing_names = response
                         .clusters
@@ -304,11 +302,8 @@ async fn main() -> anyhow::Result<()> {
                     let mut needs_base_path_prompt = resolved.default_base_path.is_none();
                     if let Some(ref value) = resolved.default_base_path {
                         if let Err(err) =
-                            validate_default_base_path_with_feedback(value, false, headless)
+                            validate_default_base_path_with_feedback(value, false)
                         {
-                            if headless {
-                                return Err(err);
-                            }
                             eprintln!("Default base path '{value}' is invalid: {err}");
                             needs_base_path_prompt = true;
                         }
@@ -327,16 +322,13 @@ async fn main() -> anyhow::Result<()> {
                         loop {
                             let base_path = prompt_default_base_path(&home_dir)?;
                             match validate_default_base_path_with_feedback(
-                                &base_path, true, headless,
+                                &base_path, true,
                             ) {
                                 Ok(()) => {
                                     resolved.default_base_path = Some(base_path);
                                     break;
                                 }
                                 Err(err) => {
-                                    if headless {
-                                        return Err(err);
-                                    }
                                     eprintln!("Default base path '{base_path}' is invalid: {err}");
                                 }
                             }
@@ -357,6 +349,22 @@ async fn main() -> anyhow::Result<()> {
                     println!("Cluster {} added successfully!", resolved.name);
                 }
                 ClusterCmd::Set(args) => {
+                    let mut updated_fields = Vec::new();
+                    if let Some(value) = args.host.as_deref() {
+                        updated_fields.push(("host".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.username.as_deref() {
+                        updated_fields.push(("username".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.port {
+                        updated_fields.push(("port".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.identity_path.as_deref() {
+                        updated_fields.push(("identity_path".to_string(), value.to_string()));
+                    }
+                    if let Some(value) = args.default_base_path.as_deref() {
+                        updated_fields.push(("default_base_path".to_string(), value.to_string()));
+                    }
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let Some(cluster) = response
                         .clusters
@@ -368,54 +376,27 @@ async fn main() -> anyhow::Result<()> {
                             args.name
                         );
                     };
-                    let (hostname, ip) = match args.ip.as_ref() {
-                        Some(ip) => (None, Some(ip.clone())),
-                        None => match &cluster.host {
-                            Some(proto::list_clusters_unit_response::Host::Hostname(host)) => {
-                                (Some(host.clone()), None)
-                            }
-                            Some(proto::list_clusters_unit_response::Host::Ipaddr(host)) => {
-                                (None, Some(host.clone()))
-                            }
-                            None => {
-                                bail!(
-                                    "cluster '{}' has no address; pass --ip to update it",
-                                    args.name
-                                );
-                            }
-                        },
-                    };
-                    let port = match args.port {
-                        Some(port) => port,
-                        None => match u32::try_from(cluster.port) {
-                            Ok(port) => port,
-                            Err(_) => bail!(
-                                "cluster '{}' has invalid port '{}'",
-                                args.name,
-                                cluster.port
-                            ),
-                        },
-                    };
-                    let identity_path = args
-                        .identity_path
-                        .clone()
-                        .or_else(|| cluster.identity_path.clone());
-                    let default_base_path = args
-                        .default_base_path
-                        .clone()
-                        .or_else(|| cluster.default_base_path.clone());
-                    send_add_cluster(
+                    if args.host.is_none() && cluster.host.is_none() {
+                        bail!(
+                            "cluster '{}' has no address; pass --host to update it",
+                            args.name
+                        );
+                    }
+                    let host = args.host.clone();
+                    let identity_path = args.identity_path.as_deref();
+                    send_set_cluster(
                         &mut client,
                         &cluster.name,
-                        &cluster.username,
-                        &hostname,
-                        &ip,
-                        identity_path.as_deref(),
-                        port,
-                        &default_base_path,
-                        false,
+                        &host,
+                        args.username.as_deref(),
+                        identity_path,
+                        args.port,
+                        &args.default_base_path,
                     )
-                    .await?
+                    .await?;
+                    for (key, value) in updated_fields {
+                        println!("Set {key}={value} successfully");
+                    }
                 }
                 ClusterCmd::Delete(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
@@ -587,7 +568,7 @@ async fn run_non_interactive_impl(
                         )
                     })?;
                     let sbatchscript =
-                        resolve_sbatch_script(&local_path_buf, args.sbatchscript.as_deref(), true)
+                        resolve_sbatch_script(&local_path_buf, args.sbatchscript.as_deref())
                             .map_err(|err| NonInteractiveError::missing_input(err.to_string()))?;
                     let resolved_local_path_display = resolved_local_path.display().to_string();
                     let captured = send_submit_capture(
@@ -781,8 +762,7 @@ async fn run_non_interactive_impl(
                     }
                     Ok(captured_stream_json(&captured))
                 }
-                ClusterCmd::Add(mut args) => {
-                    args.headless = true;
+                ClusterCmd::Add(args) => {
                     let response = fetch_list_clusters(&mut client, "").await?;
                     let existing_names = response
                         .clusters
@@ -847,51 +827,22 @@ async fn run_non_interactive_impl(
                             args.name
                         );
                     };
-                    let (hostname, ip) = match args.ip.as_ref() {
-                        Some(ip) => (None, Some(ip.clone())),
-                        None => match &cluster.host {
-                            Some(proto::list_clusters_unit_response::Host::Hostname(host)) => {
-                                (Some(host.clone()), None)
-                            }
-                            Some(proto::list_clusters_unit_response::Host::Ipaddr(host)) => {
-                                (None, Some(host.clone()))
-                            }
-                            None => {
-                                bail!(
-                                    "cluster '{}' has no address; pass --ip to update it",
-                                    args.name
-                                );
-                            }
-                        },
-                    };
-                    let port = match args.port {
-                        Some(port) => port,
-                        None => match u32::try_from(cluster.port) {
-                            Ok(port) => port,
-                            Err(_) => bail!(
-                                "cluster '{}' has invalid port '{}'",
-                                args.name,
-                                cluster.port
-                            ),
-                        },
-                    };
-                    let identity_path = args
-                        .identity_path
-                        .clone()
-                        .or_else(|| cluster.identity_path.clone());
-                    let default_base_path = args
-                        .default_base_path
-                        .clone()
-                        .or_else(|| cluster.default_base_path.clone());
-                    let captured = send_add_cluster_capture(
+                    if args.host.is_none() && cluster.host.is_none() {
+                        bail!(
+                            "cluster '{}' has no address; pass --host to update it",
+                            args.name
+                        );
+                    }
+                    let host = args.host.clone();
+                    let identity_path = args.identity_path.as_deref();
+                    let captured = send_set_cluster_capture(
                         &mut client,
                         &cluster.name,
-                        &cluster.username,
-                        &hostname,
-                        &ip,
-                        identity_path.as_deref(),
-                        port,
-                        &default_base_path,
+                        &host,
+                        args.username.as_deref(),
+                        identity_path,
+                        args.port,
+                        &args.default_base_path,
                     )
                     .await?;
                     let exit_code = captured.exit_code.unwrap_or(0);

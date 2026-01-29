@@ -18,9 +18,10 @@ use proto::{
     CleanupJobRequestInit, DeleteClusterRequest, DeleteClusterResponse, JobLogsRequest,
     JobLogsRequestInit, ListClustersRequest, ListClustersResponse, ListJobsRequest,
     ListJobsResponse, LsRequest, LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit,
-    RetrieveJobRequest, RetrieveJobRequestInit, SubmitPathFilterRule, SubmitRequest,
-    add_cluster_init, add_cluster_request, list_clusters_unit_response, resolve_home_dir_request,
-    resolve_home_dir_request_init, stream_event,
+    RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit, SetClusterRequest,
+    SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
+    list_clusters_unit_response, resolve_home_dir_request, resolve_home_dir_request_init,
+    set_cluster_request, stream_event,
 };
 use std::io::{IsTerminal, Write};
 use std::net::{TcpStream, ToSocketAddrs};
@@ -548,7 +549,6 @@ pub async fn send_job_retrieve(
     output: &Option<PathBuf>,
     overwrite: bool,
     force: bool,
-    headless: bool,
 ) -> anyhow::Result<i32> {
     let display_name = Path::new(path)
         .file_name()
@@ -583,15 +583,13 @@ pub async fn send_job_retrieve(
         })
         .await?;
 
-    let mut spinner = if !headless && use_tty {
+    let mut spinner = if use_tty {
         Some(MinDurationSpinner::start(
             &retrieve_message,
             min_spinner_duration,
         ))
-    } else if !headless {
-        eprintln!("{retrieve_message}");
-        None
     } else {
+        eprintln!("{retrieve_message}");
         None
     };
 
@@ -640,7 +638,7 @@ pub async fn send_job_retrieve(
                         })
                         .await
                         .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))?;
-                    if !headless && use_tty {
+                    if use_tty {
                         spinner = Some(MinDurationSpinner::start(
                             &retrieve_message,
                             min_spinner_duration,
@@ -1125,6 +1123,89 @@ pub async fn send_add_cluster_capture(
     tx_ans.send(acr).await?;
     let response = client
         .add_cluster(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let inbound = response.into_inner();
+    handle_stream_events_capture(inbound).await
+}
+
+pub async fn send_set_cluster(
+    client: &mut AgentClient<Channel>,
+    name: &str,
+    host: &Option<String>,
+    username: Option<&str>,
+    identity_path: Option<&str>,
+    port: Option<u32>,
+    default_base_path: &Option<String>,
+) -> anyhow::Result<()> {
+    let (tx_ans, rx_ans) = mpsc::channel::<SetClusterRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    let identity_path_expanded = match identity_path {
+        Some(value) => Some(shellexpand::full(value)?.to_string()),
+        None => None,
+    };
+    let init = SetClusterInit {
+        name: name.to_owned(),
+        host: host.clone(),
+        username: username.map(|value| value.to_string()),
+        port,
+        identity_path: identity_path_expanded,
+        default_base_path: default_base_path.to_owned(),
+    };
+    let scr = SetClusterRequest {
+        msg: Some(set_cluster_request::Msg::Init(init)),
+    };
+    tx_ans.send(scr).await?;
+    let response = client
+        .set_cluster(Request::new(outbound))
+        .await
+        .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
+    let inbound = response.into_inner();
+    let tx_mfa = tx_ans.clone();
+    let exit_code = handle_stream_events(inbound, move |answers| {
+        let tx_mfa = tx_mfa.clone();
+        async move {
+            tx_mfa
+                .send(SetClusterRequest {
+                    msg: Some(proto::set_cluster_request::Msg::Mfa(answers)),
+                })
+                .await
+                .map_err(|_| anyhow::anyhow!("server closed while sending MFA answers"))
+        }
+    })
+    .await?;
+    ensure_exit_code(exit_code, "on client side: received exit code")
+}
+
+pub async fn send_set_cluster_capture(
+    client: &mut AgentClient<Channel>,
+    name: &str,
+    host: &Option<String>,
+    username: Option<&str>,
+    identity_path: Option<&str>,
+    port: Option<u32>,
+    default_base_path: &Option<String>,
+) -> anyhow::Result<CapturedStream> {
+    let (tx_ans, rx_ans) = mpsc::channel::<SetClusterRequest>(16);
+    let outbound = ReceiverStream::new(rx_ans);
+    let identity_path_expanded = match identity_path {
+        Some(value) => Some(shellexpand::full(value)?.to_string()),
+        None => None,
+    };
+    let init = SetClusterInit {
+        name: name.to_owned(),
+        host: host.clone(),
+        username: username.map(|value| value.to_string()),
+        port,
+        identity_path: identity_path_expanded,
+        default_base_path: default_base_path.to_owned(),
+    };
+    let scr = SetClusterRequest {
+        msg: Some(set_cluster_request::Msg::Init(init)),
+    };
+    tx_ans.send(scr).await?;
+    let response = client
+        .set_cluster(Request::new(outbound))
         .await
         .map_err(|status| anyhow::Error::msg(format_status_error(&status)))?;
     let inbound = response.into_inner();

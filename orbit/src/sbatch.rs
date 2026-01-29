@@ -15,6 +15,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Clear, List, ListItem, ListState, Paragraph},
 };
+use crate::interaction;
 use std::ffi::OsStr;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
@@ -50,7 +51,7 @@ impl TerminalGuard {
     fn enter() -> anyhow::Result<Self> {
         if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
             bail!(
-                "interactive picker requires a TTY; pass --headless or --non-interactive and specify --sbatchscript"
+                "interactive picker requires a TTY; pass --non-interactive and specify --sbatchscript"
             );
         }
         terminal::enable_raw_mode()?;
@@ -252,7 +253,6 @@ fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
 pub fn resolve_sbatch_script(
     local_path: &Path,
     explicit: Option<&str>,
-    headless: bool,
 ) -> anyhow::Result<String> {
     if let Some(sbatchscript) = explicit {
         return Ok(sbatchscript.to_string());
@@ -284,9 +284,9 @@ pub fn resolve_sbatch_script(
         ),
         1 => Ok(relative_scripts[0].clone()),
         _ => {
-            if headless {
+            if interaction::is_non_interactive() {
                 let mut msg = format!(
-                    "multiple .sbatch files found under '{}' while running in headless or non-interactive mode; specify which one to use with --sbatchscript:\n",
+                    "multiple .sbatch files found under '{}' while running in non-interactive mode; specify which one to use with --sbatchscript:\n",
                     local_path.display()
                 );
                 for script in &relative_scripts {
@@ -302,7 +302,33 @@ pub fn resolve_sbatch_script(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static NON_INTERACTIVE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    fn lock_non_interactive() -> MutexGuard<'static, ()> {
+        NON_INTERACTIVE_TEST_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("failed to lock non-interactive test mutex")
+    }
+
+    struct NonInteractiveGuard {
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl Drop for NonInteractiveGuard {
+        fn drop(&mut self) {
+            interaction::set_non_interactive(false);
+        }
+    }
+
+    fn set_non_interactive_for_test() -> NonInteractiveGuard {
+        let lock = lock_non_interactive();
+        interaction::set_non_interactive(true);
+        NonInteractiveGuard { _lock: lock }
+    }
 
     fn temp_dir() -> PathBuf {
         let nanos = SystemTime::now()
@@ -337,18 +363,19 @@ mod tests {
     #[test]
     fn resolve_sbatch_script_accepts_explicit_path() {
         let root = temp_dir();
-        let script = resolve_sbatch_script(&root, Some("job.sbatch"), true).unwrap();
+        let script = resolve_sbatch_script(&root, Some("job.sbatch")).unwrap();
         assert_eq!(script, "job.sbatch");
         let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
-    fn resolve_sbatch_script_errors_on_multiple_headless() {
+    fn resolve_sbatch_script_errors_on_multiple_non_interactive() {
+        let _guard = set_non_interactive_for_test();
         let root = temp_dir();
         std::fs::write(root.join("a.sbatch"), "echo one").unwrap();
         std::fs::write(root.join("b.sbatch"), "echo two").unwrap();
 
-        let err = resolve_sbatch_script(&root, None, true).unwrap_err();
+        let err = resolve_sbatch_script(&root, None).unwrap_err();
         assert!(err.to_string().contains("multiple .sbatch files found"));
         let _ = std::fs::remove_dir_all(&root);
     }
