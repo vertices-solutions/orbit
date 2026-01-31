@@ -1,18 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+mod console;
+mod format;
+mod mfa;
+mod prompt;
+mod sbatch_picker;
+
 use std::io::Write;
 
 use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
-use crate::app::errors::{AppError, AppResult};
+use crate::app::errors::{format_server_error, AppError, AppResult};
 use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
-use crate::errors::format_server_error;
-use crate::format::{
-    format_cluster_details, format_clusters_table, format_job_details, format_jobs_table,
-};
-use crate::mfa;
-use crate::sbatch;
-use crate::stream::{print_with_green_check_stdout, print_with_green_check_stderr};
+use console::{print_with_green_check_stdout, print_with_green_check_stderr};
+use format::{format_cluster_details, format_clusters_table, format_job_details, format_jobs_table};
+use mfa::{clear_transient_mfa, collect_mfa_answers, collect_mfa_answers_transient};
+use sbatch_picker::pick_sbatch_script;
 
 pub struct TerminalOutput;
 
@@ -104,12 +107,12 @@ impl TerminalInteraction {
 #[tonic::async_trait]
 impl InteractionPort for TerminalInteraction {
     async fn confirm(&self, prompt: &str, help: &str) -> AppResult<bool> {
-        crate::interactive::confirm_action(prompt, help)
+        prompt::confirm_action(prompt, help)
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
     async fn prompt_line(&self, prompt: &str, help: &str) -> AppResult<String> {
-        crate::interactive::prompt_line(prompt, help)
+        prompt::prompt_line(prompt, help)
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
@@ -119,7 +122,7 @@ impl InteractionPort for TerminalInteraction {
         help: &str,
         default: &str,
     ) -> AppResult<String> {
-        crate::interactive::prompt_line_with_default(prompt, help, Some(default))
+        prompt::prompt_line_with_default(prompt, help, Some(default))
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
@@ -127,13 +130,13 @@ impl InteractionPort for TerminalInteraction {
         if options.is_empty() {
             return Ok(None);
         }
-        sbatch::pick_sbatch_script(options.to_vec())
+        pick_sbatch_script(options.to_vec())
             .map(Some)
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
     async fn prompt_mfa(&self, mfa: &proto::MfaPrompt) -> AppResult<proto::MfaAnswer> {
-        mfa::collect_mfa_answers(mfa)
+        collect_mfa_answers(mfa)
             .await
             .map_err(|err| AppError::local_error(err.to_string()))
     }
@@ -142,13 +145,13 @@ impl InteractionPort for TerminalInteraction {
         &self,
         mfa: &proto::MfaPrompt,
     ) -> AppResult<(proto::MfaAnswer, usize)> {
-        mfa::collect_mfa_answers_transient(mfa)
+        collect_mfa_answers_transient(mfa)
             .await
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
     async fn clear_transient(&self, lines: usize) -> AppResult<()> {
-        mfa::clear_transient_mfa(lines)
+        clear_transient_mfa(lines)
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 }

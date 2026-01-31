@@ -5,7 +5,7 @@ use anyhow::bail;
 use proto::{MfaAnswer, MfaPrompt};
 use std::io::Write;
 
-pub async fn collect_mfa_answers(mfa: &MfaPrompt) -> anyhow::Result<MfaAnswer> {
+pub(super) async fn collect_mfa_answers(mfa: &MfaPrompt) -> anyhow::Result<MfaAnswer> {
     eprintln!();
     if !mfa.name.is_empty() {
         eprintln!("MFA: {}", mfa.name);
@@ -23,7 +23,9 @@ pub async fn collect_mfa_answers(mfa: &MfaPrompt) -> anyhow::Result<MfaAnswer> {
     Ok(MfaAnswer { responses })
 }
 
-pub async fn collect_mfa_answers_transient(mfa: &MfaPrompt) -> anyhow::Result<(MfaAnswer, usize)> {
+pub(super) async fn collect_mfa_answers_transient(
+    mfa: &MfaPrompt,
+) -> anyhow::Result<(MfaAnswer, usize)> {
     let mut lines = 0usize;
     eprintln!();
     lines += 1;
@@ -49,6 +51,10 @@ pub async fn collect_mfa_answers_transient(mfa: &MfaPrompt) -> anyhow::Result<(M
     Ok((MfaAnswer { responses }, lines))
 }
 
+pub(super) fn clear_transient_mfa(lines: usize) -> anyhow::Result<()> {
+    clear_prompt_lines(lines)
+}
+
 async fn prompt_value(prompt: &str, echo: bool) -> anyhow::Result<String> {
     let prompt = prompt.to_string();
     if echo {
@@ -57,7 +63,6 @@ async fn prompt_value(prompt: &str, echo: bool) -> anyhow::Result<String> {
             std::io::stdout().flush()?;
             let mut s = String::new();
             std::io::stdin().read_line(&mut s)?;
-            // Trim common line endings
             while s.ends_with('\n') || s.ends_with('\r') {
                 s.pop();
             }
@@ -66,13 +71,6 @@ async fn prompt_value(prompt: &str, echo: bool) -> anyhow::Result<String> {
         .await?
     } else {
         bail!("Method not supported")
-        /*
-        tokio::task::spawn_blocking(move || -> Result<String> {
-            let s = rpassword::prompt_password(prompt)?;
-            Ok(s)
-        })
-        .await?
-        */
     }
 }
 
@@ -99,8 +97,4 @@ fn clear_prompt_lines(lines: usize) -> anyhow::Result<()> {
     crossterm::execute!(stdout, crossterm::cursor::MoveToColumn(0))?;
     stdout.flush()?;
     Ok(())
-}
-
-pub fn clear_transient_mfa(lines: usize) -> anyhow::Result<()> {
-    clear_prompt_lines(lines)
 }

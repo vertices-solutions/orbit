@@ -7,7 +7,7 @@ use orbit::adapters;
 use orbit::app::{AppContext, UiMode};
 use orbit::app::dispatcher::Dispatcher;
 use orbit::app::ports::{ConfigPort, FilesystemPort, InteractionPort, NetworkPort, OutputPort};
-use orbit::args::{Cli, Cmd};
+use orbit::adapters::cli::{Cli, Cmd};
 use std::sync::Arc;
 
 const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗

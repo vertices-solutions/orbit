@@ -3,7 +3,6 @@
 
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -42,20 +41,6 @@ pub enum Cmd {
 pub struct CompletionsArgs {
     #[arg(value_enum)]
     pub shell: Shell,
-}
-
-#[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, Deserialize)]
-pub enum WLM {
-    #[default]
-    Slurm,
-}
-
-impl ToString for WLM {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Slurm => "slurm".to_owned(),
-        }
-    }
 }
 
 #[derive(Args, Debug)]

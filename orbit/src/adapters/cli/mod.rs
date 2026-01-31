@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+mod args;
+mod filters;
+
+pub use args::{Cli, Cmd};
+
 use clap::ArgMatches;
 
 use crate::app::commands::*;
-use crate::args::{Cli, Cmd, ClusterCmd, JobCmd};
-use crate::filters::submit_filters_from_matches;
+use args::{ClusterCmd, JobCmd};
+use filters::submit_filters_from_matches;
 
 pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
     match cli.cmd {

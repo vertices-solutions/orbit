@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+mod submit_errors;
+
 use std::future::Future;
 use std::path::{Component, Path, PathBuf};
 
@@ -11,9 +13,11 @@ use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Status, Code};
 
 use crate::app::commands::{StreamCapture, SubmitCapture};
-use crate::app::errors::{AppError, AppResult, ErrorType};
+use crate::app::errors::{
+    describe_error_code, format_server_error, AppError, AppResult, ErrorType,
+};
 use crate::app::ports::{InteractionPort, OrbitdPort, StreamOutputPort};
-use crate::errors::{format_server_error, format_status_error};
+use submit_errors::parse_remote_path_failure;
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, CancelJobRequest, CancelJobRequestInit, CleanupJobRequest,
@@ -411,7 +415,7 @@ impl OrbitdPort for GrpcOrbitdPort {
             Ok(response) => response,
             Err(status) => {
                 let message = format_status_error(&status);
-                let failure = crate::stream::parse_remote_path_failure(status.message())
+                let failure = parse_remote_path_failure(status.message())
                     .map(|failure| (failure.remote_path.to_string(), failure.reason));
                 let mut err = app_error_from_status(status);
                 err.message = match failure {
@@ -459,9 +463,9 @@ impl OrbitdPort for GrpcOrbitdPort {
         let (tx_ans, rx_ans) = mpsc::channel::<AddClusterRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
         let host: add_cluster_init::Host = match hostname {
-            Some(v) => add_cluster_init::Host::Hostname(v.into()),
+            Some(v) => add_cluster_init::Host::Hostname(v),
             None => match ip {
-                Some(v) => add_cluster_init::Host::Ipaddr(v.into()),
+                Some(v) => add_cluster_init::Host::Ipaddr(v),
                 None => return Err(AppError::invalid_argument("both hostname and ip address can't be none")),
             },
         };
@@ -589,9 +593,9 @@ impl OrbitdPort for GrpcOrbitdPort {
         let (tx_ans, rx_ans) = mpsc::channel::<ResolveHomeDirRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
         let host: resolve_home_dir_request_init::Host = match hostname {
-            Some(v) => resolve_home_dir_request_init::Host::Hostname(v.into()),
+            Some(v) => resolve_home_dir_request_init::Host::Hostname(v),
             None => match ip {
-                Some(v) => resolve_home_dir_request_init::Host::Ipaddr(v.into()),
+                Some(v) => resolve_home_dir_request_init::Host::Ipaddr(v),
                 None => return Err(AppError::invalid_argument("both hostname and ip address can't be none")),
             },
         };
@@ -693,6 +697,31 @@ fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
     format!(
         "Could not contact the orbitd server at {daemon_endpoint}. Is it running?"
     )
+}
+
+fn format_status_error(status: &Status) -> String {
+    let message = status.message();
+    if let Some(message) = describe_error_code(message) {
+        return message.to_string();
+    }
+    if !message.is_empty() {
+        return message.to_string();
+    }
+    match status.code() {
+        Code::Cancelled => describe_error_code("canceled")
+            .unwrap_or("Canceled.")
+            .to_string(),
+        Code::Unauthenticated => describe_error_code("authentication_failure")
+            .unwrap_or("Authentication failed.")
+            .to_string(),
+        Code::PermissionDenied => describe_error_code("permission_denied")
+            .unwrap_or("Permission denied.")
+            .to_string(),
+        Code::Unavailable => describe_error_code("network_error")
+            .unwrap_or("Network error.")
+            .to_string(),
+        _ => "Server error.".to_string(),
+    }
 }
 
 fn app_error_from_status(status: Status) -> AppError {

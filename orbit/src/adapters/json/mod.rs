@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+mod format;
+
 use serde_json::{Value, json};
 
 use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
 use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
-use crate::format::{cluster_to_json, job_to_json};
+use format::{cluster_to_json, job_to_json};
 
 pub struct JsonOutput;
 

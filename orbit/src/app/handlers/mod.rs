@@ -6,7 +6,7 @@ use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
 
 use crate::app::commands::*;
 use crate::app::errors::{
-    error_type_for_remote_code, AppError, AppResult, ErrorContext, ErrorType,
+    error_type_for_remote_code, format_server_error, AppError, AppResult, ErrorContext, ErrorType,
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
@@ -14,8 +14,6 @@ use crate::app::services::{
     SbatchSelector,
 };
 use crate::app::AppContext;
-use crate::errors::format_server_error;
-use crate::format::{cluster_host_string};
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
     ctx.orbitd.ping().await?;
@@ -374,7 +372,7 @@ pub async fn handle_cluster_add(
     if let Some(host) = resolved.hostname.as_deref().or(resolved.ip.as_deref()) {
         if let Some(existing) = clusters.iter().find(|cluster| {
             cluster.username == resolved.username
-                && cluster_host_string(cluster) == host
+                && cluster_host_matches(cluster, host)
                 && cluster.port == resolved.port as i32
         }) {
             return Err(AppError::conflict(format!(
@@ -475,6 +473,14 @@ pub async fn handle_cluster_add(
         identity_path: resolved.identity_path,
         default_base_path: resolved.default_base_path,
     })
+}
+
+fn cluster_host_matches(cluster: &ListClustersUnitResponse, host: &str) -> bool {
+    match cluster.host.as_ref() {
+        Some(proto::list_clusters_unit_response::Host::Hostname(value)) => value == host,
+        Some(proto::list_clusters_unit_response::Host::Ipaddr(value)) => value == host,
+        None => false,
+    }
 }
 
 pub async fn handle_cluster_set(
