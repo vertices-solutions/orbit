@@ -18,8 +18,11 @@ This workspace has three crates:
 - Dispatcher: the router that maps a `Command` request to its handler.
 - OutputPort: transforms command result data into user-facing output (tables, JSON).
 - StreamOutput: a stream of output events (stdout/stderr/progress/exit) from long-running operations; 
-  consumed via `StreamOutputPort`.
-- Capture: in-memory storage of stream output (`StreamCapture` / `SubmitCapture`) that powers JSON responses and error handling.
+  consumed via `StreamOutputPort`. `OutputPort` servers as a factory that creates appropriate objects implementing `StreamOutputPort` with `stream_output(...)` method.
+- Capture: in-memory storage of stream output (`StreamCapture` / `SubmitCapture`) that powers JSON responses and error handling. 
+  - `StreamCapture` is a small DTO that accumulates streamed output from long‑running RPCs (stdout/stderr chunks, exit code, and optional error code). It’s filled by `StreamOutputPort` implementations (e.g., `TerminalStreamOutput`,
+  `JsonStreamOutput`) and returned by gRPC adapter methods. Handlers use it to decide errors
+  (stream_error) and to include streaming output in CommandResult for JSON/terminal rendering.
 - DTO: a data transfer object used between layers (command requests/results).
 - AppError: the unified error type with an `ErrorType`, message, and exit code.
 - UiMode: the UI mode (`Interactive` / `NonInteractive`) stored in `AppContext`.
@@ -39,11 +42,21 @@ by adapters.
 - core lives in `app/`
 - `app/commands`: command DTOs and `CommandResult` variants returned by handlers. This is what carries the command-specific information through layers.
 - `app/handlers`: use-case orchestration (validate inputs, call ports, shape results). These are dispatched by the dispatcher.
-- `app/services`: data handling helpers such as `AddClusterResolver`,
-  `PathResolver`, and `SbatchSelector`.
+- `app/services`: data handling helpers:
+  - `AddClusterResolver`: resolves and validates `cluster add` inputs (destination parsing,
+    identity path selection, reachability checks, and defaults) with prompts in interactive
+    mode; used in `handle_cluster_add` (`app/handlers`).
+  - `PathResolver`: canonicalizes local paths and maps filesystem errors to `AppError`;
+    used in `handle_job_submit` before submit.
+  - `SbatchSelector`: discovers `.sbatch` scripts under the submit root and prompts when
+    multiple candidates exist; used in `handle_job_submit`.
+  - `local_validate_default_base_path`: validates base path rules for clusters; used in
+    `handle_cluster_add` during default base path checks.
+  - `default_base_path_from_home`: derives the default base path from a home directory;
+    used in `handle_cluster_add` when prompting.
 - `app/errors`: `AppError`, `ErrorType`, and helpers for mapping remote errors and exit codes.
-- `app/ports`: trait definitions for external dependencies (gRPC, TTY, filesystem,
-  config, network).
+- `app/ports`: port trait definitions for external dependencies (gRPC, TTY, filesystem,
+  config, network). Ports lieve within app/, because that's interface defined by the app. 
 
 ## Ports and adapters
 Ports live in `app/ports`, adapters in `adapters/`:

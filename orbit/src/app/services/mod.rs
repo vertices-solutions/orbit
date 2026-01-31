@@ -362,7 +362,9 @@ impl<'a> SbatchSelector<'a> {
     }
 }
 
-pub fn validate_default_base_path(base_path: &str) -> AppResult<()> {
+
+/// locally validates if a suggested default base path breaks any rules
+pub fn local_validate_default_base_path(base_path: &str) -> AppResult<()> {
     let trimmed = base_path.trim();
     if trimmed.is_empty() {
         return Err(AppError::invalid_argument(
@@ -384,7 +386,7 @@ pub fn validate_default_base_path(base_path: &str) -> AppResult<()> {
         "default base path must be absolute or start with '~/' (use '~')",
     ))
 }
-
+/// Joins home directory with "runs" without fs access (for remote paths)
 pub fn default_base_path_from_home(home_dir: &str) -> String {
     PathBuf::from(home_dir)
         .join("runs")
