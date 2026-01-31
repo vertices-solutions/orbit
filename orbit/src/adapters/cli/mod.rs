@@ -6,11 +6,45 @@ mod filters;
 
 pub use args::{Cli, Cmd};
 
-use clap::ArgMatches;
+use clap::{ArgMatches, CommandFactory};
+use clap_complete::{generate, Shell};
 
 use crate::app::commands::*;
 use args::{ClusterCmd, JobCmd};
 use filters::submit_filters_from_matches;
+
+const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
+██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
+██║  ██║██████╔╝██████╔╝██║    ██║
+██║  ██║██╔══██╗██╔══██╗██║    ██║
+╚█████╔╝██║  ██║██████╔╝██║    ██║
+ ╚════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝    ╚═╝
+
+{before-help}{about-with-newline}{usage-heading} {usage}
+
+{all-args}{after-help}
+"#;
+
+fn apply_help_template_recursively(cmd: &mut clap::Command) {
+    let mut owned = std::mem::take(cmd); //take to avoid memory allocation
+    owned = owned.help_template(HELP_TEMPLATE);
+    for sub in owned.get_subcommands_mut() {
+        apply_help_template_recursively(sub);
+    }
+    *cmd = owned;
+}
+
+pub fn cli_command() -> clap::Command {
+    let mut cmd = Cli::command();
+    apply_help_template_recursively(&mut cmd);
+    cmd
+}
+
+pub fn generate_shell_completions(shell: Shell) {
+    let mut cmd = cli_command();
+    let bin_name = cmd.get_name().to_owned();
+    generate(shell, &mut cmd, bin_name, &mut std::io::stdout());
+}
 
 pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
     match cli.cmd {
