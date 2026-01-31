@@ -115,8 +115,11 @@ def parse_orbit_json(output):
     data = json.loads(output)
     if isinstance(data, dict) and "ok" in data:
         if not data.get("ok"):
-            error = data.get("error", {})
-            message = error.get("message") or "orbit returned an error"
+            if "reason" in data:
+                message = data.get("reason") or "orbit returned an error"
+            else:
+                error = data.get("error", {})
+                message = error.get("message") or "orbit returned an error"
             raise RuntimeError(message)
         return data.get("result")
     return data
@@ -148,7 +151,10 @@ def combined_stream_text(data):
 
 
 def job_status(orbit_cmd, job_id):
-    result = run_cmd(orbit_cmd + ["job", "get", str(job_id), "--json"])
+    cmd = list(orbit_cmd)
+    if "--non-interactive" not in cmd:
+        cmd.append("--non-interactive")
+    result = run_cmd(cmd + ["job", "get", str(job_id)])
     data = parse_json_output(result)
     return data.get("status"), data.get("terminal_state")
 

@@ -855,7 +855,7 @@ fn prompt_with_default(label: &str, default: &str, hint: &str) -> anyhow::Result
     }
 }
 
-fn prompt_line(prompt: &str, hint: &str) -> anyhow::Result<String> {
+pub(crate) fn prompt_line(prompt: &str, hint: &str) -> anyhow::Result<String> {
     prompt_line_with_default(prompt, hint, None)
 }
 
@@ -868,7 +868,7 @@ fn format_default_hint(default: &str, hint: &str) -> String {
     }
 }
 
-fn prompt_line_with_default(
+pub(crate) fn prompt_line_with_default(
     prompt: &str,
     hint: &str,
     default: Option<&str>,

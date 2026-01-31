@@ -90,8 +90,6 @@ pub struct JobGetArgs {
     pub job_id: i64,
     #[arg(long)]
     pub cluster: Option<String>,
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -131,8 +129,6 @@ pub struct JobCleanupArgs {
 pub struct ListJobsArgs {
     #[arg(long)]
     pub cluster: Option<String>,
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -163,8 +159,6 @@ pub struct JobLsArgs {
 
 #[derive(Args, Debug)]
 pub struct ListClustersArgs {
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -192,8 +186,6 @@ pub enum ClusterCmd {
 #[derive(Args, Debug)]
 pub struct ClusterGetArgs {
     pub name: String,
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]

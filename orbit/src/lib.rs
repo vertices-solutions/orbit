@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+pub mod adapters;
+pub mod app;
 pub mod args;
-pub mod client;
 pub mod config;
 pub mod errors;
 pub mod filters;

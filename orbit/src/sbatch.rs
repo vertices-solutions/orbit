@@ -215,7 +215,7 @@ impl SbatchPicker {
     }
 }
 
-fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
+pub fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
     let _guard = TerminalGuard::enter()?;
     let (cursor_x, cursor_y) = cursor::position()?;
     let (_, term_height) = terminal::size()?;
