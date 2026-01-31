@@ -15,35 +15,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
     widgets::{Clear, List, ListItem, ListState, Paragraph},
 };
-use crate::interaction;
-use std::ffi::OsStr;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
-
-pub fn collect_sbatch_scripts(root: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    let mut matches = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-
-    while let Some(dir) = stack.pop() {
-        let entries = std::fs::read_dir(&dir)
-            .map_err(|e| anyhow::anyhow!("failed to read {}: {}", dir.display(), e))?;
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                stack.push(path);
-                continue;
-            }
-            if file_type.is_file() && path.extension() == Some(OsStr::new("sbatch")) {
-                matches.push(path);
-            }
-        }
-    }
-
-    matches.sort();
-    Ok(matches)
-}
 
 struct TerminalGuard;
 
@@ -215,7 +187,7 @@ impl SbatchPicker {
     }
 }
 
-fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
+pub(super) fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
     let _guard = TerminalGuard::enter()?;
     let (cursor_x, cursor_y) = cursor::position()?;
     let (_, term_height) = terminal::size()?;
@@ -247,136 +219,5 @@ fn pick_sbatch_script(scripts: Vec<String>) -> anyhow::Result<String> {
                 bail!("sbatch selection canceled")
             }
         }
-    }
-}
-
-pub fn resolve_sbatch_script(
-    local_path: &Path,
-    explicit: Option<&str>,
-) -> anyhow::Result<String> {
-    if let Some(sbatchscript) = explicit {
-        return Ok(sbatchscript.to_string());
-    }
-
-    if !local_path.exists() {
-        bail!("local path '{}' does not exist", local_path.display());
-    }
-    if !local_path.is_dir() {
-        bail!(
-            "local path '{}' must be a directory to auto-detect .sbatch scripts",
-            local_path.display()
-        );
-    }
-
-    let scripts = collect_sbatch_scripts(local_path)?;
-    let relative_scripts: Vec<String> = scripts
-        .iter()
-        .map(|path| {
-            let rel = path.strip_prefix(local_path).unwrap_or(path);
-            rel.to_string_lossy().into_owned()
-        })
-        .collect();
-
-    match relative_scripts.len() {
-        0 => bail!(
-            "no .sbatch files found under '{}'; provide the script path explicitly",
-            local_path.display()
-        ),
-        1 => Ok(relative_scripts[0].clone()),
-        _ => {
-            if interaction::is_non_interactive() {
-                let mut msg = format!(
-                    "multiple .sbatch files found under '{}' while running in non-interactive mode; specify which one to use with --sbatchscript:\n",
-                    local_path.display()
-                );
-                for script in &relative_scripts {
-                    msg.push_str(&format!("  - {}\n", script));
-                }
-                bail!("{}", msg.trim_end())
-            }
-            pick_sbatch_script(relative_scripts)
-        }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    static NON_INTERACTIVE_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-    fn lock_non_interactive() -> MutexGuard<'static, ()> {
-        NON_INTERACTIVE_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .expect("failed to lock non-interactive test mutex")
-    }
-
-    struct NonInteractiveGuard {
-        _lock: MutexGuard<'static, ()>,
-    }
-
-    impl Drop for NonInteractiveGuard {
-        fn drop(&mut self) {
-            interaction::set_non_interactive(false);
-        }
-    }
-
-    fn set_non_interactive_for_test() -> NonInteractiveGuard {
-        let lock = lock_non_interactive();
-        interaction::set_non_interactive(true);
-        NonInteractiveGuard { _lock: lock }
-    }
-
-    fn temp_dir() -> PathBuf {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("cli_sbatch_{nanos}"));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    #[test]
-    fn collect_sbatch_scripts_finds_nested_files() {
-        let root = temp_dir();
-        let nested = root.join("nested");
-        std::fs::create_dir_all(&nested).unwrap();
-        let one = root.join("a.sbatch");
-        let two = nested.join("b.sbatch");
-        std::fs::write(&one, "echo one").unwrap();
-        std::fs::write(&two, "echo two").unwrap();
-
-        let scripts = collect_sbatch_scripts(&root).unwrap();
-        let names: Vec<String> = scripts
-            .iter()
-            .map(|p| p.file_name().unwrap().to_string_lossy().to_string())
-            .collect();
-
-        assert_eq!(names, vec!["a.sbatch", "b.sbatch"]);
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn resolve_sbatch_script_accepts_explicit_path() {
-        let root = temp_dir();
-        let script = resolve_sbatch_script(&root, Some("job.sbatch")).unwrap();
-        assert_eq!(script, "job.sbatch");
-        let _ = std::fs::remove_dir_all(&root);
-    }
-
-    #[test]
-    fn resolve_sbatch_script_errors_on_multiple_non_interactive() {
-        let _guard = set_non_interactive_for_test();
-        let root = temp_dir();
-        std::fs::write(root.join("a.sbatch"), "echo one").unwrap();
-        std::fs::write(root.join("b.sbatch"), "echo two").unwrap();
-
-        let err = resolve_sbatch_script(&root, None).unwrap_err();
-        assert!(err.to_string().contains("multiple .sbatch files found"));
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

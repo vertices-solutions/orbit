@@ -4,7 +4,7 @@
 use clap::ArgMatches;
 use proto::{SubmitPathFilterAction, SubmitPathFilterRule};
 
-pub fn submit_filters_from_matches(matches: &ArgMatches) -> Vec<SubmitPathFilterRule> {
+pub(super) fn submit_filters_from_matches(matches: &ArgMatches) -> Vec<SubmitPathFilterRule> {
     let Some(("job", job_matches)) = matches.subcommand() else {
         return Vec::new();
     };
@@ -43,7 +43,7 @@ pub fn submit_filters_from_matches(matches: &ArgMatches) -> Vec<SubmitPathFilter
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::args::Cli;
+    use crate::adapters::cli::Cli;
     use clap::CommandFactory;
 
     #[test]

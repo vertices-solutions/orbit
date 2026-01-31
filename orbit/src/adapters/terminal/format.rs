@@ -2,73 +2,10 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
-use serde_json::json;
 
-pub fn cluster_host_string(item: &ListClustersUnitResponse) -> String {
-    match item.host {
-        Some(ref v) => match v {
-            proto::list_clusters_unit_response::Host::Hostname(s) => s.to_string(),
-            proto::list_clusters_unit_response::Host::Ipaddr(s) => s.to_string(),
-        },
-        None => "<unknown>".to_string(),
-    }
-}
+use crate::adapters::presentation::{cluster_host_string, job_status};
 
-pub fn cluster_ssh_string(item: &ListClustersUnitResponse) -> String {
-    let host = cluster_host_string(item);
-    let formatted_host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
-        format!("[{host}]")
-    } else {
-        host
-    };
-    format!("{}@{}:{}", item.username, formatted_host, item.port)
-}
-
-pub fn cluster_to_json(item: &ListClustersUnitResponse) -> serde_json::Value {
-    let status = match item.connected {
-        true => "connected",
-        false => "disconnected",
-    };
-    json!({
-        "name": item.name.as_str(),
-        "username": item.username.as_str(),
-        "address": cluster_host_string(item),
-        "port": item.port,
-        "connected": item.connected,
-        "reachable": item.reachable,
-        "status": status,
-        "identity_path": item.identity_path.as_deref(),
-        "accounting_available": item.accounting_available,
-        "default_base_path": item.default_base_path.as_deref(),
-    })
-}
-
-pub fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
-    let status = job_status(item);
-    json!({
-        "job_id": item.job_id,
-        "local_path": item.local_path.as_str(),
-        "remote_path": item.remote_path.as_str(),
-        "name": item.name.as_str(),
-        "status": status,
-        "is_completed": item.is_completed,
-        "terminal_state": item.terminal_state.as_deref(),
-        "scheduler_state": item.scheduler_state.as_deref(),
-        "created_at": item.created_at.as_str(),
-        "finished_at": item.finished_at.as_deref(),
-        "scheduler_id": item.scheduler_id,
-    })
-}
-
-pub fn format_json(value: serde_json::Value) -> anyhow::Result<String> {
-    Ok(serde_json::to_string_pretty(&value)?)
-}
-
-fn str_width(value: &str) -> usize {
-    value.chars().count()
-}
-
-pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
+pub(super) fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
     let headers = ["name", "destination", "status", "reachable", "accounting"];
     let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
 
@@ -144,12 +81,7 @@ pub fn format_clusters_table(clusters: &[ListClustersUnitResponse]) -> String {
     output
 }
 
-pub fn format_clusters_json(clusters: &[ListClustersUnitResponse]) -> anyhow::Result<String> {
-    let data: Vec<serde_json::Value> = clusters.iter().map(cluster_to_json).collect();
-    format_json(serde_json::Value::Array(data))
-}
-
-pub fn format_cluster_details(item: &ListClustersUnitResponse) -> String {
+pub(super) fn format_cluster_details(item: &ListClustersUnitResponse) -> String {
     let host_str = cluster_host_string(item);
     let connected_str = match item.connected {
         true => "connected",
@@ -172,11 +104,7 @@ pub fn format_cluster_details(item: &ListClustersUnitResponse) -> String {
     )
 }
 
-pub fn format_cluster_details_json(item: &ListClustersUnitResponse) -> anyhow::Result<String> {
-    format_json(cluster_to_json(item))
-}
-
-pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
+pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
         "job id",
         "cluster id",
@@ -260,12 +188,7 @@ pub fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     output
 }
 
-pub fn format_jobs_json(jobs: &[ListJobsUnitResponse]) -> anyhow::Result<String> {
-    let data: Vec<serde_json::Value> = jobs.iter().map(job_to_json).collect();
-    format_json(serde_json::Value::Array(data))
-}
-
-pub fn format_job_details(item: &ListJobsUnitResponse) -> String {
+pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
     let scheduler_id = item
         .scheduler_id
         .map(|id| id.to_string())
@@ -285,33 +208,18 @@ pub fn format_job_details(item: &ListJobsUnitResponse) -> String {
     )
 }
 
-pub fn format_job_details_json(item: &ListJobsUnitResponse) -> anyhow::Result<String> {
-    format_json(job_to_json(item))
+fn cluster_ssh_string(item: &ListClustersUnitResponse) -> String {
+    let host = cluster_host_string(item);
+    let formatted_host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
+        format!("[{host}]")
+    } else {
+        host
+    };
+    format!("{}@{}:{}", item.username, formatted_host, item.port)
 }
 
-pub fn job_status(item: &ListJobsUnitResponse) -> &'static str {
-    if !item.is_completed {
-        if item
-            .scheduler_state
-            .as_deref()
-            .map(|state| state.eq_ignore_ascii_case("PENDING"))
-            .unwrap_or(false)
-        {
-            return "queued";
-        }
-        return "running";
-    }
-    match item.terminal_state.as_deref() {
-        Some(state) if state.eq_ignore_ascii_case("COMPLETED") => "completed",
-        Some(state)
-            if state.eq_ignore_ascii_case("CANCELED")
-                || state.eq_ignore_ascii_case("CANCELLED") =>
-        {
-            "canceled"
-        }
-        Some(_) => "failed",
-        None => "completed",
-    }
+fn str_width(value: &str) -> usize {
+    value.chars().count()
 }
 
 #[cfg(test)]
@@ -354,43 +262,11 @@ mod tests {
     }
 
     #[test]
-    fn cluster_host_string_handles_hostname_ip_none() {
-        let hostname = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
-            "node".to_string(),
-        )));
-        let ip = sample_cluster(Some(proto::list_clusters_unit_response::Host::Ipaddr(
-            "10.0.0.1".to_string(),
-        )));
-        let none = sample_cluster(None);
-
-        assert_eq!(cluster_host_string(&hostname), "node");
-        assert_eq!(cluster_host_string(&ip), "10.0.0.1");
-        assert_eq!(cluster_host_string(&none), "<unknown>");
-    }
-
-    #[test]
     fn cluster_ssh_string_includes_username_host_port() {
         let cluster = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
             "node".to_string(),
         )));
         assert_eq!(cluster_ssh_string(&cluster), "alice@node:22");
-    }
-
-    #[test]
-    fn job_status_reports_running_and_terminal_states() {
-        let running = sample_job(false, None, None);
-        let queued = sample_job(false, None, Some("PENDING"));
-        let completed = sample_job(true, Some("COMPLETED"), None);
-        let failed = sample_job(true, Some("FAILED"), None);
-        let canceled = sample_job(true, Some("CANCELED"), None);
-        let completed_unknown = sample_job(true, None, None);
-
-        assert_eq!(job_status(&running), "running");
-        assert_eq!(job_status(&queued), "queued");
-        assert_eq!(job_status(&completed), "completed");
-        assert_eq!(job_status(&failed), "failed");
-        assert_eq!(job_status(&canceled), "canceled");
-        assert_eq!(job_status(&completed_unknown), "completed");
     }
 
     #[test]
@@ -414,16 +290,5 @@ mod tests {
         assert!(output.contains("job id"));
         assert!(output.contains("cluster-a"));
         assert!(output.contains("completed"));
-    }
-
-    #[test]
-    fn cluster_to_json_includes_status_fields() {
-        let cluster = sample_cluster(Some(proto::list_clusters_unit_response::Host::Hostname(
-            "node".to_string(),
-        )));
-        let json = cluster_to_json(&cluster);
-        assert_eq!(json["status"], "connected");
-        assert_eq!(json["name"], "cluster-a");
-        assert_eq!(json["address"], "node");
     }
 }

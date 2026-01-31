@@ -3,7 +3,6 @@
 
 use clap::{Args, Parser, Subcommand};
 use clap_complete::Shell;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -44,20 +43,6 @@ pub struct CompletionsArgs {
     pub shell: Shell,
 }
 
-#[derive(clap::ValueEnum, Clone, Default, Debug, Serialize, Deserialize)]
-pub enum WLM {
-    #[default]
-    Slurm,
-}
-
-impl ToString for WLM {
-    fn to_string(&self) -> String {
-        match self {
-            Self::Slurm => "slurm".to_owned(),
-        }
-    }
-}
-
 #[derive(Args, Debug)]
 pub struct JobArgs {
     #[command(subcommand)]
@@ -90,8 +75,6 @@ pub struct JobGetArgs {
     pub job_id: i64,
     #[arg(long)]
     pub cluster: Option<String>,
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -131,8 +114,6 @@ pub struct JobCleanupArgs {
 pub struct ListJobsArgs {
     #[arg(long)]
     pub cluster: Option<String>,
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -163,8 +144,6 @@ pub struct JobLsArgs {
 
 #[derive(Args, Debug)]
 pub struct ListClustersArgs {
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -192,8 +171,6 @@ pub enum ClusterCmd {
 #[derive(Args, Debug)]
 pub struct ClusterGetArgs {
     pub name: String,
-    #[arg(long, help = "Output JSON (implied by --non-interactive).")]
-    pub json: bool,
 }
 
 #[derive(Args, Debug)]

@@ -1,0 +1,908 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Alex Sizykh
+
+mod submit_errors;
+
+use std::future::Future;
+use std::path::{Component, Path, PathBuf};
+
+use tokio::sync::mpsc;
+use tokio::time::{Duration, timeout};
+use tokio_stream::StreamExt;
+use tokio_stream::wrappers::ReceiverStream;
+use tonic::{Request, Status, Code};
+
+use crate::app::commands::{StreamCapture, SubmitCapture};
+use crate::app::errors::{
+    describe_error_code, format_server_error, AppError, AppResult, ErrorType,
+};
+use crate::app::ports::{InteractionPort, OrbitdPort, StreamOutputPort};
+use submit_errors::parse_remote_path_failure;
+use proto::agent_client::AgentClient;
+use proto::{
+    AddClusterInit, AddClusterRequest, CancelJobRequest, CancelJobRequestInit, CleanupJobRequest,
+    CleanupJobRequestInit, DeleteClusterRequest, JobLogsRequest, JobLogsRequestInit,
+    ListClustersRequest, ListJobsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
+    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit,
+    SetClusterRequest, SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
+    resolve_home_dir_request,
+    resolve_home_dir_request_init, set_cluster_request, stream_event, submit_stream_event,
+};
+
+pub struct GrpcOrbitdPort {
+    endpoint: String,
+}
+
+impl GrpcOrbitdPort {
+    pub fn new(endpoint: String) -> Self {
+        Self { endpoint }
+    }
+
+    async fn connect(&self) -> AppResult<AgentClient<tonic::transport::Channel>> {
+        AgentClient::connect(self.endpoint.clone())
+            .await
+            .map_err(|_| AppError::daemon_unavailable(daemon_unavailable_message(&self.endpoint)))
+    }
+}
+
+#[tonic::async_trait]
+impl OrbitdPort for GrpcOrbitdPort {
+    async fn ping(&self) -> AppResult<()> {
+        let mut client = self.connect().await?;
+        let ping_request = proto::PingRequest {
+            message: "ping".into(),
+        };
+        let response = match timeout(Duration::from_secs(1), client.ping(ping_request)).await {
+            Ok(res) => res.map_err(app_error_from_status)?,
+            Err(elapsed) => {
+                return Err(AppError::network_error(format!(
+                    "Cancelled request after {elapsed} seconds"
+                )))
+            }
+        };
+        let message = response.get_ref().to_owned().message;
+        match message.as_str() {
+            "pong" => Ok(()),
+            v => Err(AppError::remote_error(format!(
+                "invalid response from server: expected 'pong', got '{v}'"
+            ))),
+        }
+    }
+
+    async fn list_clusters(&self, filter: &str) -> AppResult<Vec<proto::ListClustersUnitResponse>> {
+        let mut client = self.connect().await?;
+        let list_clusters_request = ListClustersRequest {
+            filter: filter.to_string(),
+        };
+        let response = match timeout(
+            Duration::from_secs(5),
+            client.list_clusters(list_clusters_request),
+        )
+        .await
+        {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => {
+                return Err(AppError::network_error(format!(
+                    "operation timed out: {e}"
+                )))
+            }
+        };
+        Ok(response.clusters)
+    }
+
+    async fn list_jobs(&self, cluster: Option<String>) -> AppResult<Vec<proto::ListJobsUnitResponse>> {
+        let mut client = self.connect().await?;
+        let list_jobs_request = ListJobsRequest { name: cluster };
+        let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request))
+            .await
+        {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => {
+                return Err(AppError::network_error(format!(
+                    "operation timed out: {e}"
+                )))
+            }
+        };
+        Ok(response.jobs)
+    }
+
+    async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
+        let mut client = self.connect().await?;
+        let delete_request = DeleteClusterRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(
+            Duration::from_secs(5),
+            client.delete_cluster(delete_request),
+        )
+        .await
+        {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => {
+                return Err(AppError::network_error(format!(
+                    "operation timed out: {e}"
+                )))
+            }
+        };
+        Ok(response.deleted)
+    }
+
+    async fn ls(
+        &self,
+        name: String,
+        job_id: Option<i64>,
+        path: Option<String>,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<LsRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(LsRequest {
+                msg: Some(proto::ls_request::Msg::Init(LsRequestInit {
+                    name,
+                    path,
+                    job_id,
+                })),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send ls init"))?;
+
+        let response = client
+            .ls(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(LsRequest {
+                            msg: Some(proto::ls_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            |_| 1,
+        )
+        .await
+    }
+
+    async fn job_logs(
+        &self,
+        job_id: i64,
+        stderr: bool,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<JobLogsRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(JobLogsRequest {
+                msg: Some(proto::job_logs_request::Msg::Init(JobLogsRequestInit {
+                    job_id,
+                    stderr,
+                })),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send logs init"))?;
+
+        let response = client
+            .job_logs(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(JobLogsRequest {
+                            msg: Some(proto::job_logs_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            job_logs_error_exit_code,
+        )
+        .await
+    }
+
+    async fn job_cancel(
+        &self,
+        job_id: i64,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<CancelJobRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(CancelJobRequest {
+                msg: Some(proto::cancel_job_request::Msg::Init(CancelJobRequestInit {
+                    job_id,
+                })),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send cancel init"))?;
+
+        let response = client
+            .cancel_job(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(CancelJobRequest {
+                            msg: Some(proto::cancel_job_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            |_| 1,
+        )
+        .await
+    }
+
+    async fn job_cleanup(
+        &self,
+        job_id: i64,
+        force: bool,
+        full: bool,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<CleanupJobRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(CleanupJobRequest {
+                msg: Some(proto::cleanup_job_request::Msg::Init(CleanupJobRequestInit {
+                    job_id,
+                    force,
+                    full,
+                })),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send cleanup init"))?;
+
+        let response = client
+            .cleanup_job(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(CleanupJobRequest {
+                            msg: Some(proto::cleanup_job_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            |_| 1,
+        )
+        .await
+    }
+
+    async fn job_retrieve(
+        &self,
+        job_id: i64,
+        path: String,
+        output: Option<PathBuf>,
+        overwrite: bool,
+        force: bool,
+        output_port: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<(PathBuf, StreamCapture)> {
+        let mut client = self.connect().await?;
+        let mut local_base = match output {
+            Some(v) => v,
+            None => std::env::current_dir()
+                .map_err(|err| AppError::local_error(err.to_string()))?,
+        };
+        if !local_base.is_absolute() {
+            local_base = std::env::current_dir()
+                .map_err(|err| AppError::local_error(err.to_string()))?
+                .join(local_base);
+        }
+        let local_path = local_base.to_string_lossy().into_owned();
+        let local_target = resolve_retrieve_local_target(&path, &local_base);
+
+        let (tx_ans, rx_ans) = mpsc::channel::<RetrieveJobRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(RetrieveJobRequest {
+                msg: Some(proto::retrieve_job_request::Msg::Init(
+                    RetrieveJobRequestInit {
+                        job_id,
+                        path: path.clone(),
+                        local_path: Some(local_path),
+                        overwrite,
+                        force,
+                    },
+                )),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send retrieve init"))?;
+
+        let response = client
+            .retrieve_job(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        let capture = handle_stream(
+            inbound,
+            output_port,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(RetrieveJobRequest {
+                            msg: Some(proto::retrieve_job_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            job_retrieve_error_exit_code,
+        )
+        .await?;
+        Ok((local_target, capture))
+    }
+
+    async fn submit(
+        &self,
+        name: String,
+        local_path: String,
+        remote_path: Option<String>,
+        new_directory: bool,
+        force: bool,
+        sbatchscript: String,
+        filters: Vec<SubmitPathFilterRule>,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<SubmitCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<SubmitRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(SubmitRequest {
+                msg: Some(proto::submit_request::Msg::Init(
+                    proto::SubmitRequestInit {
+                        local_path,
+                        remote_path,
+                        name,
+                        sbatchscript,
+                        filters,
+                        new_directory,
+                        force,
+                    },
+                )),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send submit init"))?;
+
+        let response = match client.submit(Request::new(outbound)).await {
+            Ok(response) => response,
+            Err(status) => {
+                let message = format_status_error(&status);
+                let failure = parse_remote_path_failure(status.message())
+                    .map(|failure| (failure.remote_path.to_string(), failure.reason));
+                let mut err = app_error_from_status(status);
+                err.message = match failure {
+                    Some((remote_path, reason)) => {
+                        format!("{message}\nRemote path: {remote_path} - {reason}")
+                    }
+                    None => message,
+                };
+                return Err(err);
+            }
+        };
+        let inbound = response.into_inner();
+        handle_submit_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(SubmitRequest {
+                            msg: Some(proto::submit_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+        )
+        .await
+    }
+
+    async fn add_cluster(
+        &self,
+        name: String,
+        username: String,
+        hostname: Option<String>,
+        ip: Option<String>,
+        identity_path: Option<String>,
+        port: u32,
+        default_base_path: Option<String>,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<AddClusterRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        let host: add_cluster_init::Host = match hostname {
+            Some(v) => add_cluster_init::Host::Hostname(v),
+            None => match ip {
+                Some(v) => add_cluster_init::Host::Ipaddr(v),
+                None => return Err(AppError::invalid_argument("both hostname and ip address can't be none")),
+            },
+        };
+        let identity_path_expanded = match identity_path {
+            Some(value) => Some(
+                shellexpand::full(&value)
+                    .map_err(|err| AppError::local_error(err.to_string()))?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        let init = AddClusterInit {
+            name,
+            username,
+            host: Some(host),
+            identity_path: identity_path_expanded,
+            port,
+            default_base_path,
+        };
+        let acr = AddClusterRequest {
+            msg: Some(add_cluster_request::Msg::Init(init)),
+        };
+        tx_ans
+            .send(acr)
+            .await
+            .map_err(|_| AppError::internal_error("failed to send add cluster init"))?;
+        let response = client
+            .add_cluster(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(AddClusterRequest {
+                            msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            |_| 1,
+        )
+        .await
+    }
+
+    async fn set_cluster(
+        &self,
+        name: String,
+        host: Option<String>,
+        username: Option<String>,
+        identity_path: Option<String>,
+        port: Option<u32>,
+        default_base_path: Option<String>,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<SetClusterRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        let identity_path_expanded = match identity_path {
+            Some(value) => Some(
+                shellexpand::full(&value)
+                    .map_err(|err| AppError::local_error(err.to_string()))?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        let init = SetClusterInit {
+            name,
+            host,
+            username,
+            port,
+            identity_path: identity_path_expanded,
+            default_base_path,
+        };
+        let scr = SetClusterRequest {
+            msg: Some(set_cluster_request::Msg::Init(init)),
+        };
+        tx_ans
+            .send(scr)
+            .await
+            .map_err(|_| AppError::internal_error("failed to send set cluster init"))?;
+        let response = client
+            .set_cluster(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_stream(
+            inbound,
+            output,
+            interaction,
+            move |answers| {
+                let tx_ans = tx_ans.clone();
+                async move {
+                    tx_ans
+                        .send(SetClusterRequest {
+                            msg: Some(proto::set_cluster_request::Msg::Mfa(answers)),
+                        })
+                        .await
+                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                }
+            },
+            |_| 1,
+        )
+        .await
+    }
+
+    async fn resolve_home_dir(
+        &self,
+        name: Option<String>,
+        username: String,
+        hostname: Option<String>,
+        ip: Option<String>,
+        identity_path: Option<String>,
+        port: u32,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<String> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<ResolveHomeDirRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        let host: resolve_home_dir_request_init::Host = match hostname {
+            Some(v) => resolve_home_dir_request_init::Host::Hostname(v),
+            None => match ip {
+                Some(v) => resolve_home_dir_request_init::Host::Ipaddr(v),
+                None => return Err(AppError::invalid_argument("both hostname and ip address can't be none")),
+            },
+        };
+        let identity_path_expanded = match identity_path {
+            Some(value) => Some(
+                shellexpand::full(&value)
+                    .map_err(|err| AppError::local_error(err.to_string()))?
+                    .to_string(),
+            ),
+            None => None,
+        };
+        let init = ResolveHomeDirRequestInit {
+            username,
+            host: Some(host),
+            identity_path: identity_path_expanded,
+            port,
+            name,
+        };
+        let req = ResolveHomeDirRequest {
+            msg: Some(resolve_home_dir_request::Msg::Init(init)),
+        };
+        tx_ans
+            .send(req)
+            .await
+            .map_err(|_| AppError::internal_error("failed to send resolve home init"))?;
+        let response = client
+            .resolve_home_dir(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let mut inbound = response.into_inner();
+        let tx_mfa = tx_ans.clone();
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+        let mut exit_code = None;
+        let mut mfa_lines = 0usize;
+        let mut saw_mfa = false;
+        while let Some(item) = inbound.next().await {
+            match item {
+                Ok(event) => match event.event {
+                    Some(stream_event::Event::Stdout(bytes)) => {
+                        stdout.extend_from_slice(&bytes);
+                    }
+                    Some(stream_event::Event::Stderr(bytes)) => {
+                        stderr.extend_from_slice(&bytes);
+                    }
+                    Some(stream_event::Event::ExitCode(code)) => {
+                        exit_code = Some(code);
+                        break;
+                    }
+                    Some(stream_event::Event::Mfa(mfa)) => {
+                        saw_mfa = true;
+                        let (answers, lines) = interaction.prompt_mfa_transient(&mfa).await?;
+                        mfa_lines = mfa_lines.saturating_add(lines);
+                        tx_mfa
+                            .send(ResolveHomeDirRequest {
+                                msg: Some(resolve_home_dir_request::Msg::Mfa(answers)),
+                            })
+                            .await
+                            .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))?;
+                    }
+                    Some(stream_event::Event::Error(err)) => {
+                        return Err(AppError::remote_error(format_server_error(&err)));
+                    }
+                    None => {}
+                },
+                Err(status) => {
+                    return Err(app_error_from_status(status));
+                }
+            }
+        }
+
+        if exit_code != Some(0) {
+            let detail = if stderr.is_empty() {
+                "unknown error".to_string()
+            } else {
+                String::from_utf8_lossy(&stderr).to_string()
+            };
+            return Err(AppError::remote_error(format!(
+                "failed to resolve remote home directory: {}",
+                format_server_error(detail.trim())
+            )));
+        }
+
+        if saw_mfa && mfa_lines > 0 {
+            interaction.clear_transient(mfa_lines).await?;
+        }
+
+        let home_raw = String::from_utf8(stdout)
+            .map_err(|e| AppError::local_error(format!("invalid UTF-8: {e}")))?;
+        let home = home_raw.trim();
+        if home.is_empty() {
+            return Err(AppError::remote_error("remote home directory is empty"));
+        }
+        Ok(home.to_string())
+    }
+}
+
+fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
+    format!(
+        "Could not contact the orbitd server at {daemon_endpoint}. Is it running?"
+    )
+}
+
+fn format_status_error(status: &Status) -> String {
+    let message = status.message();
+    if let Some(message) = describe_error_code(message) {
+        return message.to_string();
+    }
+    if !message.is_empty() {
+        return message.to_string();
+    }
+    match status.code() {
+        Code::Cancelled => describe_error_code("canceled")
+            .unwrap_or("Canceled.")
+            .to_string(),
+        Code::Unauthenticated => describe_error_code("authentication_failure")
+            .unwrap_or("Authentication failed.")
+            .to_string(),
+        Code::PermissionDenied => describe_error_code("permission_denied")
+            .unwrap_or("Permission denied.")
+            .to_string(),
+        Code::Unavailable => describe_error_code("network_error")
+            .unwrap_or("Network error.")
+            .to_string(),
+        _ => "Server error.".to_string(),
+    }
+}
+
+fn app_error_from_status(status: Status) -> AppError {
+    let message = format_status_error(&status);
+    let kind = match status.code() {
+        Code::InvalidArgument => ErrorType::InvalidArgument,
+        Code::PermissionDenied | Code::Unauthenticated => ErrorType::PermissionDenied,
+        Code::AlreadyExists => ErrorType::Conflict,
+        Code::Unavailable => ErrorType::NetworkError,
+        _ => ErrorType::RemoteError,
+    };
+    AppError::new(kind, message)
+}
+
+async fn handle_stream<S, F, Fut>(
+    mut inbound: S,
+    output: &mut dyn StreamOutputPort,
+    interaction: &dyn InteractionPort,
+    mut send_mfa: F,
+    map_error_code: fn(&str) -> i32,
+) -> AppResult<StreamCapture>
+where
+    S: tokio_stream::Stream<Item = Result<proto::StreamEvent, Status>> + Unpin,
+    F: FnMut(proto::MfaAnswer) -> Fut,
+    Fut: Future<Output = AppResult<()>>,
+{
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(proto::StreamEvent { event: Some(ev) }) => match ev {
+                stream_event::Event::Stdout(bytes) => {
+                    output.on_stdout(&bytes).await?;
+                }
+                stream_event::Event::Stderr(bytes) => {
+                    output.on_stderr(&bytes).await?;
+                }
+                stream_event::Event::ExitCode(code) => {
+                    output.on_exit_code(code).await?;
+                    break;
+                }
+                stream_event::Event::Mfa(mfa) => {
+                    let answers = interaction.prompt_mfa(&mfa).await?;
+                    send_mfa(answers).await?;
+                }
+                stream_event::Event::Error(err) => {
+                    output.on_error(&err).await?;
+                    output.on_exit_code(map_error_code(&err)).await?;
+                    break;
+                }
+            },
+            Ok(proto::StreamEvent { event: None }) => {}
+            Err(status) => {
+                let message = format_status_error(&status);
+                output.on_stderr(message.as_bytes()).await?;
+                output.on_exit_code(1).await?;
+                break;
+            }
+        }
+    }
+
+    Ok(output.take_stream_capture())
+}
+
+async fn handle_submit_stream<S, F, Fut>(
+    mut inbound: S,
+    output: &mut dyn StreamOutputPort,
+    interaction: &dyn InteractionPort,
+    mut send_mfa: F,
+) -> AppResult<SubmitCapture>
+where
+    S: tokio_stream::Stream<Item = Result<proto::SubmitStreamEvent, Status>> + Unpin,
+    F: FnMut(proto::MfaAnswer) -> Fut,
+    Fut: Future<Output = AppResult<()>>,
+{
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(proto::SubmitStreamEvent { event: Some(ev) }) => match ev {
+                submit_stream_event::Event::Stdout(bytes) => {
+                    output.on_stdout(&bytes).await?;
+                }
+                submit_stream_event::Event::Stderr(bytes) => {
+                    output.on_stderr(&bytes).await?;
+                }
+                submit_stream_event::Event::ExitCode(code) => {
+                    output.on_exit_code(code).await?;
+                    break;
+                }
+                submit_stream_event::Event::Mfa(mfa) => {
+                    let answers = interaction.prompt_mfa(&mfa).await?;
+                    send_mfa(answers).await?;
+                }
+                submit_stream_event::Event::Error(err) => {
+                    output.on_error(&err).await?;
+                    output.on_exit_code(1).await?;
+                    break;
+                }
+                submit_stream_event::Event::SubmitStatus(status) => {
+                    output.on_submit_status(&status).await?;
+                }
+                submit_stream_event::Event::SubmitResult(result) => {
+                    output.on_submit_result(&result).await?;
+                    break;
+                }
+            },
+            Ok(proto::SubmitStreamEvent { event: None }) => {}
+            Err(status) => {
+                let message = format_status_error(&status);
+                output.on_stderr(message.as_bytes()).await?;
+                output.on_exit_code(1).await?;
+                break;
+            }
+        }
+    }
+
+    Ok(output.take_submit_capture())
+}
+
+fn job_logs_error_exit_code(err: &str) -> i32 {
+    match err {
+        "invalid_argument" => 2,
+        "not_found" => 3,
+        _ => 1,
+    }
+}
+
+fn job_retrieve_error_exit_code(err: &str) -> i32 {
+    match err {
+        "invalid_argument" => 2,
+        "not_found" => 3,
+        "conflict" => 4,
+        _ => 1,
+    }
+}
+
+fn normalize_path(p: impl AsRef<Path>) -> PathBuf {
+    let mut out = PathBuf::new();
+    let p = p.as_ref();
+    let mut comps = p.components().peekable();
+    while let Some(c) = comps.peek() {
+        match c {
+            Component::Prefix(prefix) => {
+                out.push(Path::new(prefix.as_os_str()));
+                comps.next();
+            }
+            Component::RootDir => {
+                out.push(Path::new(std::path::MAIN_SEPARATOR_STR));
+                comps.next();
+            }
+            _ => break,
+        }
+    }
+
+    for comp in comps {
+        match comp {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                let popped = out.pop();
+                if !popped || out.as_os_str().is_empty() {
+                    out.push("..");
+                }
+            }
+            Component::Normal(seg) => {
+                out.push(seg);
+            }
+            Component::Prefix(_) | Component::RootDir => {}
+        }
+    }
+
+    out
+}
+
+fn resolve_retrieve_local_target(path: &str, local_base: &Path) -> PathBuf {
+    if Path::new(path).is_absolute() {
+        let normalized = normalize_path(Path::new(path));
+        match normalized.file_name() {
+            Some(name) => local_base.join(name),
+            None => local_base.to_path_buf(),
+        }
+    } else {
+        match Path::new(path).file_name() {
+            Some(name) => local_base.join(name),
+            None => local_base.to_path_buf(),
+        }
+    }
+}
