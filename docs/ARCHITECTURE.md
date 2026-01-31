@@ -13,8 +13,9 @@ This workspace has three crates:
   (e.g., gRPC, terminal UI, JSON output, filesystem).
 - Command: a request object representing a single user intent, suffixed with `Command`
   (e.g., `SubmitJobCommand`, `AddClusterCommand`).
-- Handler / Use case: the application logic that executes a command via ports,
+- Handler / Use case: the application logic that executes a command via ports and services. Handlers are
   named with `handle_*` functions in `app/handlers`.
+- Services: various data handling helpers. These should become adapters once the appropriate ports for them are established.
 - Dispatcher: the router that maps a `Command` request to its handler.
 - OutputPort: transforms command result data into user-facing output (tables, JSON).
 - StreamOutput: a stream of output events (stdout/stderr/progress/exit) from long-running operations; 
@@ -69,7 +70,7 @@ Ports live in `app/ports`, adapters in `adapters/`:
 - `ConfigPort` -> `adapters/config::ConfigAdapter` (reads `orbit.toml`).
 - `NetworkPort` -> `adapters/network::StdNetwork` (reachability checks).
 
-## Streaming + MFA
+## Streaming and MFA
 - Streaming RPCs (`submit`, `logs`, `ls`, `cleanup`, `retrieve`, etc.) are handled in
   `adapters/grpc`, which forwards stdout/stderr/status events to `StreamOutputPort`.
 - MFA prompts are routed through `InteractionPort`, so the same handler works for
@@ -96,28 +97,6 @@ Ports live in `app/ports`, adapters in `adapters/`:
 - `validate_cluster_live` performs a reachability check and a lightweight `ls` RPC
   to confirm connectivity before submit.
 
-## Module layout
-```
-orbit/src/
-  main.rs
-  lib.rs
-  app/
-    mod.rs
-    dispatcher.rs
-    commands/
-    handlers/
-    services/
-    ports/
-    errors.rs
-  adapters/
-    cli/
-    grpc/
-    terminal/
-    json/
-    fs/
-    config/
-    network/
-```
 
 # `orbitd` architecture
 TODO: explain in more detail
