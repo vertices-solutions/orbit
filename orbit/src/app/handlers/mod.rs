@@ -10,7 +10,7 @@ use crate::app::errors::{
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
-    default_base_path_from_home, validate_default_base_path, AddClusterResolver, PathResolver,
+    default_base_path_from_home, local_validate_default_base_path, AddClusterResolver, PathResolver,
     SbatchSelector,
 };
 use crate::app::AppContext;
@@ -387,7 +387,7 @@ pub async fn handle_cluster_add(
 
     let mut needs_base_path_prompt = resolved.default_base_path.is_none();
     if let Some(ref value) = resolved.default_base_path {
-        if let Err(err) = validate_default_base_path(value) {
+        if let Err(err) = local_validate_default_base_path(value) {
             if !ctx.ui_mode.is_interactive() {
                 return Err(err);
             }
@@ -424,7 +424,7 @@ pub async fn handle_cluster_add(
                     &default_path,
                 )
                 .await?;
-            match validate_default_base_path(&base_path) {
+            match local_validate_default_base_path(&base_path) {
                 Ok(()) => {
                     resolved.default_base_path = Some(base_path);
                     break;
