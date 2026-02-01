@@ -5,10 +5,10 @@ edition = "2024"
 license = "AGPL-3.0-only"
 
 [dependencies]
+prost.workspace = true
 tonic = { workspace = true }
-prost = { workspace = true }
-prost-types = { workspace = true }
-tonic-prost = { workspace = true }
+tonic-build.workspace = true
+tonic-prost.workspace = true
 
 [build-dependencies]
 tonic-build = { workspace = true }

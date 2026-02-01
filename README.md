@@ -34,8 +34,7 @@
 
 
 > [!CAUTION]
-> `orbit` is in alpha stage. 
-> It is quickly growing and maturating week after week: we have both unit test coverage and fairly extensive end-to-end tests providing strong guarantees of its performance. However, every once in a while we do find it misbehaving on some edge cases and/or rare Slurm deployment configurations. 
+> `orbit` is in beta stage. Problems with it are now rare, but not impossible.
 > If you also encounter any bugs, problems or undesired behaviors in `orbit` - please, go ahead and report them in issues.
 > See the "Getting help" section for more details.
 
@@ -43,11 +42,7 @@
 `orbit` provides a local-first interface to Slurm over SSH.
 
 
-It aims to provide you with a single-command job submission over ssh:
-[![asciicast](https://asciinema.org/a/UZn9Aj4FxCrdLe8h.svg)](https://asciinema.org/a/UZn9Aj4FxCrdLe8h)
-
-
-## Motivation
+## Why Orbit?
 Can supercomputing feel like using a local Python or R interpreter?
 
 On most Slurm clusters, the development loop is remote-first: SSH in, juggle environments, submit jobs, wait, read logs, repeat. That’s friction you don’t need when you’re trying to do research.
@@ -58,6 +53,12 @@ On most Slurm clusters, the development loop is remote-first: SSH in, juggle env
 - Automate common workflows;
 - Keep your code in a local git repo as the single source of truth;
 - Integrate with your existing tools (neovim, VS Code, or literally anything else - it's local!).
+
+## Demo
+
+
+`orbit` aims to provide you with a single-command job submission over ssh:
+[![asciicast](https://asciinema.org/a/UZn9Aj4FxCrdLe8h.svg)](https://asciinema.org/a/UZn9Aj4FxCrdLe8h)
 
 
 ## Introduction
@@ -118,7 +119,8 @@ This installs both `orbit` (CLI) and `orbitd` (daemon). `brew services` runs the
 
 ## Shell completions
 
-`orbit` can generate completions for bash and zsh:
+`orbit` can generate completions for bash and zsh.
+If you are installing those through Homebrew - you don't need to worry about that.
 
 ```bash
 orbit completions bash > completions/orbit.bash
@@ -174,18 +176,24 @@ cargo run -p orbit -- --help
 ```
 ### Project Structure
 
-- `orbit/` — command-line client (binary: `orbit`).
-- `orbitd/` — daemon/server implementation (binary: `orbitd`).
-- `proto/` — shared gRPC/protobuf contract and generated types.
-  - `proto/protos/` — `.proto` sources.
-  - `proto/build.rs` — code generation entrypoint.
-- `scripts` - development scripts.
-- `tests` - end-to-end tests for orbit.
-- `docs` - where documentation and documenting assets for this project go
+Project structure is described in detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
+### Release policy
+Releases are handled by @lubitelpospat. Before a tag is released, code is tested by unit-tests and end-to-end; 
+this is automated in [Justfile](Justfile).
+
+### Version policy
+This project uses [Semantic versioning](https://semver.org).
+In short:
+- Patch version is incremented if only backward compatible bug fixes were introduced;
+- Minor version is incremented if new, backward compatible functionality is introduced to the public API;
+- Major version is incremented if changes incompatible with the previous version are introduced;
+- Before the first major release (1.0.0), changes breaking the interface might happen between minor versions: public API is considered unstable;
+- Both CLI interface and gRPC interface are considered to be public-facing.
 ## Compatibility
 `orbit` has been tested on clusters with Slurm versions newer than 22.05.8. 
 User reports have shown that earlier versions of Slurm are also compatible. If you encounter any bugs on any Slurm version - report them through Issues and make sure to include Slurm version in your report.
+
 
 ## Getting help 
 Do you have any questions or have you encountered any bugs? Please open a GitHub issue — happy to help.

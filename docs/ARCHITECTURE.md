@@ -103,6 +103,9 @@ Ports live in `app/ports`, adapters in `adapters/`:
 application core only depends on ports, while adapters handle input (gRPC) and output(SSH and
 SQLite).
 
+TODO: Workload manager is not perfectly isolated. Interface compatible with all major HPC managers
+should be established and defined as port.
+
 ## Entry points and lifecycle
 - `orbitd/src/main.rs` is the entrypoint. It loads config, initializes adapters,
   constructs `app::usecases::UseCases`, and starts the tonic gRPC server.

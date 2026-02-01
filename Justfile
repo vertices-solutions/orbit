@@ -27,3 +27,9 @@ coverage:
 
 release:
 	@./scripts/release.sh
+clippy:
+	@cargo clippy
+audit:
+	@cargo audit
+depcheck:
+	@cargo deny check licenses
