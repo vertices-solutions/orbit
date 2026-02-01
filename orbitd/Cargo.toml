@@ -14,6 +14,7 @@ prost = { workspace = true }
 tonic-types = { workspace = true }
 proto = { path = "../proto" }
 anyhow = "1.0.99"
+async-trait = "0.1.89"
 tokio-stream = "0.1.17"
 clap = { version = "4.5.46", features = ["derive"] }
 log = "0.4.27"

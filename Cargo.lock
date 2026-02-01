@@ -2308,6 +2308,7 @@ name = "orbitd"
 version = "0.11.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "blake2",
  "blake3",
  "chrono",

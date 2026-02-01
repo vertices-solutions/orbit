@@ -1,90 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use clap::{CommandFactory, FromArgMatches, Parser};
 use log::LevelFilter;
 use proto::agent_server::AgentServer;
-use std::{
-    net::{Ipv4Addr, SocketAddr},
-    path::PathBuf,
-};
+use std::net::{Ipv4Addr, SocketAddr};
 use tokio::time::Duration;
 use tonic::transport::Server;
 
-mod agent;
+mod adapters;
+mod app;
 mod config;
-mod ssh;
-mod state;
-mod util;
-
-#[derive(Parser)]
-#[command(
-    name = "orbitd",
-    version,
-    about,
-    long_about = None,
-    after_help = "orbitd server\n\
-\n\
-Configuration precedence: defaults < config file < command-line flags.\n\
-If --config is omitted, orbitd tries the default config file location; missing default config is OK.\n\
-Paths in the config file are resolved relative to the config file directory; paths passed as flags are resolved relative to the current working directory."
-)]
-struct Opts {
-    #[arg(
-        short,
-        long,
-        value_name = "PATH",
-        help = "Path to a TOML config file. When omitted, orbitd uses the default config file location if available."
-    )]
-    config: Option<PathBuf>,
-    #[arg(
-        long,
-        value_name = "PATH",
-        help = "Path to the SQLite database file. Overrides `database_path` from the config file."
-    )]
-    database_path: Option<PathBuf>,
-    #[arg(
-        long,
-        value_name = "SECS",
-        help = "How often to check remote job states. Overrides `job_check_interval_secs` from the config file."
-    )]
-    job_check_interval_secs: Option<u64>,
-    #[arg(
-        short,
-        long,
-        action = clap::ArgAction::SetTrue,
-        help = "Enable debug logging and include logs from dependencies. Overrides `verbose` from the config file."
-    )]
-    verbose: bool,
-    #[arg(
-        long,
-        value_name = "PORT",
-        help = "Port to bind the daemon on. Overrides `port` from the config file."
-    )]
-    port: Option<u16>,
-}
-
-const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
-██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
-██║  ██║██████╔╝██████╔╝██║    ██║
-██║  ██║██╔══██╗██╔══██╗██║    ██║
-╚█████╔╝██║  ██║██████╔╝██║    ██║
- ╚════╝ ╚═╝  ╚═╝╚═════╝ ╚═╝    ╚═╝
-
-{before-help}{about-with-newline}{usage-heading} {usage}
-{after-help}
-
-{all-args}
-"#;
-
-fn apply_help_template_recursively(cmd: &mut clap::Command) {
-    let mut owned = std::mem::take(cmd);
-    owned = owned.help_template(HELP_TEMPLATE);
-    for sub in owned.get_subcommands_mut() {
-        apply_help_template_recursively(sub);
-    }
-    *cmd = owned;
-}
 
 fn init_logging(verbose: bool) {
     let mut builder = env_logger::builder();
@@ -144,15 +69,9 @@ fn log_config_report(report: &config::ConfigReport) {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let mut cmd = Opts::command();
-    apply_help_template_recursively(&mut cmd);
-    let matches = cmd.get_matches();
-    let verbose_override = if matches.get_flag("verbose") {
-        Some(true)
-    } else {
-        None
-    };
-    let opts = Opts::from_arg_matches(&matches).unwrap_or_else(|err| err.exit());
+    let parsed = adapters::cli::parse_opts();
+    let opts = parsed.opts;
+    let verbose_override = parsed.verbose_override;
     let config::LoadResult { config, report } = config::load_with_report(
         opts.config,
         config::Overrides {
@@ -165,11 +84,38 @@ async fn main() -> anyhow::Result<()> {
     init_logging(config.verbose);
     log_config_report(&report);
     config::ensure_database_dir(&config.database_path)?;
-    let db = state::db::HostStore::open(&config.database_path).await?;
+    let db = adapters::db::HostStore::open(&config.database_path).await?;
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
 
-    let svc = agent::AgentSvc::new(db);
-    svc.spawn_job_checker(Duration::from_secs(config.job_check_interval_secs));
+    let store_adapter = adapters::db::SqliteStoreAdapter::new(db);
+    let store = std::sync::Arc::new(store_adapter);
+    let ssh_adapter = std::sync::Arc::new(adapters::ssh::SshAdapter::with_defaults());
+    let local_fs = std::sync::Arc::new(adapters::fs::LocalFilesystem::new());
+    let network = std::sync::Arc::new(adapters::network::NetworkAdapter::new());
+    let clock = std::sync::Arc::new(adapters::time::SystemClock::new());
+
+    let usecases = app::usecases::UseCases::new(
+        store.clone(),
+        store.clone(),
+        ssh_adapter.clone(),
+        ssh_adapter.clone(),
+        local_fs,
+        network,
+        clock,
+    );
+    let checker = usecases.clone();
+    let interval = Duration::from_secs(config.job_check_interval_secs);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            if let Err(err) = checker.check_running_jobs(interval).await {
+                log::warn!("job check failed: {err}");
+            }
+        }
+    });
+
+    let svc = adapters::grpc::GrpcAgent::new(usecases);
     log::info!("server listening on {}", server_addr);
     Server::builder()
         .add_service(AgentServer::new(svc))

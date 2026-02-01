@@ -1,0 +1,2310 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (C) 2026 Alex Sizykh
+
+use std::collections::HashMap;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::time::{Duration as StdDuration, Instant};
+
+use proto::{
+    stream_event, submit_result, submit_status, submit_stream_event, StreamEvent, SubmitResult,
+    SubmitStatus, SubmitStreamEvent,
+};
+use time::format_description::well_known::Rfc3339;
+use time::{Duration as TimeDuration, OffsetDateTime};
+use tokio::sync::{mpsc, watch};
+use tokio::time::{sleep, Duration as TokioDuration};
+
+use crate::app::errors::{codes, AppError, AppErrorKind, AppResult};
+use crate::app::ports::{
+    ClockPort, ClusterStorePort, FileSyncPort, JobStorePort, LocalFilesystemPort, MfaPort,
+    NetworkProbePort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
+};
+use crate::app::services::{
+    managers, os, random, remote_path, sbatch, shell, slurm, submit_paths,
+};
+use crate::app::types::{
+    Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, SshConfig, SyncOptions,
+};
+
+const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
+const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
+
+#[derive(Clone)]
+pub struct UseCases {
+    pub(crate) clusters: std::sync::Arc<dyn ClusterStorePort>,
+    pub(crate) jobs: std::sync::Arc<dyn JobStorePort>,
+    pub(crate) remote_exec: std::sync::Arc<dyn RemoteExecPort>,
+    pub(crate) file_sync: std::sync::Arc<dyn FileSyncPort>,
+    pub(crate) local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
+    pub(crate) network: std::sync::Arc<dyn NetworkProbePort>,
+    pub(crate) clock: std::sync::Arc<dyn ClockPort>,
+}
+
+impl UseCases {
+    pub fn new(
+        clusters: std::sync::Arc<dyn ClusterStorePort>,
+        jobs: std::sync::Arc<dyn JobStorePort>,
+        remote_exec: std::sync::Arc<dyn RemoteExecPort>,
+        file_sync: std::sync::Arc<dyn FileSyncPort>,
+        local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
+        network: std::sync::Arc<dyn NetworkProbePort>,
+        clock: std::sync::Arc<dyn ClockPort>,
+    ) -> Self {
+        Self {
+            clusters,
+            jobs,
+            remote_exec,
+            file_sync,
+            local_fs,
+            network,
+            clock,
+        }
+    }
+
+    pub async fn ping(&self, message: &str) -> AppResult<String> {
+        if message.trim() == "ping" {
+            Ok("pong".to_string())
+        } else {
+            Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ))
+        }
+    }
+
+    pub async fn list_clusters(&self) -> AppResult<Vec<ClusterStatus>> {
+        let hosts = self.clusters.list_hosts(None).await?;
+        let mut out = Vec::with_capacity(hosts.len());
+        for host in hosts {
+            let reachable = match self
+                .network
+                .check_host_reachable(&host.address, host.port)
+                .await
+            {
+                Ok(value) => value,
+                Err(err) => {
+                    log::debug!(
+                        "reachability check failed name={} host={} error={}",
+                        host.name,
+                        format_address(&host.address),
+                        err
+                    );
+                    false
+                }
+            };
+            let connected = if reachable {
+                match self.remote_exec.is_connected(&host.name).await {
+                    Ok(value) => value,
+                    Err(err) => {
+                        log::debug!(
+                            "connectivity check failed name={} host={} error={}",
+                            host.name,
+                            format_address(&host.address),
+                            err
+                        );
+                        false
+                    }
+                }
+            } else {
+                false
+            };
+            out.push(ClusterStatus {
+                host,
+                connected,
+                reachable,
+            });
+        }
+        Ok(out)
+    }
+
+    pub async fn list_jobs(&self, name_filter: Option<&str>) -> AppResult<Vec<JobRecord>> {
+        if let Some(name) = name_filter {
+            let Some(host) = self.clusters.get_by_name(name).await? else {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                ));
+            };
+            self.jobs.list_jobs_for_host(host.id).await
+        } else {
+            self.jobs.list_all_jobs().await
+        }
+    }
+
+    pub async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+        let deleted = self.clusters.delete_by_name(trimmed).await?;
+        if deleted == 0 {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::NOT_FOUND,
+            ));
+        }
+        let _ = self.remote_exec.remove_session(trimmed).await;
+        Ok(true)
+    }
+
+    pub async fn resolve_home_dir(
+        &self,
+        input: ResolveHomeDirInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username,
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        if !stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::Stdout(home.into_bytes())),
+            })
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let _ = stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::ExitCode(0)),
+            })
+            .await;
+        Ok(())
+    }
+
+    pub async fn ls(
+        &self,
+        input: LsInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let (name, list_path) = if let Some(job_id) = input.job_id {
+            let job = match self.jobs.get_job_by_job_id(job_id).await? {
+                Some(v) => v,
+                None => {
+                    return Err(AppError::new(
+                        AppErrorKind::InvalidArgument,
+                        codes::NOT_FOUND,
+                    ))
+                }
+            };
+            if !input.name.is_empty() && input.name != job.name {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                ));
+            }
+            let list_path = match input.path {
+                Some(v) => {
+                    if v.is_empty() {
+                        return Err(AppError::new(
+                            AppErrorKind::InvalidArgument,
+                            codes::INVALID_ARGUMENT,
+                        ));
+                    }
+                    if PathBuf::from(&v).is_absolute() {
+                        remote_path::normalize_path(v).to_string_lossy().into_owned()
+                    } else {
+                        remote_path::resolve_relative(&job.remote_path, v)
+                            .to_string_lossy()
+                            .into_owned()
+                    }
+                }
+                None => remote_path::normalize_path(&job.remote_path)
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            (job.name, list_path)
+        } else {
+            if input.name.is_empty() {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::INVALID_ARGUMENT,
+                ));
+            }
+            let list_path = match input.path {
+                Some(v) => {
+                    if v.is_empty() {
+                        return Err(AppError::new(
+                            AppErrorKind::InvalidArgument,
+                            codes::INVALID_ARGUMENT,
+                        ));
+                    }
+                    if PathBuf::from(&v).is_absolute() {
+                        remote_path::normalize_path(v).to_string_lossy().into_owned()
+                    } else {
+                        let default_base_path = self.get_default_base_path(&input.name).await?;
+                        let base_path = PathBuf::from(default_base_path);
+                        remote_path::resolve_relative(base_path, v)
+                            .to_string_lossy()
+                            .into_owned()
+                    }
+                }
+                None => remote_path::normalize_path(self.get_default_base_path(&input.name).await?)
+                    .to_string_lossy()
+                    .into_owned(),
+            };
+            (input.name, list_path)
+        };
+
+        let command = format!("ls -- {}", shell::sh_escape(&list_path));
+        self.run_command(&name, command, stream, mfa).await
+    }
+
+    pub async fn retrieve_job(
+        &self,
+        input: RetrieveJobInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        if input.path.trim().is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+        let local_path = match input.local_path {
+            Some(v) if !v.trim().is_empty() => v,
+            _ => {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::INVALID_ARGUMENT,
+                ))
+            }
+        };
+
+        let job = match self.jobs.get_job_by_job_id(input.job_id).await? {
+            Some(v) => v,
+            None => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if !job.is_completed && !input.force {
+            let message = format!(
+                "Job {} is not completed; use --force to retrieve anyway.\n",
+                input.job_id
+            );
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::CONFLICT.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        }
+        if !input.force {
+            if let Some(state) = job.terminal_state.as_deref() {
+                if !state.eq_ignore_ascii_case("COMPLETED") {
+                    let message = format!(
+                        "Job {} did not complete successfully; use --force to retrieve anyway.\n",
+                        input.job_id
+                    );
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                        })
+                        .await;
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::CONFLICT.to_string(),
+                            )),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+
+        let config = match self.config_for_host_name(&job.name).await {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(err.code().to_string())),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if let Err(err) = self
+            .remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(err.code().to_string())),
+                })
+                .await;
+            return Ok(());
+        }
+
+        let path_is_absolute = PathBuf::from(&input.path).is_absolute();
+        let remote_path = if path_is_absolute {
+            remote_path::normalize_path(&input.path)
+                .to_string_lossy()
+                .into_owned()
+        } else {
+            remote_path::resolve_relative(&job.remote_path, &input.path)
+                .to_string_lossy()
+                .into_owned()
+        };
+
+        let mut local_base = PathBuf::from(local_path);
+        if !local_base.is_absolute() {
+            match self.local_fs.current_dir().await {
+                Ok(cwd) => local_base = cwd.join(local_base),
+                Err(err) => {
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::LOCAL_ERROR.to_string(),
+                            )),
+                        })
+                        .await;
+                    log::debug!("could not resolve local destination: {err}");
+                    return Ok(());
+                }
+            }
+        }
+
+        let local_target = match resolve_retrieve_local_target(
+            &input.path,
+            &remote_path,
+            &local_base,
+            path_is_absolute,
+        ) {
+            Some(target) => target,
+            None => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::INVALID_ARGUMENT.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        match self
+            .file_sync
+            .retrieve_path(&config, &remote_path, &local_target, input.overwrite)
+            .await
+        {
+            Ok(()) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::ExitCode(0)),
+                    })
+                    .await;
+            }
+            Err(err) if err.code() == codes::NOT_FOUND => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(
+                            b"No such file or directory\n".to_vec(),
+                        )),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+            }
+            Err(err) if err.code() == codes::CONFLICT => {
+                let message = format!("{}; use --overwrite to replace it.\n", err.message());
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::CONFLICT.to_string(),
+                        )),
+                    })
+                    .await;
+            }
+            Err(_) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::REMOTE_ERROR.to_string(),
+                        )),
+                    })
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn job_logs(
+        &self,
+        input: JobLogsInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let job = match self.jobs.get_job_by_job_id(input.job_id).await? {
+            Some(v) => v,
+            None => {
+                let message = format!(
+                    "job {} does not exist; you can list all job with 'orbit job list'\n",
+                    input.job_id
+                );
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        let log_path = if input.stderr {
+            match job.stderr_path.clone() {
+                Some(path) if !path.trim().is_empty() => path,
+                _ => {
+                    let message = format!(
+                        "stderr log file is not configured for job {}\n",
+                        input.job_id
+                    );
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                        })
+                        .await;
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::INVALID_ARGUMENT.to_string(),
+                            )),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            }
+        } else {
+            if job.stdout_path.trim().is_empty() {
+                let message =
+                    format!("stdout log file is not configured for job {}\n", input.job_id);
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+            job.stdout_path.clone()
+        };
+
+        let config = match self.config_for_host_name(&job.name).await {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(err.code().to_string())),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if let Err(err) = self
+            .remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(err.code().to_string())),
+                })
+                .await;
+            return Ok(());
+        }
+
+        let escaped = shell::sh_escape(&log_path);
+        let test_cmd = format!("test -f {}", escaped);
+        match self.remote_exec.exec_capture(&config, &test_cmd).await {
+            Ok(result) if result.exit_code == 0 => {}
+            Ok(_) => {
+                let message = if input.stderr {
+                    format!("specified error file {} wasn't found\n", log_path)
+                } else {
+                    format!("stdout log file does not exist at {}\n", log_path)
+                };
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+            Err(_) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::REMOTE_ERROR.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        }
+
+        let command = format!("cat -- {}", escaped);
+        if let Err(_) = self
+            .remote_exec
+            .exec_stream(&config, &command, stream, mfa)
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::REMOTE_ERROR.to_string(),
+                    )),
+                })
+                .await;
+        }
+        Ok(())
+    }
+
+    pub async fn cancel_job(
+        &self,
+        input: CancelJobInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let job = match self.jobs.get_job_by_job_id(input.job_id).await? {
+            Some(v) => v,
+            None => {
+                let message = format!(
+                    "job {} does not exist; you can list all job with 'orbit job list'\n",
+                    input.job_id
+                );
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if job.is_completed {
+            let message = format!(
+                "job {} is already completed; cancel is not possible\n",
+                input.job_id
+            );
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::CONFLICT.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        }
+
+        let Some(scheduler_id) = job.scheduler_id else {
+            let message = format!(
+                "job {} has no scheduler id; cancel is not possible\n",
+                input.job_id
+            );
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::INTERNAL_ERROR.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        };
+
+        let config = match self.config_for_host_name(&job.name).await {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(err.code().to_string())),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if let Err(err) = self
+            .remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(err.code().to_string())),
+                })
+                .await;
+            return Ok(());
+        }
+
+        let command = format!("scancel {}", shell::sh_escape(&scheduler_id.to_string()));
+        let capture = match self.remote_exec.exec_capture(&config, &command).await {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::REMOTE_ERROR.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if capture.exit_code != 0 {
+            let err_text = String::from_utf8_lossy(&capture.stderr);
+            let detail = if err_text.trim().is_empty() {
+                format!("exit code {}", capture.exit_code)
+            } else {
+                err_text.trim().to_string()
+            };
+            let message = format!("failed to cancel job {}: {}\n", input.job_id, detail);
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::REMOTE_ERROR.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        }
+
+        if let Err(_) = self
+            .jobs
+            .mark_job_completed(input.job_id, Some("CANCELED"))
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::INTERNAL_ERROR.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        }
+
+        let message = format!("Job {} canceled.\n", input.job_id);
+        let _ = stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::Stdout(message.into_bytes())),
+            })
+            .await;
+        let _ = stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::ExitCode(0)),
+            })
+            .await;
+        Ok(())
+    }
+
+    pub async fn cleanup_job(
+        &self,
+        input: CleanupJobInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let job = match self.jobs.get_job_by_job_id(input.job_id).await? {
+            Some(v) => v,
+            None => {
+                let message = format!(
+                    "job {} does not exist; you can list all job with 'orbit job list'\n",
+                    input.job_id
+                );
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::NOT_FOUND.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if is_unsafe_cleanup_path(&job.remote_path) {
+            let message = format!(
+                "job {} has an unsafe remote path '{}' and cannot be cleaned up\n",
+                input.job_id, job.remote_path
+            );
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::INVALID_ARGUMENT.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        }
+
+        if !job.is_completed && !input.force {
+            let message = format!(
+                "job {} is still running; pass --force to cancel and clean up\n",
+                input.job_id
+            );
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::ExitCode(1)),
+                })
+                .await;
+            return Ok(());
+        }
+
+        let config = match self.config_for_host_name(&job.name).await {
+            Ok(value) => value,
+            Err(err) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(err.code().to_string())),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if let Err(err) = self
+            .remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(err.code().to_string())),
+                })
+                .await;
+            return Ok(());
+        }
+
+        if !job.is_completed {
+            let Some(scheduler_id) = job.scheduler_id else {
+                let message = format!(
+                    "job {} has no scheduler id; cleanup is not possible\n",
+                    input.job_id
+                );
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                    })
+                    .await;
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::INTERNAL_ERROR.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            };
+
+            let command = format!("scancel {}", shell::sh_escape(&scheduler_id.to_string()));
+            let capture = match self.remote_exec.exec_capture(&config, &command).await {
+                Ok(v) => v,
+                Err(_) => {
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::REMOTE_ERROR.to_string(),
+                            )),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            };
+
+            if capture.exit_code != 0 {
+                let err_text = String::from_utf8_lossy(&capture.stderr);
+                if !is_invalid_job_id(&err_text) {
+                    let detail = if err_text.trim().is_empty() {
+                        format!("exit code {}", capture.exit_code)
+                    } else {
+                        err_text.trim().to_string()
+                    };
+                    let message =
+                        format!("failed to cancel job {}: {}\n", input.job_id, detail);
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                        })
+                        .await;
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::REMOTE_ERROR.to_string(),
+                            )),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            }
+
+            let start = Instant::now();
+            loop {
+                let command = format!("squeue -j {scheduler_id} -h -o %T");
+                match self.remote_exec.exec_capture(&config, &command).await {
+                    Ok(result) => {
+                        if result.exit_code != 0 {
+                            let err_text = String::from_utf8_lossy(&result.stderr);
+                            if is_invalid_job_id(&err_text) {
+                                break;
+                            }
+                            let message = format!(
+                                "failed while waiting for job {} to cancel: {}\n",
+                                input.job_id,
+                                err_text.trim()
+                            );
+                            let _ = stream
+                                .send(StreamEvent {
+                                    event: Some(stream_event::Event::Stderr(
+                                        message.into_bytes(),
+                                    )),
+                                })
+                                .await;
+                            let _ = stream
+                                .send(StreamEvent {
+                                    event: Some(stream_event::Event::Error(
+                                        codes::REMOTE_ERROR.to_string(),
+                                    )),
+                                })
+                                .await;
+                            return Ok(());
+                        }
+                        let output = String::from_utf8_lossy(&result.stdout);
+                        if let Some(state) = parse_squeue_state(&output) {
+                            if slurm::slurm_state_is_terminal(&state) {
+                                break;
+                            }
+                        } else {
+                            break;
+                        }
+                    }
+                    Err(_) => {
+                        let _ = stream
+                            .send(StreamEvent {
+                                event: Some(stream_event::Event::Error(
+                                    codes::REMOTE_ERROR.to_string(),
+                                )),
+                            })
+                            .await;
+                        return Ok(());
+                    }
+                }
+
+                if start.elapsed() >= CLEANUP_CANCEL_TIMEOUT {
+                    let message =
+                        format!("timed out waiting for job {} to cancel\n", input.job_id);
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                        })
+                        .await;
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::CONFLICT.to_string(),
+                            )),
+                        })
+                        .await;
+                    return Ok(());
+                }
+                sleep(CLEANUP_CANCEL_POLL_INTERVAL).await;
+            }
+
+            if let Err(_) = self
+                .jobs
+                .mark_job_completed(input.job_id, Some("CANCELED"))
+                .await
+            {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::INTERNAL_ERROR.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        }
+
+        let command = format!("rm -rf -- {}", shell::sh_escape(&job.remote_path));
+        let capture = match self.remote_exec.exec_capture(&config, &command).await {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = stream
+                    .send(StreamEvent {
+                        event: Some(stream_event::Event::Error(
+                            codes::REMOTE_ERROR.to_string(),
+                        )),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if capture.exit_code != 0 {
+            let err_text = String::from_utf8_lossy(&capture.stderr);
+            let detail = if err_text.trim().is_empty() {
+                format!("exit code {}", capture.exit_code)
+            } else {
+                err_text.trim().to_string()
+            };
+            let message = format!(
+                "failed to remove remote directory for job {}: {}\n",
+                input.job_id, detail
+            );
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
+                })
+                .await;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::REMOTE_ERROR.to_string(),
+                    )),
+                })
+                .await;
+            return Ok(());
+        }
+
+        if input.full {
+            match self.jobs.delete_job_by_job_id(input.job_id).await {
+                Ok(_) => {}
+                Err(_) => {
+                    let _ = stream
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::Error(
+                                codes::INTERNAL_ERROR.to_string(),
+                            )),
+                        })
+                        .await;
+                    return Ok(());
+                }
+            }
+        }
+
+        let message = if input.full {
+            format!("Job {} cleaned up and deleted.\n", input.job_id)
+        } else {
+            format!("Job {} cleaned up.\n", input.job_id)
+        };
+        let _ = stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::Stdout(message.into_bytes())),
+            })
+            .await;
+        let _ = stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::ExitCode(0)),
+            })
+            .await;
+        Ok(())
+    }
+
+    pub async fn submit(
+        &self,
+        input: SubmitInput,
+        stream: &dyn SubmitStreamOutputPort,
+        mfa: &mut dyn MfaPort,
+        mut cancel_rx: watch::Receiver<bool>,
+    ) -> AppResult<()> {
+        let host = match self.clusters.get_by_name(&input.name).await? {
+            Some(v) => v,
+            None => {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                ))
+            }
+        };
+        let config = self.config_for_host(&host).await.map_err(|err| {
+            AppError::with_message(AppErrorKind::Internal, err.code(), err.message())
+        })?;
+
+        let reuse_remote_path = if input.remote_path.is_none() && !input.new_directory {
+            self.jobs
+                .latest_remote_path_for_local_path(&input.name, &input.local_path)
+                .await?
+        } else {
+            None
+        };
+        let (remote_path, allow_existing_remote_path) = match reuse_remote_path {
+            Some(value) => (value, true),
+            None => {
+                let resolved = match input.remote_path.as_deref() {
+                    Some(v) if PathBuf::from(v).is_absolute() => {
+                        submit_paths::resolve_submit_remote_path(Some(v), v, "")?
+                    }
+                    other => {
+                        let default_base_path = self.get_default_base_path(&input.name).await?;
+                        let random_suffix = random::generate_run_directory_name();
+                        submit_paths::resolve_submit_remote_path(
+                            other,
+                            &default_base_path,
+                            &random_suffix,
+                        )?
+                    }
+                };
+                (resolved, false)
+            }
+        };
+
+        if !input.force {
+            if let Some(job_id) = self
+                .jobs
+                .running_job_id_for_remote_path(&input.name, &remote_path)
+                .await?
+            {
+                let detail = format!(
+                    "job {job_id} is still running in {remote_path}; use --force to submit anyway"
+                );
+                return Err(AppError::with_message(
+                    AppErrorKind::AlreadyExists,
+                    codes::CONFLICT,
+                    detail,
+                ));
+            }
+        }
+
+        if stream
+            .send(SubmitStreamEvent {
+                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
+                    name: input.name.clone(),
+                    remote_path: remote_path.clone(),
+                    phase: submit_status::Phase::Resolved as i32,
+                })),
+            })
+            .await
+            .is_err()
+        {
+            return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
+        }
+
+        if *cancel_rx.borrow() {
+            return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
+        }
+
+        if let Err(err) = self
+            .remote_exec
+            .ensure_connected_submit(&config, stream, mfa)
+            .await
+        {
+            return Err(AppError::with_message(
+                AppErrorKind::Internal,
+                err.code(),
+                err.message(),
+            ));
+        }
+
+        let remote_path_exists = self.remote_exec.directory_exists(&config, &remote_path).await?;
+        if remote_path_exists && !allow_existing_remote_path {
+            return Err(AppError::new(AppErrorKind::AlreadyExists, codes::CONFLICT));
+        }
+
+        if stream
+            .send(SubmitStreamEvent {
+                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
+                    name: input.name.clone(),
+                    remote_path: remote_path.clone(),
+                    phase: submit_status::Phase::TransferStart as i32,
+                })),
+            })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        let sync_options = SyncOptions {
+            block_size: Some(1024 * 1024),
+            parallelism: None,
+            filters: input.filters.clone(),
+        };
+        let sync_result = tokio::select! {
+            res = self.file_sync.sync_dir(
+                &config,
+                Path::new(&input.local_path),
+                &remote_path,
+                sync_options,
+                stream,
+                mfa,
+            ) => res,
+            _ = cancel_rx.changed() => {
+                return Ok(());
+            }
+        };
+        if let Err(_) = sync_result {
+            let _ = stream
+                .send(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                        status: submit_result::Status::Failed as i32,
+                        job_id: None,
+                        detail: codes::REMOTE_ERROR.to_string(),
+                    })),
+                })
+                .await;
+            return Ok(());
+        }
+
+        if stream
+            .send(SubmitStreamEvent {
+                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
+                    name: input.name.clone(),
+                    remote_path: remote_path.clone(),
+                    phase: submit_status::Phase::TransferDone as i32,
+                })),
+            })
+            .await
+            .is_err()
+        {
+            return Ok(());
+        }
+        if stream.is_closed() || *cancel_rx.borrow() {
+            return Ok(());
+        }
+
+        let remote_sbatch_script_path =
+            submit_paths::resolve_remote_sbatch_path(&remote_path, &input.sbatchscript);
+        let sbatch_command =
+            slurm::path_to_sbatch_command(&remote_sbatch_script_path, Some(&remote_path));
+        let exec_result = tokio::select! {
+            res = self.remote_exec.exec_capture(&config, &sbatch_command) => res,
+            _ = cancel_rx.changed() => {
+                return Ok(());
+            }
+        };
+        let capture = match exec_result {
+            Ok(v) => v,
+            Err(_) => {
+                let _ = stream
+                    .send(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Failed as i32,
+                            job_id: None,
+                            detail: codes::REMOTE_ERROR.to_string(),
+                        })),
+                    })
+                    .await;
+                return Ok(());
+            }
+        };
+
+        if capture.exit_code != 0 {
+            let err_message = String::from_utf8_lossy(&capture.stderr);
+            let out_message = String::from_utf8_lossy(&capture.stdout);
+            let detail = if err_message.trim().is_empty() {
+                if out_message.trim().is_empty() {
+                    "no error output from sbatch".to_string()
+                } else {
+                    out_message.trim().to_string()
+                }
+            } else {
+                err_message.trim().to_string()
+            };
+            let _ = stream
+                .send(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                        status: submit_result::Status::Failed as i32,
+                        job_id: None,
+                        detail: codes::REMOTE_ERROR.to_string(),
+                    })),
+                })
+                .await;
+            log::debug!("sbatch failed: {detail}");
+            return Ok(());
+        }
+
+        let out_string = String::from_utf8_lossy(&capture.stdout);
+        let Some(scheduler_id) = slurm::parse_job_id(&out_string) else {
+            let _ = stream
+                .send(SubmitStreamEvent {
+                    event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                        status: submit_result::Status::Failed as i32,
+                        job_id: None,
+                        detail: codes::REMOTE_ERROR.to_string(),
+                    })),
+                })
+                .await;
+            return Ok(());
+        };
+
+        let sbatch_path = {
+            let sbatch_path = PathBuf::from(&input.sbatchscript);
+            if sbatch_path.is_absolute() {
+                sbatch_path
+            } else {
+                PathBuf::from(&input.local_path).join(&input.sbatchscript)
+            }
+        };
+
+        let templates = match self.local_fs.read_to_string(&sbatch_path).await {
+            Ok(contents) => sbatch::parse_sbatch_log_templates(&contents),
+            Err(err) => {
+                log::warn!(
+                    "submit log parse failed name={} sbatchscript={} error={}",
+                    input.name,
+                    sbatch_path.to_string_lossy(),
+                    err
+                );
+                sbatch::SbatchLogTemplates {
+                    stdout: None,
+                    stderr: None,
+                    job_name: None,
+                }
+            }
+        };
+
+        let sbatch::SbatchLogTemplates {
+            stdout,
+            stderr,
+            job_name,
+        } = templates;
+        let default_job_name = sbatch_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or("job");
+        let job_name = job_name.unwrap_or_else(|| default_job_name.to_string());
+        let stdout_template = stdout.unwrap_or_else(|| sbatch::DEFAULT_STDOUT_TEMPLATE.to_string());
+        let stdout_path = sbatch::resolve_log_path(
+            &stdout_template,
+            &remote_path,
+            scheduler_id,
+            Some(job_name.as_str()),
+            Some(host.username.as_str()),
+        );
+        let stderr_path = stderr
+            .and_then(|value| {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .map(|template| {
+                sbatch::resolve_log_path(
+                    &template,
+                    &remote_path,
+                    scheduler_id,
+                    Some(job_name.as_str()),
+                    Some(host.username.as_str()),
+                )
+            });
+
+        let job = NewJob {
+            scheduler_id: Some(scheduler_id),
+            host_id: host.id,
+            local_path: input.local_path.clone(),
+            remote_path: remote_path.clone(),
+            stdout_path,
+            stderr_path,
+        };
+
+        match self.jobs.insert_job(&job).await {
+            Ok(job_id) => {
+                let _ = stream
+                    .send(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Submitted as i32,
+                            job_id: Some(job_id),
+                            detail: String::new(),
+                        })),
+                    })
+                    .await;
+            }
+            Err(_) => {
+                let _ = stream
+                    .send(SubmitStreamEvent {
+                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
+                            status: submit_result::Status::Failed as i32,
+                            job_id: None,
+                            detail: codes::INTERNAL_ERROR.to_string(),
+                        })),
+                    })
+                    .await;
+            }
+        }
+
+        Ok(())
+    }
+
+    pub async fn add_cluster(
+        &self,
+        input: AddClusterInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        self.cluster_upsert(ClusterUpsertInput {
+            name: input.name,
+            username: input.username,
+            address: input.address,
+            port: input.port,
+            identity_path: input.identity_path,
+            default_base_path: input.default_base_path,
+            emit_progress: true,
+        }, stream, mfa)
+        .await
+    }
+
+    pub async fn set_cluster(
+        &self,
+        input: SetClusterInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        if input.name.trim().is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+        let existing = match self.clusters.get_by_name(&input.name).await? {
+            Some(v) => v,
+            None => {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                ))
+            }
+        };
+
+        let address = match input.address {
+            Some(v) => v,
+            None => existing.address.clone(),
+        };
+        let username = match input.username {
+            Some(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err(AppError::new(
+                        AppErrorKind::InvalidArgument,
+                        codes::INVALID_ARGUMENT,
+                    ));
+                }
+                trimmed.to_string()
+            }
+            None => existing.username.clone(),
+        };
+        let identity_path = input.identity_path.or_else(|| existing.identity_path.clone());
+        let default_base_path = input
+            .default_base_path
+            .or_else(|| existing.default_base_path.clone());
+        let port = input.port.unwrap_or(existing.port);
+
+        self.cluster_upsert(ClusterUpsertInput {
+            name: input.name,
+            username,
+            address,
+            port,
+            identity_path,
+            default_base_path,
+            emit_progress: false,
+        }, stream, mfa)
+        .await
+    }
+
+    pub async fn check_running_jobs(&self, min_age: StdDuration) -> AppResult<()> {
+        let jobs = self.jobs.list_running_jobs().await?;
+        if jobs.is_empty() {
+            return Ok(());
+        }
+        let hosts = self.clusters.list_hosts(None).await?;
+        let min_age = TimeDuration::try_from(min_age).unwrap_or(TimeDuration::ZERO);
+        let now = self.clock.now_utc();
+
+        let mut host_map = HashMap::new();
+        for host in hosts {
+            host_map.insert(host.name.clone(), host);
+        }
+
+        let mut jobs_by_host: HashMap<String, Vec<JobRecord>> = HashMap::new();
+        for job in jobs {
+            jobs_by_host.entry(job.name.clone()).or_default().push(job);
+        }
+
+        let mut completed_ids: Vec<(i64, Option<String>)> = Vec::new();
+        for (name, host_jobs) in jobs_by_host {
+            let Some(host) = host_map.get(&name) else {
+                log::warn!("host record missing for running job on '{name}'");
+                continue;
+            };
+            let config = match self.config_for_host(host).await {
+                Ok(cfg) => cfg,
+                Err(err) => {
+                    log::warn!("failed to resolve session for {name}: {err}");
+                    continue;
+                }
+            };
+
+            if self
+                .remote_exec
+                .needs_connect(&config)
+                .await
+                .unwrap_or(true)
+            {
+                let stream = NoopStreamOutput;
+                let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
+                drop(mfa_tx);
+                let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+                if let Err(err) = self
+                    .remote_exec
+                    .ensure_connected(&config, &stream, &mut mfa_port)
+                    .await
+                {
+                    log::warn!("failed to connect to {name} for job checks: {err}");
+                    continue;
+                }
+            }
+
+            for job in host_jobs {
+                if min_age > TimeDuration::ZERO {
+                    match OffsetDateTime::parse(&job.created_at, &Rfc3339) {
+                        Ok(created_at) => {
+                            if now - created_at < min_age {
+                                continue;
+                            }
+                        }
+                        Err(e) => {
+                            log::debug!("failed to parse created_at for job {}: {}", job.id, e);
+                        }
+                    }
+                }
+                let Some(job_id) = job.scheduler_id else {
+                    log::warn!("job {} has no scheduler id; skipping", job.id);
+                    continue;
+                };
+
+                if host.accounting_available {
+                    let command = format!("sacct -j {job_id} -n -P -o State");
+                    let capture = match self.remote_exec.exec_capture(&config, &command).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::warn!("sacct check failed on {name} for {job_id}: {e}");
+                            continue;
+                        }
+                    };
+                    if capture.exit_code != 0 {
+                        let err_text = String::from_utf8_lossy(&capture.stderr);
+                        log::warn!(
+                            "sacct returned {} on {name} for {job_id}: {}",
+                            capture.exit_code,
+                            err_text
+                        );
+                        continue;
+                    }
+                    let output = String::from_utf8_lossy(&capture.stdout);
+                    match slurm::sacct_terminal_state(&output) {
+                        Some(v) => {
+                            completed_ids.push((job.id, Some(v)));
+                            continue;
+                        }
+                        None => {
+                            log::debug!(
+                                "sacct returned no terminal state for {name} job {job_id}"
+                            );
+                        }
+                    };
+
+                    let command = format!("squeue -j {job_id} -h -o %T");
+                    let capture = match self.remote_exec.exec_capture(&config, &command).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::warn!("squeue check failed on {name} for {job_id}: {e}");
+                            continue;
+                        }
+                    };
+                    if capture.exit_code != 0 {
+                        log::warn!(
+                            "squeue returned {} on {name} for {job_id}: {}",
+                            capture.exit_code,
+                            String::from_utf8_lossy(&capture.stderr)
+                        );
+                        continue;
+                    }
+                    let output = String::from_utf8_lossy(&capture.stdout);
+                    if let Some(state) = parse_squeue_state(&output) {
+                        if let Err(e) = self
+                            .jobs
+                            .update_job_scheduler_state(job.id, Some(&state))
+                            .await
+                        {
+                            log::warn!(
+                                "failed to update scheduler state for {name} job {job_id}: {e}"
+                            );
+                        }
+                    }
+                } else {
+                    let command = format!("scontrol show job {job_id} -o");
+                    match self.remote_exec.exec_capture(&config, &command).await {
+                        Ok(capture) => {
+                            if capture.exit_code == 0 {
+                                let output = String::from_utf8_lossy(&capture.stdout);
+                                if let Some(state) = slurm::scontrol_job_state(&output) {
+                                    if slurm::slurm_state_is_active(&state) {
+                                        if let Err(e) = self
+                                            .jobs
+                                            .update_job_scheduler_state(job.id, Some(&state))
+                                            .await
+                                        {
+                                            log::warn!(
+                                                "failed to update scheduler state for {name} job {job_id}: {e}"
+                                            );
+                                        }
+                                        continue;
+                                    }
+                                    if slurm::slurm_state_is_terminal(&state) {
+                                        completed_ids.push((job.id, Some(state)));
+                                        continue;
+                                    }
+                                    log::debug!(
+                                        "scontrol returned non-terminal state for {name} job {job_id}: {state}"
+                                    );
+                                    continue;
+                                }
+                                log::debug!(
+                                    "scontrol returned no job state for {name} job {job_id}"
+                                );
+                            } else {
+                                let err_text = String::from_utf8_lossy(&capture.stderr);
+                                log::warn!(
+                                    "scontrol returned {} on {name} for {job_id}: {}",
+                                    capture.exit_code,
+                                    err_text
+                                );
+                                if is_invalid_job_id(&err_text) {
+                                    completed_ids.push((job.id, None));
+                                    continue;
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            log::warn!("scontrol check failed on {name} for {job_id}: {e}");
+                        }
+                    }
+
+                    let command = format!("squeue -j {job_id} -h -o %T");
+                    let capture = match self.remote_exec.exec_capture(&config, &command).await {
+                        Ok(v) => v,
+                        Err(e) => {
+                            log::warn!("squeue check failed on {name} for {job_id}: {e}");
+                            continue;
+                        }
+                    };
+                    if capture.exit_code != 0 {
+                        let err_text = String::from_utf8_lossy(&capture.stderr);
+                        log::warn!(
+                            "squeue returned {} on {name} for {job_id}: {}",
+                            capture.exit_code,
+                            err_text
+                        );
+                        if is_invalid_job_id(&err_text) {
+                            completed_ids.push((job.id, None));
+                        }
+                        continue;
+                    }
+                    let output = String::from_utf8_lossy(&capture.stdout);
+                    if let Some(state) = parse_squeue_state(&output) {
+                        if let Err(e) = self
+                            .jobs
+                            .update_job_scheduler_state(job.id, Some(&state))
+                            .await
+                        {
+                            log::warn!(
+                                "failed to update scheduler state for {name} job {job_id}: {e}"
+                            );
+                        }
+                    } else {
+                        completed_ids.push((job.id, None));
+                    }
+                }
+            }
+        }
+
+        for (id, terminal_state) in completed_ids {
+            if let Err(e) = self
+                .jobs
+                .mark_job_completed(id, terminal_state.as_deref())
+                .await
+            {
+                log::warn!("failed to mark job {id} completed: {e}");
+            }
+        }
+        Ok(())
+    }
+
+    async fn run_command(
+        &self,
+        name: &str,
+        command: String,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let config = self.config_for_host_name(name).await?;
+        if let Err(_) = self
+            .remote_exec
+            .exec_stream(&config, &command, stream, mfa)
+            .await
+        {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::REMOTE_ERROR.to_string(),
+                    )),
+                })
+                .await;
+        }
+        Ok(())
+    }
+
+    async fn get_default_base_path(&self, name: &str) -> AppResult<String> {
+        let host = match self.clusters.get_by_name(name).await? {
+            Some(v) => v,
+            None => {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                ))
+            }
+        };
+        match host.default_base_path {
+            Some(v) => Ok(v),
+            None => Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            )),
+        }
+    }
+
+    async fn config_for_host_name(&self, name: &str) -> AppResult<SshConfig> {
+        let host = match self.clusters.get_by_name(name).await? {
+            Some(v) => v,
+            None => {
+                return Err(AppError::new(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                ))
+            }
+        };
+        self.config_for_host(&host).await
+    }
+
+    async fn config_for_host(&self, host: &HostRecord) -> AppResult<SshConfig> {
+        let addr = self
+            .network
+            .resolve_host_addr(&host.address, host.port)
+            .await
+            .map_err(|err| {
+                AppError::with_message(AppErrorKind::Internal, err.code(), err.message())
+            })?;
+        Ok(build_ssh_config(
+            Some(host.name.clone()),
+            host.username.clone(),
+            &host.address,
+            addr,
+            host.identity_path.clone(),
+        ))
+    }
+
+    async fn cluster_upsert(
+        &self,
+        input: ClusterUpsertInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let reachable = self
+            .network
+            .check_host_reachable(&input.address, input.port)
+            .await?;
+        if !reachable {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::NETWORK_ERROR));
+        }
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            Some(input.name.clone()),
+            input.username.clone(),
+            &input.address,
+            addr,
+            input.identity_path.clone(),
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, managers::DETERMINE_HPC_WORKLOAD_MANAGERS_CMD)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+        }
+        let out = String::from_utf8(capture.stdout)
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        let wlms = managers::parse_wlms(&out);
+        if !wlms.contains(&managers::WorkloadManager::Slurm) {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+        }
+        if input.emit_progress {
+            send_add_cluster_progress(stream, "Scheduler: Slurm").await;
+        }
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, os::GATHER_OS_INFO_CMD)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+        }
+        let out = String::from_utf8(capture.stdout)
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        let os_info = os::parse_distro_info(&out)
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if input.emit_progress {
+            let os_label = format!("OS: {} {}", os_info.id.as_str(), os_info.version.as_str());
+            send_add_cluster_progress(stream, &os_label).await;
+            let kernel_label = format!("Kernel: {}", os_info.kernel.as_str());
+            send_add_cluster_progress(stream, &kernel_label).await;
+        }
+        let distro_info = crate::app::types::Distro {
+            name: os_info.id,
+            version: os_info.version,
+        };
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, slurm::DETERMINE_SLURM_VERSION_CMD)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+        }
+        let out = String::from_utf8(capture.stdout)
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        let mut parts = out.split_whitespace();
+        let _ = parts.next();
+        let Some(version) = parts.next() else {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+        };
+        let slurm_version = version
+            .parse::<crate::app::types::SlurmVersion>()
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if input.emit_progress {
+            send_add_cluster_progress(stream, &format!("Slurm: {slurm_version}")).await;
+        }
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, "scontrol show config")
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+        }
+        let config_text = String::from_utf8_lossy(&capture.stdout);
+        let accounting_enabled = slurm::parse_accounting_enabled_from_scontrol(&config_text)
+            .unwrap_or(false);
+        if input.emit_progress {
+            let accounting_state = if accounting_enabled { "enabled" } else { "disabled" };
+            send_add_cluster_progress(stream, &format!("Accounting: {accounting_state}")).await;
+        }
+
+        let resolved_default_base_path =
+            resolve_default_base_path(input.default_base_path, &home_dir)?;
+        let normalized_default_base_path =
+            normalize_default_base_path(resolved_default_base_path)?;
+        if let Some(ref dbp) = normalized_default_base_path {
+            let command = format!("mkdir -p {}", dbp);
+            let capture = self
+                .remote_exec
+                .exec_capture(&config, &command)
+                .await
+                .map_err(|_| AppError::new(AppErrorKind::Internal, codes::REMOTE_ERROR))?;
+            if capture.exit_code != 0 {
+                return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+            }
+        }
+
+        let new_host = NewHost {
+            username: input.username,
+            name: input.name.clone(),
+            address: input.address,
+            distro: distro_info,
+            kernel_version: os_info.kernel,
+            slurm: slurm_version,
+            port: input.port,
+            identity_path: input.identity_path,
+            accounting_available: accounting_enabled,
+            default_base_path: normalized_default_base_path,
+        };
+
+        if self.clusters.upsert_host(&new_host).await.is_err() {
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Error(
+                        codes::INTERNAL_ERROR.to_string(),
+                    )),
+                })
+                .await;
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolveHomeDirInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LsInput {
+    pub name: String,
+    pub path: Option<String>,
+    pub job_id: Option<i64>,
+}
+
+#[derive(Clone, Debug)]
+pub struct RetrieveJobInput {
+    pub job_id: i64,
+    pub path: String,
+    pub local_path: Option<String>,
+    pub overwrite: bool,
+    pub force: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct JobLogsInput {
+    pub job_id: i64,
+    pub stderr: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct CancelJobInput {
+    pub job_id: i64,
+}
+
+#[derive(Clone, Debug)]
+pub struct CleanupJobInput {
+    pub job_id: i64,
+    pub force: bool,
+    pub full: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubmitInput {
+    pub local_path: String,
+    pub remote_path: Option<String>,
+    pub name: String,
+    pub sbatchscript: String,
+    pub filters: Vec<crate::app::types::SyncFilterRule>,
+    pub new_directory: bool,
+    pub force: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AddClusterInput {
+    pub name: String,
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub default_base_path: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SetClusterInput {
+    pub name: String,
+    pub address: Option<Address>,
+    pub username: Option<String>,
+    pub port: Option<u16>,
+    pub identity_path: Option<String>,
+    pub default_base_path: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct ClusterUpsertInput {
+    name: String,
+    username: String,
+    address: Address,
+    port: u16,
+    identity_path: Option<String>,
+    default_base_path: Option<String>,
+    emit_progress: bool,
+}
+
+struct SimpleMfaPort {
+    receiver: mpsc::Receiver<proto::MfaAnswer>,
+}
+
+impl MfaPort for SimpleMfaPort {
+    fn receiver(&mut self) -> &mut mpsc::Receiver<proto::MfaAnswer> {
+        &mut self.receiver
+    }
+}
+
+struct NoopStreamOutput;
+
+#[async_trait::async_trait]
+impl StreamOutputPort for NoopStreamOutput {
+    async fn send(&self, _event: StreamEvent) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+async fn send_add_cluster_progress(stream: &dyn StreamOutputPort, message: &str) {
+    let line = format!("✓ {message}\n");
+    let _ = stream
+        .send(StreamEvent {
+            event: Some(stream_event::Event::Stderr(line.into_bytes())),
+        })
+        .await;
+}
+
+fn build_ssh_config(
+    session_name: Option<String>,
+    username: String,
+    address: &Address,
+    addr: SocketAddr,
+    identity_path: Option<String>,
+) -> SshConfig {
+    let host = format_address(address);
+    SshConfig {
+        session_name,
+        host,
+        addr,
+        username,
+        identity_path,
+        ki_submethods: None,
+        keepalive_secs: 60,
+    }
+}
+
+fn format_address(address: &Address) -> String {
+    match address {
+        Address::Hostname(host) => host.clone(),
+        Address::Ip(ip) => ip.to_string(),
+    }
+}
+
+async fn fetch_remote_home_dir(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+) -> AppResult<String> {
+    let command = "printf '%s' \"$HOME\"";
+    let capture = remote_exec
+        .exec_capture(config, command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    let home_raw = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let home = home_raw.trim();
+    if home.is_empty() {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    if !Path::new(home).is_absolute() {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    Ok(home.to_string())
+}
+
+fn resolve_default_base_path(
+    default_base_path: Option<String>,
+    home_dir: &str,
+) -> AppResult<Option<String>> {
+    let default_base_path = default_base_path.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let Some(raw) = default_base_path else {
+        let expanded = PathBuf::from(home_dir).join("runs");
+        return Ok(Some(expanded.to_string_lossy().into_owned()));
+    };
+
+    if raw == "~" {
+        return Ok(Some(home_dir.to_string()));
+    }
+
+    if let Some(suffix) = raw.strip_prefix("~/") {
+        if suffix.is_empty() {
+            return Ok(Some(home_dir.to_string()));
+        }
+        let expanded = PathBuf::from(home_dir).join(suffix);
+        return Ok(Some(expanded.to_string_lossy().into_owned()));
+    }
+
+    if raw.starts_with('~') {
+        return Err(AppError::new(
+            AppErrorKind::InvalidArgument,
+            codes::INVALID_ARGUMENT,
+        ));
+    }
+
+    Ok(Some(raw))
+}
+
+fn normalize_default_base_path(default_base_path: Option<String>) -> AppResult<Option<String>> {
+    let Some(base) = default_base_path else {
+        return Ok(None);
+    };
+    let normalized = remote_path::normalize_path(base);
+    if normalized.is_absolute() {
+        Ok(Some(normalized.to_string_lossy().into_owned()))
+    } else {
+        Err(AppError::new(
+            AppErrorKind::InvalidArgument,
+            codes::INVALID_ARGUMENT,
+        ))
+    }
+}
+
+fn resolve_retrieve_local_target(
+    path: &str,
+    remote_path: &str,
+    local_base: &Path,
+    path_is_absolute: bool,
+) -> Option<PathBuf> {
+    if path_is_absolute {
+        Path::new(remote_path)
+            .file_name()
+            .map(|name| local_base.join(name))
+    } else {
+        match Path::new(path).file_name() {
+            Some(name) => Some(local_base.join(name)),
+            None => Some(local_base.to_path_buf()),
+        }
+    }
+}
+
+fn parse_squeue_state(output: &str) -> Option<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(|state| state.to_ascii_uppercase())
+}
+
+fn is_invalid_job_id(text: &str) -> bool {
+    text.to_ascii_lowercase().contains("invalid job id")
+}
+
+fn is_unsafe_cleanup_path(remote_path: &str) -> bool {
+    let trimmed = remote_path.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == "/"
+        || trimmed == "~"
+        || trimmed.starts_with("~/")
+        || trimmed.starts_with('~')
+    {
+        return true;
+    }
+    let normalized = remote_path::normalize_path(trimmed);
+    normalized.as_os_str().is_empty() || normalized == Path::new(std::path::MAIN_SEPARATOR_STR)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn retrieve_local_target_strips_prefix_for_relative_file() {
+        let base = Path::new("local");
+        let target = resolve_retrieve_local_target(
+            "results/result.txt",
+            "/remote/results/result.txt",
+            base,
+            false,
+        )
+        .expect("target");
+        assert_eq!(target, base.join("result.txt"));
+    }
+
+    #[test]
+    fn retrieve_local_target_strips_prefix_for_relative_dir() {
+        let base = Path::new("local");
+        let target = resolve_retrieve_local_target(
+            "results/nested/out",
+            "/remote/results/nested/out",
+            base,
+            false,
+        )
+        .expect("target");
+        assert_eq!(target, base.join("out"));
+    }
+
+    #[test]
+    fn retrieve_local_target_uses_basename_for_absolute_path() {
+        let base = Path::new("local");
+        let target = resolve_retrieve_local_target(
+            "/remote/results/output.log",
+            "/remote/results/output.log",
+            base,
+            true,
+        )
+        .expect("target");
+        assert_eq!(target, base.join("output.log"));
+    }
+
+    #[test]
+    fn resolve_default_base_path_expands_home() {
+        let home = "/home/alice";
+        let resolved = resolve_default_base_path(Some("~".to_string()), home).unwrap();
+        assert_eq!(resolved, Some(home.to_string()));
+
+        let expected = PathBuf::from(home).join("runs").to_string_lossy().into_owned();
+        let resolved = resolve_default_base_path(Some("~/runs".to_string()), home).unwrap();
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[test]
+    fn resolve_default_base_path_defaults_to_home_runs() {
+        let home = "/home/alice";
+        let expected = PathBuf::from(home).join("runs").to_string_lossy().into_owned();
+        let resolved = resolve_default_base_path(None, home).unwrap();
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[test]
+    fn resolve_default_base_path_rejects_tilde_prefix() {
+        let err = resolve_default_base_path(Some("~other".to_string()), "/home").unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn normalize_default_base_path_rejects_relative() {
+        let err = normalize_default_base_path(Some("relative/path".to_string())).unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+}
