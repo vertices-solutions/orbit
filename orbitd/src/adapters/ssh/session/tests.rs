@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use super::{SessionManager, SessionManagerTestHooks};
-use crate::ssh::sync::{SyncFilterRule, SyncOptions, sync_dir_with_executor};
+use super::super::sync::{sync_dir_with_executor, SyncFilterRule, SyncOptions};
 use anyhow::Result;
 use std::fs;
 use std::net::SocketAddr;
@@ -26,7 +26,7 @@ async fn session_manager_executor_uses_test_hooks() {
         move |_: &mpsc::Sender<Result<proto::SubmitStreamEvent, tonic::Status>>,
               _: &mut mpsc::Receiver<proto::MfaAnswer>| {
             let connect_calls = Arc::clone(&connect_calls);
-            let fut: crate::ssh::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
+            let fut: super::super::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
                 connect_calls.lock().unwrap().push("connect".to_string());
                 Ok(())
             });
@@ -38,7 +38,7 @@ async fn session_manager_executor_uses_test_hooks() {
     let ensure_remote_dir = Arc::new(move |remote_dir: &str| {
         let mkdir_calls = Arc::clone(&mkdir_calls);
         let remote_dir = remote_dir.to_string();
-        let fut: crate::ssh::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
+        let fut: super::super::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
             mkdir_calls
                 .lock()
                 .unwrap()
@@ -53,7 +53,7 @@ async fn session_manager_executor_uses_test_hooks() {
         move |_local: &Path, remote: &str, _session_id: &str, _block_size: usize| {
             let sync_calls = Arc::clone(&sync_calls);
             let remote = remote.to_string();
-            let fut: crate::ssh::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
+            let fut: super::super::sync::BoxFuture<'static, Result<()>> = Box::pin(async move {
                 sync_calls.lock().unwrap().push(format!("sync:{remote}"));
                 Ok(())
             });

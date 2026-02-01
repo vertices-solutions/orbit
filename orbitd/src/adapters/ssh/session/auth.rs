@@ -10,7 +10,7 @@ use russh::keys::PrivateKeyWithHashAlg;
 use std::sync::Arc;
 use tokio::sync::mpsc;
 
-use crate::ssh::AuthenticationFailure;
+use crate::adapters::ssh::AuthenticationFailure;
 
 use super::{ClientHandler, SessionManager};
 

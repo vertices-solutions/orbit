@@ -11,11 +11,9 @@ use std::{
 use tokio::time::Duration;
 use tonic::transport::Server;
 
-mod agent;
+mod adapters;
+mod app;
 mod config;
-mod ssh;
-mod state;
-mod util;
 
 #[derive(Parser)]
 #[command(
@@ -165,11 +163,38 @@ async fn main() -> anyhow::Result<()> {
     init_logging(config.verbose);
     log_config_report(&report);
     config::ensure_database_dir(&config.database_path)?;
-    let db = state::db::HostStore::open(&config.database_path).await?;
+    let db = adapters::db::HostStore::open(&config.database_path).await?;
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
 
-    let svc = agent::AgentSvc::new(db);
-    svc.spawn_job_checker(Duration::from_secs(config.job_check_interval_secs));
+    let store_adapter = adapters::db::SqliteStoreAdapter::new(db);
+    let store = std::sync::Arc::new(store_adapter);
+    let ssh_adapter = std::sync::Arc::new(adapters::ssh::SshAdapter::with_defaults());
+    let local_fs = std::sync::Arc::new(adapters::fs::LocalFilesystem::new());
+    let network = std::sync::Arc::new(adapters::network::NetworkAdapter::new());
+    let clock = std::sync::Arc::new(adapters::time::SystemClock::new());
+
+    let usecases = app::usecases::UseCases::new(
+        store.clone(),
+        store.clone(),
+        ssh_adapter.clone(),
+        ssh_adapter.clone(),
+        local_fs,
+        network,
+        clock,
+    );
+    let checker = usecases.clone();
+    let interval = Duration::from_secs(config.job_check_interval_secs);
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(interval);
+        loop {
+            ticker.tick().await;
+            if let Err(err) = checker.check_running_jobs(interval).await {
+                log::warn!("job check failed: {err}");
+            }
+        }
+    });
+
+    let svc = adapters::grpc::GrpcAgent::new(usecases);
     log::info!("server listening on {}", server_addr);
     Server::builder()
         .add_service(AgentServer::new(svc))

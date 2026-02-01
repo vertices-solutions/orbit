@@ -17,7 +17,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 
 #[cfg(test)]
-use crate::ssh::sync::BoxFuture;
+use super::sync::BoxFuture;
 
 mod auth;
 mod exec;

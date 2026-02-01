@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use crate::state::db::Address;
-use crate::util::net::{self, NetError};
+use super::net::{self, NetError};
+use crate::app::types::Address;
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpStream;
