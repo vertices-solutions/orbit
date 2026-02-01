@@ -4,6 +4,8 @@
 use proto::MfaAnswer;
 use tokio::sync::mpsc;
 
+/// MFA input boundary for the core.
+/// Exposes a receiver for MFA answers independent of transport.
 pub trait MfaPort: Send {
     fn receiver(&mut self) -> &mut mpsc::Receiver<MfaAnswer>;
 }

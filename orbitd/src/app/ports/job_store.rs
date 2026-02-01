@@ -7,6 +7,8 @@ use crate::app::errors::AppResult;
 use crate::app::types::{JobRecord, NewJob};
 
 #[async_trait]
+/// Persistence boundary for job records and queries.
+/// Inserts jobs, lists jobs, and updates scheduler/terminal state.
 pub trait JobStorePort: Send + Sync {
     async fn insert_job(&self, job: &NewJob) -> AppResult<i64>;
     async fn list_jobs_for_host(&self, host_id: i64) -> AppResult<Vec<JobRecord>>;

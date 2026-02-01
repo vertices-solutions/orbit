@@ -2232,3 +2232,79 @@ fn is_unsafe_cleanup_path(remote_path: &str) -> bool {
     let normalized = remote_path::normalize_path(trimmed);
     normalized.as_os_str().is_empty() || normalized == Path::new(std::path::MAIN_SEPARATOR_STR)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn retrieve_local_target_strips_prefix_for_relative_file() {
+        let base = Path::new("local");
+        let target = resolve_retrieve_local_target(
+            "results/result.txt",
+            "/remote/results/result.txt",
+            base,
+            false,
+        )
+        .expect("target");
+        assert_eq!(target, base.join("result.txt"));
+    }
+
+    #[test]
+    fn retrieve_local_target_strips_prefix_for_relative_dir() {
+        let base = Path::new("local");
+        let target = resolve_retrieve_local_target(
+            "results/nested/out",
+            "/remote/results/nested/out",
+            base,
+            false,
+        )
+        .expect("target");
+        assert_eq!(target, base.join("out"));
+    }
+
+    #[test]
+    fn retrieve_local_target_uses_basename_for_absolute_path() {
+        let base = Path::new("local");
+        let target = resolve_retrieve_local_target(
+            "/remote/results/output.log",
+            "/remote/results/output.log",
+            base,
+            true,
+        )
+        .expect("target");
+        assert_eq!(target, base.join("output.log"));
+    }
+
+    #[test]
+    fn resolve_default_base_path_expands_home() {
+        let home = "/home/alice";
+        let resolved = resolve_default_base_path(Some("~".to_string()), home).unwrap();
+        assert_eq!(resolved, Some(home.to_string()));
+
+        let expected = PathBuf::from(home).join("runs").to_string_lossy().into_owned();
+        let resolved = resolve_default_base_path(Some("~/runs".to_string()), home).unwrap();
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[test]
+    fn resolve_default_base_path_defaults_to_home_runs() {
+        let home = "/home/alice";
+        let expected = PathBuf::from(home).join("runs").to_string_lossy().into_owned();
+        let resolved = resolve_default_base_path(None, home).unwrap();
+        assert_eq!(resolved, Some(expected));
+    }
+
+    #[test]
+    fn resolve_default_base_path_rejects_tilde_prefix() {
+        let err = resolve_default_base_path(Some("~other".to_string()), "/home").unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn normalize_default_base_path_rejects_relative() {
+        let err = normalize_default_base_path(Some("relative/path".to_string())).unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+}

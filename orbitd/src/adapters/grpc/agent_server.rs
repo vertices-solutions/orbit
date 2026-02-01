@@ -809,3 +809,42 @@ impl Agent for GrpcAgent {
         Ok(Response::new(ListJobsResponse { jobs: api_jobs }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proto::add_cluster_init;
+
+    #[test]
+    fn parse_add_cluster_host_validates() {
+        assert_eq!(
+            parse_add_cluster_host(None).unwrap_err().message(),
+            codes::INVALID_ARGUMENT
+        );
+
+        let host = parse_add_cluster_host(Some(add_cluster_init::Host::Hostname(
+            "example.com".to_string(),
+        )))
+        .unwrap();
+        assert!(matches!(host, Address::Hostname(_)));
+
+        let host = parse_add_cluster_host(Some(add_cluster_init::Host::Ipaddr(
+            "127.0.0.1".to_string(),
+        )))
+        .unwrap();
+        assert!(matches!(host, Address::Ip(_)));
+
+        let err = parse_add_cluster_host(Some(add_cluster_init::Host::Ipaddr(
+            "not-an-ip".to_string(),
+        )))
+        .unwrap_err();
+        assert_eq!(err.message(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn parse_port_validates() {
+        assert_eq!(parse_port(22).unwrap(), 22u16);
+        let err = parse_port(u32::from(u16::MAX) + 1).unwrap_err();
+        assert_eq!(err.message(), codes::INVALID_ARGUMENT);
+    }
+}

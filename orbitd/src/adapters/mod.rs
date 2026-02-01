@@ -3,6 +3,7 @@
 
 pub mod db;
 pub mod fs;
+pub mod cli;
 pub mod network;
 pub mod ssh;
 pub mod time;

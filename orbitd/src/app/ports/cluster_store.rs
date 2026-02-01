@@ -7,6 +7,8 @@ use crate::app::errors::AppResult;
 use crate::app::types::{HostRecord, NewHost};
 
 #[async_trait]
+/// Persistence boundary for cluster/host records.
+/// Provides CRUD operations and lookups without tying to a specific store.
 pub trait ClusterStorePort: Send + Sync {
     async fn insert_host(&self, host: &NewHost) -> AppResult<i64>;
     async fn upsert_host(&self, host: &NewHost) -> AppResult<i64>;

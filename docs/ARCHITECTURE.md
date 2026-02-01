@@ -99,7 +99,60 @@ Ports live in `app/ports`, adapters in `adapters/`:
 
 
 # `orbitd` architecture
-TODO: explain in more detail
-`orbitd` is a tonic gRPC server with services under `orbitd/src/agent/`.
-It stores cluster and job metadata in SQLite via `sqlx`, uses SSH/SFTP logic under
-`orbitd/src/ssh/`, and streams MFA prompts and command outputs back to the CLI.
+`orbitd` follows the same hexagonal architecture principles as `orbit`: the
+application core only depends on ports, while adapters handle input (gRPC) and output(SSH and
+SQLite).
+
+## Entry points and lifecycle
+- `orbitd/src/main.rs` is the entrypoint. It loads config, initializes adapters,
+  constructs `app::usecases::UseCases`, and starts the tonic gRPC server.
+- A background job checker runs on a timer in `main.rs`, calling
+  `UseCases::check_running_jobs` to refresh remote job state.
+
+## Application core (`orbitd/src/app`)
+- `app/usecases.rs` is the use-case entrypoint, with method-per-RPC (e.g.,
+  `ping`, `list_clusters`, `submit`, `retrieve_job`, `cleanup_job`).
+- `app/ports/` defines the required interfaces:
+  - `ClusterStorePort`, `JobStorePort`
+  - `RemoteExecPort`, `FileSyncPort`
+  - `LocalFilesystemPort`
+  - `NetworkProbePort`
+  - `ClockPort`
+  - `StreamOutputPort` / `SubmitStreamOutputPort`
+  - `MfaPort`
+- `app/services/` provides pure helpers used by use-cases:
+  - `remote_path`, `submit_paths`, `sbatch`, `slurm`
+  - `shell`, `random`, `os`, `managers`
+- `app/types.rs` holds domain records/DTOs like `HostRecord`, `JobRecord`,
+  `NewHost`, `NewJob`, `SshConfig`, and sync filter types.
+- `app/errors.rs` provides `AppError` + stable error codes, which are mapped to
+  gRPC `Status` by the gRPC adapter.
+
+## Ports and adapters
+Inbound adapter:
+- `adapters/grpc/agent_server.rs` implements `proto::agent_server::Agent`. It
+  parses proto requests into use-case inputs, wires stream/MFA adapters, and
+  maps `AppError` into gRPC `Status`.
+
+Outbound adapters:
+- `adapters/db/sqlite_store.rs` implements `ClusterStorePort` and `JobStorePort`
+  against SQLite via `sqlx`.
+- `adapters/ssh/` implements `RemoteExecPort` and `FileSyncPort` over SSH/SFTP,
+  with `session_cache.rs` handling connection reuse.
+- `adapters/fs/` implements `LocalFilesystemPort`.
+- `adapters/network/` implements `NetworkProbePort` (DNS resolution and
+  reachability checks).
+- `adapters/time/` implements `ClockPort`.
+
+## Streaming and MFA
+- Streaming use-cases (`submit`, `logs`, `ls`, `cleanup`, `retrieve`, etc.) accept
+  a `StreamOutputPort` (or `SubmitStreamOutputPort`) to emit stdout/stderr/progress
+  events without coupling to tonic.
+- MFA prompts are handled through `MfaPort`; the gRPC adapter bridges the
+  bidirectional stream and passes answers into the core.
+
+## Data handling and persistence
+- Cluster/job records lives in SQLite (`HostRecord`, `JobRecord`), accessed only
+  through store ports.
+- Remote execution and sync behavior are isolated behind `RemoteExecPort` and
+  `FileSyncPort`, allowing the use-cases to be tested without SSH/SFTP.

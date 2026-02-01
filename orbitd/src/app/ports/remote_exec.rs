@@ -15,6 +15,8 @@ pub struct ExecCapture {
 }
 
 #[async_trait]
+/// Remote command execution and SSH session lifecycle boundary.
+/// Supports captured or streamed exec plus connection management.
 pub trait RemoteExecPort: Send + Sync {
     async fn exec_capture(&self, config: &SshConfig, command: &str) -> AppResult<ExecCapture>;
 

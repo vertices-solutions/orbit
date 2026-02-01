@@ -46,3 +46,27 @@ impl NetworkProbePort for NetworkAdapter {
             .map_err(map_net_error)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_net_error_sets_invalid_argument_for_dns_errors() {
+        let err = map_net_error(net::NetError::DnsNotFound("example.com".to_string()));
+        assert_eq!(err.code(), codes::NETWORK_ERROR);
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+
+        let err = map_net_error(net::NetError::NoAddrs("example.com".to_string()));
+        assert_eq!(err.code(), codes::NETWORK_ERROR);
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+    }
+
+    #[test]
+    fn map_net_error_sets_internal_for_resolve_errors() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "boom");
+        let err = map_net_error(net::NetError::Resolve(io_err));
+        assert_eq!(err.code(), codes::NETWORK_ERROR);
+        assert_eq!(err.kind(), AppErrorKind::Internal);
+    }
+}

@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use crate::app::errors::AppResult;
 
 #[async_trait]
+/// Local filesystem boundary for the core.
+/// Provides current dir resolution and file reads with consistent errors.
 pub trait LocalFilesystemPort: Send + Sync {
     async fn current_dir(&self) -> AppResult<PathBuf>;
     async fn read_to_string(&self, path: &Path) -> AppResult<String>;
