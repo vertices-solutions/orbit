@@ -10,24 +10,24 @@ use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
-use tonic::{Request, Status, Code};
+use tonic::{Code, Request, Status};
 
 use crate::app::commands::{StreamCapture, SubmitCapture};
 use crate::app::errors::{
-    describe_error_code, format_server_error, AppError, AppResult, ErrorType,
+    AppError, AppResult, ErrorType, describe_error_code, format_server_error,
 };
 use crate::app::ports::{InteractionPort, OrbitdPort, StreamOutputPort};
-use submit_errors::parse_remote_path_failure;
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, CancelJobRequest, CancelJobRequestInit, CleanupJobRequest,
-    CleanupJobRequestInit, DeleteClusterRequest, JobLogsRequest, JobLogsRequestInit,
-    ListClustersRequest, ListJobsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
-    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit,
-    SetClusterRequest, SubmitPathFilterRule, SubmitRequest, add_cluster_init, add_cluster_request,
-    resolve_home_dir_request,
+    CleanupJobRequestInit, DeleteClusterRequest, DeleteProjectRequest, GetProjectRequest,
+    JobLogsRequest, JobLogsRequestInit, ListClustersRequest, ListJobsRequest, ListProjectsRequest,
+    LsRequest, LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
+    RetrieveJobRequestInit, SetClusterInit, SetClusterRequest, SubmitPathFilterRule, SubmitRequest,
+    UpsertProjectRequest, add_cluster_init, add_cluster_request, resolve_home_dir_request,
     resolve_home_dir_request_init, set_cluster_request, stream_event, submit_stream_event,
 };
+use submit_errors::parse_remote_path_failure;
 
 pub struct GrpcOrbitdPort {
     endpoint: String,
@@ -57,7 +57,7 @@ impl OrbitdPort for GrpcOrbitdPort {
             Err(elapsed) => {
                 return Err(AppError::network_error(format!(
                     "Cancelled request after {elapsed} seconds"
-                )))
+                )));
             }
         };
         let message = response.get_ref().to_owned().message;
@@ -82,30 +82,79 @@ impl OrbitdPort for GrpcOrbitdPort {
         {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
-            Err(e) => {
-                return Err(AppError::network_error(format!(
-                    "operation timed out: {e}"
-                )))
-            }
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
         Ok(response.clusters)
     }
 
-    async fn list_jobs(&self, cluster: Option<String>) -> AppResult<Vec<proto::ListJobsUnitResponse>> {
+    async fn list_jobs(
+        &self,
+        cluster: Option<String>,
+    ) -> AppResult<Vec<proto::ListJobsUnitResponse>> {
         let mut client = self.connect().await?;
         let list_jobs_request = ListJobsRequest { name: cluster };
-        let response = match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request))
-            .await
-        {
+        let response =
+            match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await {
+                Ok(Ok(res)) => res.into_inner(),
+                Ok(Err(status)) => return Err(app_error_from_status(status)),
+                Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+            };
+        Ok(response.jobs)
+    }
+
+    async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord> {
+        let mut client = self.connect().await?;
+        let request = UpsertProjectRequest {
+            name: name.to_string(),
+            path: path.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.upsert_project(request)).await {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
-            Err(e) => {
-                return Err(AppError::network_error(format!(
-                    "operation timed out: {e}"
-                )))
-            }
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
-        Ok(response.jobs)
+        response
+            .project
+            .ok_or_else(|| AppError::remote_error("missing project in response"))
+    }
+
+    async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord> {
+        let mut client = self.connect().await?;
+        let request = GetProjectRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.get_project(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        response
+            .project
+            .ok_or_else(|| AppError::remote_error("missing project in response"))
+    }
+
+    async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>> {
+        let mut client = self.connect().await?;
+        let request = ListProjectsRequest {};
+        let response = match timeout(Duration::from_secs(5), client.list_projects(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        Ok(response.projects)
+    }
+
+    async fn delete_project(&self, name: &str) -> AppResult<bool> {
+        let mut client = self.connect().await?;
+        let request = DeleteProjectRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.delete_project(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        Ok(response.deleted)
     }
 
     async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
@@ -121,11 +170,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
-            Err(e) => {
-                return Err(AppError::network_error(format!(
-                    "operation timed out: {e}"
-                )))
-            }
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
         Ok(response.deleted)
     }
@@ -169,7 +214,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::ls_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             |_| 1,
@@ -214,7 +261,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::job_logs_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             job_logs_error_exit_code,
@@ -257,7 +306,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::cancel_job_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             |_| 1,
@@ -278,11 +329,13 @@ impl OrbitdPort for GrpcOrbitdPort {
         let outbound = ReceiverStream::new(rx_ans);
         tx_ans
             .send(CleanupJobRequest {
-                msg: Some(proto::cleanup_job_request::Msg::Init(CleanupJobRequestInit {
-                    job_id,
-                    force,
-                    full,
-                })),
+                msg: Some(proto::cleanup_job_request::Msg::Init(
+                    CleanupJobRequestInit {
+                        job_id,
+                        force,
+                        full,
+                    },
+                )),
             })
             .await
             .map_err(|_| AppError::internal_error("failed to send cleanup init"))?;
@@ -304,7 +357,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::cleanup_job_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             |_| 1,
@@ -315,7 +370,7 @@ impl OrbitdPort for GrpcOrbitdPort {
     async fn job_retrieve(
         &self,
         job_id: i64,
-        path: String,
+        path: Option<String>,
         output: Option<PathBuf>,
         overwrite: bool,
         force: bool,
@@ -325,8 +380,9 @@ impl OrbitdPort for GrpcOrbitdPort {
         let mut client = self.connect().await?;
         let mut local_base = match output {
             Some(v) => v,
-            None => std::env::current_dir()
-                .map_err(|err| AppError::local_error(err.to_string()))?,
+            None => {
+                std::env::current_dir().map_err(|err| AppError::local_error(err.to_string()))?
+            }
         };
         if !local_base.is_absolute() {
             local_base = std::env::current_dir()
@@ -334,7 +390,13 @@ impl OrbitdPort for GrpcOrbitdPort {
                 .join(local_base);
         }
         let local_path = local_base.to_string_lossy().into_owned();
-        let local_target = resolve_retrieve_local_target(&path, &local_base);
+        let local_target = match path.as_deref() {
+            Some(requested) if !requested.trim().is_empty() => {
+                resolve_retrieve_local_target(requested, &local_base)
+            }
+            _ => local_base.clone(),
+        };
+        let request_path = path.unwrap_or_default();
 
         let (tx_ans, rx_ans) = mpsc::channel::<RetrieveJobRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
@@ -343,7 +405,7 @@ impl OrbitdPort for GrpcOrbitdPort {
                 msg: Some(proto::retrieve_job_request::Msg::Init(
                     RetrieveJobRequestInit {
                         job_id,
-                        path: path.clone(),
+                        path: request_path,
                         local_path: Some(local_path),
                         overwrite,
                         force,
@@ -370,7 +432,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::retrieve_job_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             job_retrieve_error_exit_code,
@@ -388,6 +452,8 @@ impl OrbitdPort for GrpcOrbitdPort {
         force: bool,
         sbatchscript: String,
         filters: Vec<SubmitPathFilterRule>,
+        project_name: Option<String>,
+        default_retrieve_path: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<SubmitCapture> {
@@ -396,17 +462,17 @@ impl OrbitdPort for GrpcOrbitdPort {
         let outbound = ReceiverStream::new(rx_ans);
         tx_ans
             .send(SubmitRequest {
-                msg: Some(proto::submit_request::Msg::Init(
-                    proto::SubmitRequestInit {
-                        local_path,
-                        remote_path,
-                        name,
-                        sbatchscript,
-                        filters,
-                        new_directory,
-                        force,
-                    },
-                )),
+                msg: Some(proto::submit_request::Msg::Init(proto::SubmitRequestInit {
+                    local_path,
+                    remote_path,
+                    name,
+                    sbatchscript,
+                    filters,
+                    new_directory,
+                    force,
+                    project_name,
+                    default_retrieve_path,
+                })),
             })
             .await
             .map_err(|_| AppError::internal_error("failed to send submit init"))?;
@@ -428,22 +494,17 @@ impl OrbitdPort for GrpcOrbitdPort {
             }
         };
         let inbound = response.into_inner();
-        handle_submit_stream(
-            inbound,
-            output,
-            interaction,
-            move |answers| {
-                let tx_ans = tx_ans.clone();
-                async move {
-                    tx_ans
-                        .send(SubmitRequest {
-                            msg: Some(proto::submit_request::Msg::Mfa(answers)),
-                        })
-                        .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
-                }
-            },
-        )
+        handle_submit_stream(inbound, output, interaction, move |answers| {
+            let tx_ans = tx_ans.clone();
+            async move {
+                tx_ans
+                    .send(SubmitRequest {
+                        msg: Some(proto::submit_request::Msg::Mfa(answers)),
+                    })
+                    .await
+                    .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+            }
+        })
         .await
     }
 
@@ -466,7 +527,11 @@ impl OrbitdPort for GrpcOrbitdPort {
             Some(v) => add_cluster_init::Host::Hostname(v),
             None => match ip {
                 Some(v) => add_cluster_init::Host::Ipaddr(v),
-                None => return Err(AppError::invalid_argument("both hostname and ip address can't be none")),
+                None => {
+                    return Err(AppError::invalid_argument(
+                        "both hostname and ip address can't be none",
+                    ));
+                }
             },
         };
         let identity_path_expanded = match identity_path {
@@ -509,7 +574,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             |_| 1,
@@ -571,7 +638,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                             msg: Some(proto::set_cluster_request::Msg::Mfa(answers)),
                         })
                         .await
-                        .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+                        .map_err(|_| {
+                            AppError::remote_error("server closed while sending MFA answers")
+                        })
                 }
             },
             |_| 1,
@@ -596,7 +665,11 @@ impl OrbitdPort for GrpcOrbitdPort {
             Some(v) => resolve_home_dir_request_init::Host::Hostname(v),
             None => match ip {
                 Some(v) => resolve_home_dir_request_init::Host::Ipaddr(v),
-                None => return Err(AppError::invalid_argument("both hostname and ip address can't be none")),
+                None => {
+                    return Err(AppError::invalid_argument(
+                        "both hostname and ip address can't be none",
+                    ));
+                }
             },
         };
         let identity_path_expanded = match identity_path {
@@ -654,7 +727,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                                 msg: Some(resolve_home_dir_request::Msg::Mfa(answers)),
                             })
                             .await
-                            .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))?;
+                            .map_err(|_| {
+                                AppError::remote_error("server closed while sending MFA answers")
+                            })?;
                     }
                     Some(stream_event::Event::Error(err)) => {
                         return Err(AppError::remote_error(format_server_error(&err)));
@@ -694,9 +769,7 @@ impl OrbitdPort for GrpcOrbitdPort {
 }
 
 fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
-    format!(
-        "Could not contact the orbitd server at {daemon_endpoint}. Is it running?"
-    )
+    format!("Could not contact the orbitd server at {daemon_endpoint}. Is it running?")
 }
 
 fn format_status_error(status: &Status) -> String {
@@ -774,8 +847,10 @@ where
             Ok(proto::StreamEvent { event: None }) => {}
             Err(status) => {
                 let message = format_status_error(&status);
+                let remote_code = remote_code_for_status(status.code());
                 output.on_stderr(message.as_bytes()).await?;
-                output.on_exit_code(1).await?;
+                output.on_error(remote_code).await?;
+                output.on_exit_code(map_error_code(remote_code)).await?;
                 break;
             }
         }
@@ -829,6 +904,9 @@ where
             Err(status) => {
                 let message = format_status_error(&status);
                 output.on_stderr(message.as_bytes()).await?;
+                output
+                    .on_error(remote_code_for_status(status.code()))
+                    .await?;
                 output.on_exit_code(1).await?;
                 break;
             }
@@ -852,6 +930,16 @@ fn job_retrieve_error_exit_code(err: &str) -> i32 {
         "not_found" => 3,
         "conflict" => 4,
         _ => 1,
+    }
+}
+
+fn remote_code_for_status(code: Code) -> &'static str {
+    match code {
+        Code::InvalidArgument => "invalid_argument",
+        Code::NotFound => "not_found",
+        Code::AlreadyExists => "conflict",
+        Code::PermissionDenied | Code::Unauthenticated => "permission_denied",
+        _ => "remote_error",
     }
 }
 

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use crate::app::commands::{ClusterCommand, Command, JobCommand};
+use crate::app::AppContext;
+use crate::app::commands::{ClusterCommand, Command, JobCommand, ProjectCommand};
 use crate::app::errors::AppResult;
 use crate::app::handlers;
-use crate::app::AppContext;
 
 pub struct Dispatcher {
     ctx: AppContext,
@@ -34,7 +34,20 @@ impl Dispatcher {
                 ClusterCommand::Ls(cmd) => handlers::handle_cluster_ls(&self.ctx, cmd).await,
                 ClusterCommand::Add(cmd) => handlers::handle_cluster_add(&self.ctx, cmd).await,
                 ClusterCommand::Set(cmd) => handlers::handle_cluster_set(&self.ctx, cmd).await,
-                ClusterCommand::Delete(cmd) => handlers::handle_cluster_delete(&self.ctx, cmd).await,
+                ClusterCommand::Delete(cmd) => {
+                    handlers::handle_cluster_delete(&self.ctx, cmd).await
+                }
+            },
+            Command::Project(cmd) => match cmd {
+                ProjectCommand::Init(cmd) => handlers::handle_project_init(&self.ctx, cmd).await,
+                ProjectCommand::Submit(cmd) => {
+                    handlers::handle_project_submit(&self.ctx, cmd).await
+                }
+                ProjectCommand::List(cmd) => handlers::handle_project_list(&self.ctx, cmd).await,
+                ProjectCommand::Check(cmd) => handlers::handle_project_check(&self.ctx, cmd).await,
+                ProjectCommand::Delete(cmd) => {
+                    handlers::handle_project_delete(&self.ctx, cmd).await
+                }
             },
         };
 

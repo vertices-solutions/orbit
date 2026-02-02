@@ -9,7 +9,9 @@ use std::{net::IpAddr, path::Path, str::FromStr, time::Duration};
 use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use crate::app::types::{Address, Distro, HostRecord, JobRecord, NewHost, NewJob, SlurmVersion};
+use crate::app::types::{
+    Address, Distro, HostRecord, JobRecord, NewHost, NewJob, ProjectRecord, SlurmVersion,
+};
 
 #[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,16 @@ pub enum HostStoreError {
     InvalidAddress,
     #[error("empty name")]
     EmptyName,
+    #[error("empty project name")]
+    EmptyProjectName,
+    #[error("empty project path")]
+    EmptyProjectPath,
+    #[error("project '{name}' already exists with path '{existing_path}'")]
+    ProjectPathConflict {
+        name: String,
+        existing_path: String,
+        new_path: String,
+    },
     #[error("host not found: {0}")]
     HostNotFound(String),
 }
@@ -57,9 +69,11 @@ pub struct HostStore {
 }
 
 impl HostStore {
-    /// Open (or create) a file-backed SQLite DB and run bootstrap/migrations.
+    /// Open (or create) a file-backed SQLite DB.
     pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
-        let url = format!("sqlite://{}", path.as_ref().to_string_lossy());
+        let path_ref = path.as_ref();
+        let is_new_db = !path_ref.exists();
+        let url = format!("sqlite://{}", path_ref.to_string_lossy());
         let opts = SqliteConnectOptions::from_str(&url)?
             .create_if_missing(true)
             .foreign_keys(true)
@@ -69,7 +83,9 @@ impl HostStore {
             .connect_with(opts)
             .await?;
         let store = Self { pool };
-        store.bootstrap().await?;
+        if is_new_db {
+            store.bootstrap().await?;
+        }
         Ok(store)
     }
 
@@ -95,7 +111,14 @@ impl HostStore {
             .execute(&self.pool)
             .await;
 
-        // Initial create (new DBs get name from the start).
+        self.ensure_hosts_table().await?;
+        self.ensure_partitions_table().await?;
+        self.ensure_jobs_table().await?;
+        self.ensure_projects_table().await?;
+        Ok(())
+    }
+
+    async fn ensure_hosts_table(&self) -> Result<()> {
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS hosts (
@@ -118,19 +141,7 @@ impl HostStore {
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               CHECK (hostname IS NOT NULL OR ip IS NOT NULL)
             );
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // If we're upgrading an existing table, make sure `name` exists and is indexed.
-        self.ensure_name_column_and_index().await?;
-
-        self.ensure_partitions_table().await?;
-        // Other helpful indexes
-        sqlx::query(
-            r#"
-            DROP INDEX IF EXISTS idx_hosts_user_addr;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_name ON hosts(name);
             CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_user_addr
               ON hosts(username, COALESCE(hostname, ip), port);
             CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname);
@@ -140,9 +151,9 @@ impl HostStore {
         )
         .execute(&self.pool)
         .await?;
-        self.ensure_jobs_table().await?;
         Ok(())
     }
+
     async fn ensure_partitions_table(&self) -> Result<()> {
         sqlx::query(
             r#"
@@ -164,87 +175,11 @@ impl HostStore {
         .await?;
         Ok(())
     }
-    /// Adds `name` if missing, backfills for NULL rows, then enforces uniqueness.
-    async fn ensure_name_column_and_index(&self) -> Result<()> {
-        let columns = sqlx::query("PRAGMA table_info('hosts');")
-            .fetch_all(&self.pool)
-            .await?;
-        let mut has_name = columns.iter().any(|r| {
-            r.try_get::<String, _>("name")
-                .map(|n| n == "name")
-                .unwrap_or(false)
-        });
-        let mut has_hostid = columns.iter().any(|r| {
-            r.try_get::<String, _>("name")
-                .map(|n| n == "hostid")
-                .unwrap_or(false)
-        });
 
-        if !has_name {
-            if has_hostid {
-                let renamed = sqlx::query("ALTER TABLE hosts RENAME COLUMN hostid TO name")
-                    .execute(&self.pool)
-                    .await
-                    .is_ok();
-                if renamed {
-                    has_name = true;
-                    has_hostid = false;
-                } else {
-                    sqlx::query(r#"ALTER TABLE hosts ADD COLUMN name TEXT"#)
-                        .execute(&self.pool)
-                        .await?;
-                    has_name = true;
-                }
-            } else {
-                // Add the column (nullable for existing rows).
-                sqlx::query(r#"ALTER TABLE hosts ADD COLUMN name TEXT"#)
-                    .execute(&self.pool)
-                    .await?;
-                has_name = true;
-            }
-        }
-
-        if has_name && has_hostid {
-            sqlx::query(
-                r#"
-                UPDATE hosts
-                   SET name = hostid
-                 WHERE name IS NULL OR name = ''
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        // Backfill any NULL/empty name with a random short token (16 hex chars).
-        // Users can later set their own memorable name via update.
-        if has_name {
-            sqlx::query(
-                r#"
-                UPDATE hosts
-                   SET name = lower(hex(randomblob(8)))
-                 WHERE name IS NULL OR name = ''
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-
-            // Enforce uniqueness & speed lookups.
-            sqlx::query(
-                r#"
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_name ON hosts(name);
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-        }
-
-        Ok(())
-    }
     async fn ensure_jobs_table(&self) -> Result<()> {
         sqlx::query(
             r#"
-            create table if not exists jobs (
+            CREATE TABLE IF NOT EXISTS jobs (
             id integer primary key autoincrement,
             scheduler_id integer,
             host_id integer not null references hosts(id) on delete cascade,
@@ -252,113 +187,33 @@ impl HostStore {
             remote_path TEXT NOT NULL,
             stdout_path TEXT NOT NULL,
             stderr_path TEXT,
+            project_name TEXT,
+            default_retrieve_path TEXT,
             is_completed boolean default 0,
             created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             completed_at text,
             terminal_state text,
             scheduler_state text);
+            CREATE INDEX IF NOT EXISTS idx_jobs_host_id ON jobs(host_id);
+            CREATE INDEX IF NOT EXISTS idx_jobs_scheduler_id_host_id ON jobs(scheduler_id,host_id);
     "#,
         )
         .execute(&self.pool)
         .await?;
-        let columns = sqlx::query("PRAGMA table_info('jobs');")
-            .fetch_all(&self.pool)
-            .await?;
-        let mut has_terminal_state = false;
-        let mut has_scheduler_state = false;
-        let mut has_stdout_path = false;
-        let mut has_stderr_path = false;
-        let mut stderr_notnull = false;
+        Ok(())
+    }
 
-        for row in &columns {
-            let name = row.try_get::<String, _>("name").unwrap_or_default();
-            match name.as_str() {
-                "terminal_state" => has_terminal_state = true,
-                "scheduler_state" => has_scheduler_state = true,
-                "stdout_path" => has_stdout_path = true,
-                "stderr_path" => {
-                    has_stderr_path = true;
-                    let notnull = row.try_get::<i64, _>("notnull").unwrap_or(0);
-                    stderr_notnull = notnull != 0;
-                }
-                _ => {}
-            }
-        }
-        if !has_terminal_state {
-            sqlx::query("ALTER TABLE jobs ADD COLUMN terminal_state TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !has_scheduler_state {
-            sqlx::query("ALTER TABLE jobs ADD COLUMN scheduler_state TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !has_stdout_path {
-            sqlx::query("ALTER TABLE jobs ADD COLUMN stdout_path TEXT")
-                .execute(&self.pool)
-                .await?;
-            has_stdout_path = true;
-        }
-        if !has_stderr_path {
-            sqlx::query("ALTER TABLE jobs ADD COLUMN stderr_path TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if has_stdout_path {
-            sqlx::query("UPDATE jobs SET stdout_path = '' WHERE stdout_path IS NULL")
-                .execute(&self.pool)
-                .await?;
-        }
-        if stderr_notnull {
-            let mut tx = self.pool.begin().await?;
-            sqlx::query(
-                r#"
-                CREATE TABLE jobs_new (
-                  id integer primary key autoincrement,
-                  scheduler_id integer,
-                  host_id integer not null references hosts(id) on delete cascade,
-                  local_path TEXT NOT NULL,
-                  remote_path TEXT NOT NULL,
-                  stdout_path TEXT NOT NULL,
-                  stderr_path TEXT,
-                  is_completed boolean default 0,
-                  created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-                  completed_at text,
-                  terminal_state text,
-                  scheduler_state text
-                );
-                "#,
-            )
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query(
-                r#"
-                INSERT INTO jobs_new (
-                  id, scheduler_id, host_id, local_path, remote_path,
-                  stdout_path, stderr_path, is_completed,
-                  created_at, completed_at, terminal_state, scheduler_state
-                )
-                SELECT
-                  id, scheduler_id, host_id, local_path, remote_path,
-                  COALESCE(stdout_path, ''), stderr_path, is_completed,
-                  created_at, completed_at, terminal_state, scheduler_state
-                FROM jobs;
-                "#,
-            )
-            .execute(&mut *tx)
-            .await?;
-            sqlx::query("DROP TABLE jobs").execute(&mut *tx).await?;
-            sqlx::query("ALTER TABLE jobs_new RENAME TO jobs")
-                .execute(&mut *tx)
-                .await?;
-            tx.commit().await?;
-        }
-        sqlx::query("CREATE INDEX IF NOT EXISTS idx_jobs_host_id ON jobs(host_id)")
-            .execute(&self.pool)
-            .await?;
+    async fn ensure_projects_table(&self) -> Result<()> {
         sqlx::query(
-            "CREATE INDEX IF NOT EXISTS idx_jobs_scheduler_id_host_id ON jobs(scheduler_id,host_id)",
+            r#"
+            CREATE TABLE IF NOT EXISTS projects (
+              name TEXT PRIMARY KEY,
+              path TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+            CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
+            "#,
         )
         .execute(&self.pool)
         .await?;
@@ -572,6 +427,92 @@ impl HostStore {
         Ok(out)
     }
 
+    pub async fn upsert_project(&self, name: &str, path: &str) -> Result<ProjectRecord> {
+        let trimmed_name = name.trim();
+        let trimmed_path = path.trim();
+        if trimmed_name.is_empty() {
+            return Err(HostStoreError::EmptyProjectName);
+        }
+        if trimmed_path.is_empty() {
+            return Err(HostStoreError::EmptyProjectPath);
+        }
+
+        if let Some(existing) = self.get_project_by_name(trimmed_name).await? {
+            if existing.path != trimmed_path {
+                return Err(HostStoreError::ProjectPathConflict {
+                    name: trimmed_name.to_string(),
+                    existing_path: existing.path,
+                    new_path: trimmed_path.to_string(),
+                });
+            }
+            let row = sqlx::query(
+                r#"
+                UPDATE projects
+                   SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+                 WHERE name = ?1
+                 RETURNING name, path, created_at, updated_at
+                "#,
+            )
+            .bind(trimmed_name)
+            .fetch_one(&self.pool)
+            .await?;
+            return Ok(row_to_project(row));
+        }
+
+        let row = sqlx::query(
+            r#"
+            INSERT INTO projects(name, path)
+            VALUES (?1, ?2)
+            RETURNING name, path, created_at, updated_at
+            "#,
+        )
+        .bind(trimmed_name)
+        .bind(trimmed_path)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(row_to_project(row))
+    }
+
+    pub async fn get_project_by_name(&self, name: &str) -> Result<Option<ProjectRecord>> {
+        let row = sqlx::query(
+            r#"
+            SELECT name, path, created_at, updated_at
+              FROM projects
+             WHERE name = ?1
+            "#,
+        )
+        .bind(name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(row_to_project))
+    }
+
+    pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
+        let rows = sqlx::query(
+            r#"
+            SELECT name, path, created_at, updated_at
+              FROM projects
+             ORDER BY name ASC
+            "#,
+        )
+        .fetch_all(&self.pool)
+        .await?;
+        Ok(rows.into_iter().map(row_to_project).collect())
+    }
+
+    pub async fn delete_project_by_name(&self, name: &str) -> Result<usize> {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM projects
+             WHERE name = ?1
+            "#,
+        )
+        .bind(name)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as usize)
+    }
+
     // --- internals ---
 
     async fn find_id_by_name(&self, name: &str) -> Result<Option<i64>> {
@@ -718,8 +659,11 @@ impl HostStore {
     pub async fn insert_job(&self, job: &NewJob) -> Result<i64> {
         let rec = sqlx::query(
             r#"
-        insert into jobs(scheduler_id, host_id, local_path, remote_path, stdout_path, stderr_path)
-        values (?1, ?2, ?3, ?4, ?5, ?6)
+        insert into jobs(
+            scheduler_id, host_id, local_path, remote_path, stdout_path, stderr_path,
+            project_name, default_retrieve_path
+        )
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
         returning id;
     "#,
         )
@@ -729,6 +673,8 @@ impl HostStore {
         .bind(job.remote_path.clone())
         .bind(job.stdout_path.clone())
         .bind(job.stderr_path.clone())
+        .bind(job.project_name.clone())
+        .bind(job.default_retrieve_path.clone())
         .fetch_one(&self.pool)
         .await?;
         Ok(rec.try_get::<i64, _>("id")?)
@@ -784,7 +730,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs where host_id = ?1
             )
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,h.name as name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -809,6 +755,8 @@ impl HostStore {
                    aj.remote_path as remote_path,
                    aj.stdout_path as stdout_path,
                    aj.stderr_path as stderr_path,
+                   aj.project_name as project_name,
+                   aj.default_retrieve_path as default_retrieve_path,
                    h.name as name
             from jobs aj
             join hosts h on aj.host_id = h.id
@@ -827,7 +775,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs
             )
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,h.name as name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -841,7 +789,7 @@ impl HostStore {
     pub async fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let rows = sqlx::query(
             r#"
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,h.name as name
             from jobs aj
             join hosts h
               on aj.host_id = h.id
@@ -969,6 +917,15 @@ fn row_to_partition(row: sqlx::sqlite::SqliteRow) -> PartitionRecord {
     }
 }
 
+fn row_to_project(row: sqlx::sqlite::SqliteRow) -> ProjectRecord {
+    ProjectRecord {
+        name: row.try_get("name").unwrap(),
+        path: row.try_get("path").unwrap(),
+        created_at: row.try_get("created_at").unwrap(),
+        updated_at: row.try_get("updated_at").unwrap(),
+    }
+}
+
 fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
     JobRecord {
         id: row.try_get("id").unwrap(),
@@ -983,6 +940,8 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
         remote_path: row.try_get("remote_path").unwrap(),
         stdout_path: row.try_get("stdout_path").unwrap(),
         stderr_path: row.try_get("stderr_path").ok().flatten(),
+        project_name: row.try_get("project_name").ok().flatten(),
+        default_retrieve_path: row.try_get("default_retrieve_path").ok().flatten(),
     }
 }
 
@@ -1241,6 +1200,8 @@ mod tests {
             remote_path: "/remote/run".into(),
             stdout_path: "/remote/run/slurm-42.out".into(),
             stderr_path: Some("/remote/run/slurm-42.out".into()),
+            project_name: None,
+            default_retrieve_path: None,
         };
         db.insert_job(&job).await.unwrap();
 
@@ -1272,6 +1233,8 @@ mod tests {
             remote_path: "/remote/run1".into(),
             stdout_path: "/remote/run1/slurm-40.out".into(),
             stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
         };
         let job2 = NewJob {
             scheduler_id: Some(41),
@@ -1280,6 +1243,8 @@ mod tests {
             remote_path: "/remote/run2".into(),
             stdout_path: "/remote/run2/slurm-41.out".into(),
             stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
         };
         db.insert_job(&job1).await.unwrap();
         db.insert_job(&job2).await.unwrap();
@@ -1311,6 +1276,8 @@ mod tests {
             remote_path: "/remote/run".into(),
             stdout_path: "/remote/run/slurm-200.out".into(),
             stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
         };
         let job_id = db.insert_job(&job).await.unwrap();
 
@@ -1345,6 +1312,8 @@ mod tests {
             remote_path: "/remote/run-a".into(),
             stdout_path: "/remote/run-a/slurm-42.out".into(),
             stderr_path: Some("/remote/run-a/slurm-42.out".into()),
+            project_name: None,
+            default_retrieve_path: None,
         };
         let job_id = db.insert_job(&job).await.unwrap();
 
@@ -1368,6 +1337,8 @@ mod tests {
             remote_path: "/remote/run-a".into(),
             stdout_path: "/remote/run-a/slurm-42.out".into(),
             stderr_path: Some("/remote/run-a/slurm-42.out".into()),
+            project_name: None,
+            default_retrieve_path: None,
         };
         let job_id = db.insert_job(&job).await.unwrap();
 
@@ -1393,6 +1364,8 @@ mod tests {
             remote_path: "/remote/run1".into(),
             stdout_path: "/remote/run1/slurm-101.out".into(),
             stderr_path: Some("/remote/run1/slurm-101.out".into()),
+            project_name: None,
+            default_retrieve_path: None,
         };
         let job2 = NewJob {
             scheduler_id: Some(102),
@@ -1401,6 +1374,8 @@ mod tests {
             remote_path: "/remote/run2".into(),
             stdout_path: "/remote/run2/slurm-102.out".into(),
             stderr_path: Some("/remote/run2/slurm-102.out".into()),
+            project_name: None,
+            default_retrieve_path: None,
         };
         let job1_id = db.insert_job(&job1).await.unwrap();
         let job2_id = db.insert_job(&job2).await.unwrap();
@@ -1419,5 +1394,28 @@ mod tests {
         assert!(completed.finished_at.is_some());
         assert_eq!(completed.terminal_state.as_deref(), Some("FAILED"));
         assert_eq!(completed.scheduler_state.as_deref(), Some("FAILED"));
+    }
+
+    #[tokio::test]
+    async fn delete_project_by_name_removes_project_record() {
+        let db = HostStore::open_memory().await.unwrap();
+
+        let created = db
+            .upsert_project("proj-a", "/tmp/proj-a")
+            .await
+            .expect("project created");
+        assert_eq!(created.name, "proj-a");
+
+        let deleted = db
+            .delete_project_by_name("proj-a")
+            .await
+            .expect("delete should succeed");
+        assert_eq!(deleted, 1);
+
+        let project = db
+            .get_project_by_name("proj-a")
+            .await
+            .expect("query should succeed");
+        assert!(project.is_none());
     }
 }

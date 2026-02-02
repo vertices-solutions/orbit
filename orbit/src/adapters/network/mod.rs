@@ -25,7 +25,9 @@ impl NetworkPort for StdNetwork {
             }
         }
         if !resolved {
-            return Err(AppError::network_error("destination host could not be resolved"));
+            return Err(AppError::network_error(
+                "destination host could not be resolved",
+            ));
         }
         Err(AppError::network_error("destination host is unreachable"))
     }

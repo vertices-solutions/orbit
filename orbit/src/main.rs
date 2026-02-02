@@ -3,10 +3,10 @@
 
 use clap::FromArgMatches;
 use orbit::adapters;
-use orbit::app::{AppContext, UiMode};
+use orbit::adapters::cli::{Cli, Cmd};
 use orbit::app::dispatcher::Dispatcher;
 use orbit::app::ports::{ConfigPort, FilesystemPort, InteractionPort, NetworkPort, OutputPort};
-use orbit::adapters::cli::{Cli, Cmd};
+use orbit::app::{AppContext, UiMode};
 use std::sync::Arc;
 
 #[tokio::main]

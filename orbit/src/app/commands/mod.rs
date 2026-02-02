@@ -14,6 +14,7 @@ pub enum Command {
     Ping(PingCommand),
     Job(JobCommand),
     Cluster(ClusterCommand),
+    Project(ProjectCommand),
 }
 
 #[derive(Debug, Clone)]
@@ -83,7 +84,7 @@ pub struct JobLsCommand {
 #[derive(Debug, Clone)]
 pub struct JobRetrieveCommand {
     pub job_id: i64,
-    pub path: String,
+    pub path: Option<String>,
     pub output: Option<PathBuf>,
     pub overwrite: bool,
     pub force: bool,
@@ -133,6 +134,46 @@ pub struct SetClusterCommand {
 
 #[derive(Debug, Clone)]
 pub struct DeleteClusterCommand {
+    pub name: String,
+    pub yes: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum ProjectCommand {
+    Init(ProjectInitCommand),
+    Submit(ProjectSubmitCommand),
+    List(ProjectListCommand),
+    Check(ProjectCheckCommand),
+    Delete(ProjectDeleteCommand),
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectInitCommand {
+    pub path: PathBuf,
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectSubmitCommand {
+    pub project: String,
+    pub cluster: String,
+    pub sbatchscript: Option<String>,
+    pub remote_path: Option<String>,
+    pub new_directory: bool,
+    pub force: bool,
+    pub filters: Vec<SubmitPathFilterRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectListCommand;
+
+#[derive(Debug, Clone)]
+pub struct ProjectCheckCommand {
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectDeleteCommand {
     pub name: String,
     pub yes: bool,
 }

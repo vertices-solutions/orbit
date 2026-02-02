@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use crate::app::errors::{codes, AppError, AppErrorKind, AppResult};
+use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::services::remote_path::resolve_relative;
 use std::path::PathBuf;
 

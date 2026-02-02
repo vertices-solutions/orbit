@@ -7,5 +7,5 @@ pub mod fs;
 pub mod grpc;
 pub mod json;
 pub mod network;
-pub mod terminal;
 pub(crate) mod presentation;
+pub mod terminal;

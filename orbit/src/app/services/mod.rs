@@ -7,10 +7,19 @@ use std::path::{Path, PathBuf};
 
 use rand::prelude::IndexedRandom;
 
+use crate::app::UiMode;
 use crate::app::commands::AddClusterCommand;
 use crate::app::errors::{AppError, AppResult};
 use crate::app::ports::{FilesystemPort, InteractionPort, NetworkPort, OutputPort};
-use crate::app::UiMode;
+
+mod project;
+pub use project::{
+    CheckedProjectStatus, OrbitfileProjectConfig, ProjectCheckFailure, ProjectCheckStatus,
+    ProjectRuleSet, build_default_orbitfile_contents, check_registered_project,
+    discover_project_from_submit_root, load_project_from_root, merge_submit_filters,
+    resolve_orbitfile_sbatch_script, sanitize_project_name, upsert_orbitfile_project_name,
+    validate_project_name,
+};
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_BASE_PATH: &str = "~/runs";
@@ -77,10 +86,7 @@ impl<'a> AddClusterResolver<'a> {
             loop {
                 let input = self
                     .interaction
-                    .prompt_line(
-                        "Destination: ",
-                        "SSH destination in user@host[:port] form.",
-                    )
+                    .prompt_line("Destination: ", "SSH destination in user@host[:port] form.")
                     .await?;
                 let parsed = match parse_destination(&input) {
                     Ok(parsed) => parsed,
@@ -112,7 +118,7 @@ impl<'a> AddClusterResolver<'a> {
             None => {
                 return Err(AppError::invalid_argument(
                     "destination username is required",
-                ))
+                ));
             }
         };
 
@@ -175,18 +181,12 @@ impl<'a> AddClusterResolver<'a> {
                         None => {
                             return Err(AppError::invalid_argument(
                                 "identity path is required in non-interactive mode",
-                            ))
+                            ));
                         }
                     }
                 } else {
-                    let hint = discovered
-                        .as_deref()
-                        .unwrap_or("<none>")
-                        .to_string();
-                    let help = format!(
-                        "{} - SSH private key path used for authentication.",
-                        hint
-                    );
+                    let hint = discovered.as_deref().unwrap_or("<none>").to_string();
+                    let help = format!("{} - SSH private key path used for authentication.", hint);
                     let default = discovered.as_deref();
                     match default {
                         Some(value) => {
@@ -194,7 +194,11 @@ impl<'a> AddClusterResolver<'a> {
                                 .prompt_line_with_default("Identity path: ", &help, value)
                                 .await?
                         }
-                        None => self.interaction.prompt_line("Identity path: ", &help).await?,
+                        None => {
+                            self.interaction
+                                .prompt_line("Identity path: ", &help)
+                                .await?
+                        }
                     }
                 }
             }
@@ -210,7 +214,10 @@ impl<'a> AddClusterResolver<'a> {
                 self.output.warn("Identity path cannot be empty.").await?;
                 identity_path = self
                     .interaction
-                    .prompt_line("Identity path: ", "SSH private key path used for authentication.")
+                    .prompt_line(
+                        "Identity path: ",
+                        "SSH private key path used for authentication.",
+                    )
                     .await?;
                 continue;
             }
@@ -228,7 +235,10 @@ impl<'a> AddClusterResolver<'a> {
                         .await?;
                     identity_path = self
                         .interaction
-                        .prompt_line("Identity path: ", "SSH private key path used for authentication.")
+                        .prompt_line(
+                            "Identity path: ",
+                            "SSH private key path used for authentication.",
+                        )
                         .await?;
                 }
             }
@@ -303,11 +313,7 @@ impl<'a> SbatchSelector<'a> {
         }
     }
 
-    pub async fn select(
-        &self,
-        local_path: &Path,
-        explicit: Option<&str>,
-    ) -> AppResult<String> {
+    pub async fn select(&self, local_path: &Path, explicit: Option<&str>) -> AppResult<String> {
         if let Some(value) = explicit {
             return Ok(value.to_string());
         }
@@ -361,7 +367,6 @@ impl<'a> SbatchSelector<'a> {
         }
     }
 }
-
 
 /// locally validates if a suggested default base path breaks any rules
 pub fn local_validate_default_base_path(base_path: &str) -> AppResult<()> {
@@ -419,7 +424,7 @@ fn parse_destination(input: &str) -> AppResult<ParsedDestination> {
         None => {
             return Err(AppError::invalid_argument(
                 "destination must be in user@host[:port] format",
-            ))
+            ));
         }
     };
 
@@ -455,7 +460,10 @@ fn parse_destination(input: &str) -> AppResult<ParsedDestination> {
         if host.trim().is_empty() {
             return Err(AppError::invalid_argument("destination host is required"));
         }
-        (host.trim().to_string(), Some(parse_destination_port(port_str)?))
+        (
+            host.trim().to_string(),
+            Some(parse_destination_port(port_str)?),
+        )
     } else {
         (host_part.to_string(), None)
     };
@@ -612,23 +620,19 @@ fn find_preferred_identity_path(fs: &dyn FilesystemPort) -> Option<String> {
     }
     ed25519.sort();
     other.sort();
-    ed25519.into_iter().next().or_else(|| other.into_iter().next())
+    ed25519
+        .into_iter()
+        .next()
+        .or_else(|| other.into_iter().next())
 }
 
-fn collect_sbatch_scripts(
-    fs: &dyn FilesystemPort,
-    root: &Path,
-) -> AppResult<Vec<PathBuf>> {
+fn collect_sbatch_scripts(fs: &dyn FilesystemPort, root: &Path) -> AppResult<Vec<PathBuf>> {
     let mut matches = Vec::new();
     let mut stack = vec![root.to_path_buf()];
 
     while let Some(dir) = stack.pop() {
         let entries = fs.read_dir(&dir).map_err(|err| {
-            AppError::local_error(format!(
-                "failed to read {}: {}",
-                dir.display(),
-                err.message
-            ))
+            AppError::local_error(format!("failed to read {}: {}", dir.display(), err.message))
         })?;
         for path in entries {
             if fs.is_dir(&path)? {
@@ -646,22 +650,21 @@ fn collect_sbatch_scripts(
 }
 
 const ADJECTIVES: &[&str] = &[
-    "bold", "brisk", "calm", "clever", "curious", "daring", "eager", "gentle", "grand",
-    "happy", "jolly", "kind", "lively", "mighty", "noble", "proud", "quiet", "rapid",
-    "sharp", "witty",
+    "bold", "brisk", "calm", "clever", "curious", "daring", "eager", "gentle", "grand", "happy",
+    "jolly", "kind", "lively", "mighty", "noble", "proud", "quiet", "rapid", "sharp", "witty",
 ];
 
 const SCIENTISTS: &[&str] = &[
-    "bohr", "curie", "darwin", "einstein", "fermi", "feynman", "gauss", "galilei",
-    "goodall", "hawking", "kepler", "lovelace", "mendel", "newton", "noether", "planck",
-    "tesla", "turing", "weber", "wilson",
+    "bohr", "curie", "darwin", "einstein", "fermi", "feynman", "gauss", "galilei", "goodall",
+    "hawking", "kepler", "lovelace", "mendel", "newton", "noether", "planck", "tesla", "turing",
+    "weber", "wilson",
 ];
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::app::errors::ErrorType;
-    use crate::app::ports::{StreamOutputPort};
+    use crate::app::ports::StreamOutputPort;
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::net::TcpListener;
@@ -778,8 +781,7 @@ mod tests {
 
     impl FilesystemPort for StdFilesystem {
         fn canonicalize(&self, path: &Path) -> AppResult<PathBuf> {
-            std::fs::canonicalize(path)
-                .map_err(|e| AppError::local_error(e.to_string()))
+            std::fs::canonicalize(path).map_err(|e| AppError::local_error(e.to_string()))
         }
 
         fn current_dir(&self) -> AppResult<PathBuf> {
@@ -870,13 +872,13 @@ mod tests {
             &TestOutput,
             UiMode::NonInteractive,
         );
-        let resolved = resolver
-            .resolve(args, &HashSet::new())
-            .await
-            .unwrap();
+        let resolved = resolver.resolve(args, &HashSet::new()).await.unwrap();
         assert_eq!(resolved.port, port as u32);
         assert_eq!(resolved.identity_path, identity_path);
-        assert_eq!(resolved.default_base_path.as_deref(), Some(DEFAULT_BASE_PATH));
+        assert_eq!(
+            resolved.default_base_path.as_deref(),
+            Some(DEFAULT_BASE_PATH)
+        );
         assert_eq!(resolved.username, "alex");
         assert_eq!(resolved.name, "localhost");
     }
@@ -897,10 +899,7 @@ mod tests {
             &TestOutput,
             UiMode::NonInteractive,
         );
-        let err = resolver
-            .resolve(args, &HashSet::new())
-            .await
-            .unwrap_err();
+        let err = resolver.resolve(args, &HashSet::new()).await.unwrap_err();
         assert_eq!(err.kind, ErrorType::InvalidArgument);
         assert!(err.message.contains("destination"));
     }
@@ -916,7 +915,10 @@ mod tests {
     #[test]
     fn parse_destination_requires_username() {
         let err = parse_destination("example.com:2222").unwrap_err();
-        assert!(err.message.contains("destination must be in user@host[:port] format"));
+        assert!(
+            err.message
+                .contains("destination must be in user@host[:port] format")
+        );
     }
 
     #[tokio::test]
@@ -950,10 +952,7 @@ mod tests {
             &TestOutput,
             UiMode::NonInteractive,
         );
-        let resolved = resolver
-            .resolve(args, &HashSet::new())
-            .await
-            .unwrap();
+        let resolved = resolver.resolve(args, &HashSet::new()).await.unwrap();
         assert_eq!(resolved.username, "alex");
         assert_eq!(resolved.port, port as u32);
         assert_eq!(resolved.name, "local");
@@ -1001,7 +1000,8 @@ mod tests {
         std::fs::write(&one, "echo one").unwrap();
         std::fs::write(&two, "echo two").unwrap();
 
-        let selector = SbatchSelector::new(&StdFilesystem, &TestInteraction, UiMode::NonInteractive);
+        let selector =
+            SbatchSelector::new(&StdFilesystem, &TestInteraction, UiMode::NonInteractive);
         let err = selector.select(&root, None).await.unwrap_err();
         assert!(err.message.contains("multiple .sbatch files found"));
         let _ = std::fs::remove_dir_all(&root);
@@ -1010,11 +1010,9 @@ mod tests {
     #[tokio::test]
     async fn sbatch_selector_accepts_explicit_path() {
         let root = temp_dir();
-        let selector = SbatchSelector::new(&StdFilesystem, &TestInteraction, UiMode::NonInteractive);
-        let script = selector
-            .select(&root, Some("job.sbatch"))
-            .await
-            .unwrap();
+        let selector =
+            SbatchSelector::new(&StdFilesystem, &TestInteraction, UiMode::NonInteractive);
+        let script = selector.select(&root, Some("job.sbatch")).await.unwrap();
         assert_eq!(script, "job.sbatch");
         let _ = std::fs::remove_dir_all(&root);
     }
@@ -1025,7 +1023,8 @@ mod tests {
         let script = root.join("only.sbatch");
         std::fs::write(&script, "echo one").unwrap();
 
-        let selector = SbatchSelector::new(&StdFilesystem, &TestInteraction, UiMode::NonInteractive);
+        let selector =
+            SbatchSelector::new(&StdFilesystem, &TestInteraction, UiMode::NonInteractive);
         let selected = selector.select(&root, None).await.unwrap();
         assert_eq!(selected, "only.sbatch");
         let _ = std::fs::remove_dir_all(&root);

@@ -32,11 +32,14 @@ impl OutputPort for JsonOutput {
     }
 
     async fn render_error(&self, error: &AppError) -> AppResult<()> {
-        let payload = json!({
+        let mut payload = json!({
             "ok": false,
             "errorType": error.kind.as_str(),
             "reason": error.message,
         });
+        if let Some(details) = error.details.clone() {
+            payload["details"] = details;
+        }
         let output = serde_json::to_string_pretty(&payload)
             .map_err(|err| AppError::internal_error(err.to_string()))?;
         eprintln!("{output}");
@@ -322,6 +325,39 @@ fn result_to_json(result: &CommandResult) -> Value {
             "status": "updated",
         }),
         CommandResult::ClusterDelete { name } => json!({
+            "name": name,
+            "status": "deleted",
+        }),
+        CommandResult::ProjectInit {
+            name,
+            path,
+            orbitfile,
+            git_initialized,
+        } => json!({
+            "name": name,
+            "path": path.display().to_string(),
+            "orbitfile": orbitfile.display().to_string(),
+            "gitInitialized": git_initialized,
+            "status": "initialized",
+        }),
+        CommandResult::ProjectList { projects } => {
+            let items = projects
+                .iter()
+                .map(|project| {
+                    json!({
+                        "name": project.name,
+                        "path": project.path,
+                        "createdAt": project.created_at,
+                        "updatedAt": project.updated_at,
+                    })
+                })
+                .collect::<Vec<_>>();
+            json!({ "projects": items })
+        }
+        CommandResult::ProjectCheck { checked } => json!({
+            "checked": checked,
+        }),
+        CommandResult::ProjectDelete { name } => json!({
             "name": name,
             "status": "deleted",
         }),

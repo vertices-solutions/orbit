@@ -7,10 +7,10 @@ mod filters;
 pub use args::{Cli, Cmd};
 
 use clap::{ArgMatches, CommandFactory};
-use clap_complete::{generate, Shell};
+use clap_complete::{Shell, generate};
 
 use crate::app::commands::*;
-use args::{ClusterCmd, JobCmd};
+use args::{ClusterCmd, JobCmd, ProjectCmd};
 use filters::submit_filters_from_matches;
 
 const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
@@ -118,6 +118,32 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 default_base_path: args.default_base_path,
             }),
             ClusterCmd::Delete(args) => ClusterCommand::Delete(DeleteClusterCommand {
+                name: args.name,
+                yes: args.yes,
+            }),
+        }),
+        Cmd::Project(project_args) => Command::Project(match project_args.cmd {
+            ProjectCmd::Init(args) => ProjectCommand::Init(ProjectInitCommand {
+                path: args.path,
+                name: args.name,
+            }),
+            ProjectCmd::Submit(args) => {
+                let filters = submit_filters_from_matches(matches);
+                ProjectCommand::Submit(ProjectSubmitCommand {
+                    project: args.project,
+                    cluster: args.cluster,
+                    sbatchscript: args.sbatchscript,
+                    remote_path: args.remote_path,
+                    new_directory: args.new_directory,
+                    force: args.force,
+                    filters,
+                })
+            }
+            ProjectCmd::List(_args) => ProjectCommand::List(ProjectListCommand),
+            ProjectCmd::Check(args) => {
+                ProjectCommand::Check(ProjectCheckCommand { name: args.name })
+            }
+            ProjectCmd::Delete(args) => ProjectCommand::Delete(ProjectDeleteCommand {
                 name: args.name,
                 yes: args.yes,
             }),

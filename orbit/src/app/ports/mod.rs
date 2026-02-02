@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use proto::{ListClustersUnitResponse, ListJobsUnitResponse, SubmitStatus, SubmitResult};
+use proto::{ListClustersUnitResponse, ListJobsUnitResponse, SubmitResult, SubmitStatus};
 
 use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
-use crate::app::errors::{AppResult, AppError};
+use crate::app::errors::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
@@ -19,6 +19,10 @@ pub trait OrbitdPort: Send + Sync {
     async fn ping(&self) -> AppResult<()>;
     async fn list_clusters(&self, filter: &str) -> AppResult<Vec<ListClustersUnitResponse>>;
     async fn list_jobs(&self, cluster: Option<String>) -> AppResult<Vec<ListJobsUnitResponse>>;
+    async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord>;
+    async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;
+    async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>>;
+    async fn delete_project(&self, name: &str) -> AppResult<bool>;
     async fn delete_cluster(&self, name: &str) -> AppResult<bool>;
 
     async fn ls(
@@ -57,7 +61,7 @@ pub trait OrbitdPort: Send + Sync {
     async fn job_retrieve(
         &self,
         job_id: i64,
-        path: String,
+        path: Option<String>,
         output: Option<PathBuf>,
         overwrite: bool,
         force: bool,
@@ -74,6 +78,8 @@ pub trait OrbitdPort: Send + Sync {
         force: bool,
         sbatchscript: String,
         filters: Vec<proto::SubmitPathFilterRule>,
+        project_name: Option<String>,
+        default_retrieve_path: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<SubmitCapture>;

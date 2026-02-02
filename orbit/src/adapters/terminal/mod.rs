@@ -10,10 +10,13 @@ mod sbatch_picker;
 use std::io::Write;
 
 use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
-use crate::app::errors::{format_server_error, AppError, AppResult};
+use crate::app::errors::{AppError, AppResult, format_server_error};
 use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
-use console::{print_with_green_check_stdout, print_with_green_check_stderr};
-use format::{format_cluster_details, format_clusters_table, format_job_details, format_jobs_table};
+use console::{print_with_green_check_stderr, print_with_green_check_stdout};
+use format::{
+    format_cluster_details, format_clusters_table, format_job_details, format_jobs_table,
+    format_projects_table,
+};
 use mfa::{clear_transient_mfa, collect_mfa_answers, collect_mfa_answers_transient};
 use sbatch_picker::pick_sbatch_script;
 
@@ -67,6 +70,31 @@ impl OutputPort for TerminalOutput {
             CommandResult::ClusterDelete { name } => {
                 println!("Cluster '{}' deleted.", name);
             }
+            CommandResult::ProjectInit {
+                name,
+                path,
+                orbitfile,
+                git_initialized,
+            } => {
+                println!("Project '{}' initialized at {}", name, path.display());
+                println!("Orbitfile: {}", orbitfile.display());
+                if *git_initialized {
+                    println!("Initialized git repository.");
+                }
+            }
+            CommandResult::ProjectList { projects } => {
+                if projects.is_empty() {
+                    println!("No projects registered.");
+                } else {
+                    print!("{}", format_projects_table(projects));
+                }
+            }
+            CommandResult::ProjectCheck { checked } => {
+                println!("{checked} PASSED");
+            }
+            CommandResult::ProjectDelete { name } => {
+                println!("Project '{}' deleted.", name);
+            }
         }
         Ok(())
     }
@@ -87,8 +115,7 @@ impl OutputPort for TerminalOutput {
     }
 
     async fn success(&self, message: &str) -> AppResult<()> {
-        print_with_green_check_stdout(message)
-            .map_err(|err| AppError::local_error(err.to_string()))
+        print_with_green_check_stdout(message).map_err(|err| AppError::local_error(err.to_string()))
     }
 
     fn stream_output(&self, kind: StreamKind) -> Box<dyn StreamOutputPort> {
@@ -107,13 +134,11 @@ impl TerminalInteraction {
 #[tonic::async_trait]
 impl InteractionPort for TerminalInteraction {
     async fn confirm(&self, prompt: &str, help: &str) -> AppResult<bool> {
-        prompt::confirm_action(prompt, help)
-            .map_err(|err| AppError::local_error(err.to_string()))
+        prompt::confirm_action(prompt, help).map_err(|err| AppError::local_error(err.to_string()))
     }
 
     async fn prompt_line(&self, prompt: &str, help: &str) -> AppResult<String> {
-        prompt::prompt_line(prompt, help)
-            .map_err(|err| AppError::local_error(err.to_string()))
+        prompt::prompt_line(prompt, help).map_err(|err| AppError::local_error(err.to_string()))
     }
 
     async fn prompt_line_with_default(
@@ -151,8 +176,7 @@ impl InteractionPort for TerminalInteraction {
     }
 
     async fn clear_transient(&self, lines: usize) -> AppResult<()> {
-        clear_transient_mfa(lines)
-            .map_err(|err| AppError::local_error(err.to_string()))
+        clear_transient_mfa(lines).map_err(|err| AppError::local_error(err.to_string()))
     }
 }
 
@@ -224,11 +248,8 @@ impl StreamOutputPort for TerminalStreamOutput {
         match phase {
             proto::submit_status::Phase::Resolved => {
                 if !status.remote_path.is_empty() && !self.printed_remote_path {
-                    print_with_green_check_stdout(&format!(
-                        "Remote path: {}",
-                        status.remote_path
-                    ))
-                    .map_err(|err| AppError::local_error(err.to_string()))?;
+                    print_with_green_check_stdout(&format!("Remote path: {}", status.remote_path))
+                        .map_err(|err| AppError::local_error(err.to_string()))?;
                     self.printed_remote_path = true;
                 }
                 if !status.remote_path.is_empty() {

@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use proto::{MfaAnswer, StreamEvent, SubmitStreamEvent};
 use tokio::sync::mpsc;
 
-use crate::app::errors::{codes, AppError, AppErrorKind, AppResult};
+use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
     FileSyncPort, MfaPort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
 };
@@ -154,7 +154,11 @@ fn to_ssh_filters(filters: &[AppSyncFilterRule]) -> Vec<SyncFilterRule> {
 
 #[async_trait]
 impl RemoteExecPort for SshAdapter {
-    async fn exec_capture(&self, config: &SshConfig, command: &str) -> AppResult<crate::app::ports::ExecCapture> {
+    async fn exec_capture(
+        &self,
+        config: &SshConfig,
+        command: &str,
+    ) -> AppResult<crate::app::ports::ExecCapture> {
         let session = self.sessions.get_or_create(config).await?;
         let (stdout, stderr, exit_code) = session
             .exec_capture(command)
@@ -363,13 +367,8 @@ impl FileSyncPort for SshAdapter {
 
         let mut evt_rx = evt_rx;
         let inbound_mfa = mfa.receiver();
-        let mut sync_fut = Box::pin(session.sync_dir(
-            local_dir,
-            remote_dir,
-            sync_options,
-            &evt_tx,
-            ssh_mfa_rx,
-        ));
+        let mut sync_fut =
+            Box::pin(session.sync_dir(local_dir, remote_dir, sync_options, &evt_tx, ssh_mfa_rx));
 
         loop {
             tokio::select! {
@@ -419,7 +418,10 @@ impl FileSyncPort for SshAdapter {
         overwrite: bool,
     ) -> AppResult<()> {
         let session = self.sessions.get_or_create(config).await?;
-        match session.retrieve_path(remote_path, local_path, overwrite).await {
+        match session
+            .retrieve_path(remote_path, local_path, overwrite)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(err) if is_sftp_missing_path(&err) => Err(AppError::with_message(
                 AppErrorKind::InvalidArgument,

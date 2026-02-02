@@ -1,19 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use std::collections::HashSet;
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
+use serde_json::json;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
+use crate::app::AppContext;
 use crate::app::commands::*;
 use crate::app::errors::{
-    error_type_for_remote_code, format_server_error, AppError, AppResult, ErrorContext, ErrorType,
+    AppError, AppResult, ErrorContext, ErrorType, error_type_for_remote_code, format_server_error,
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
-    default_base_path_from_home, local_validate_default_base_path, AddClusterResolver, PathResolver,
-    SbatchSelector,
+    AddClusterResolver, PathResolver, SbatchSelector, build_default_orbitfile_contents,
+    check_registered_project, default_base_path_from_home, discover_project_from_submit_root,
+    load_project_from_root, local_validate_default_base_path, merge_submit_filters,
+    resolve_orbitfile_sbatch_script, sanitize_project_name, upsert_orbitfile_project_name,
+    validate_project_name,
 };
-use crate::app::AppContext;
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
     ctx.orbitd.ping().await?;
@@ -29,10 +34,8 @@ pub async fn handle_job_list(ctx: &AppContext, cmd: ListJobsCommand) -> AppResul
 
 pub async fn handle_job_get(ctx: &AppContext, cmd: JobGetCommand) -> AppResult<CommandResult> {
     let jobs = ctx.orbitd.list_jobs(cmd.cluster.clone()).await?;
-    let matches: Vec<&ListJobsUnitResponse> = jobs
-        .iter()
-        .filter(|job| job.job_id == cmd.job_id)
-        .collect();
+    let matches: Vec<&ListJobsUnitResponse> =
+        jobs.iter().filter(|job| job.job_id == cmd.job_id).collect();
     match matches.as_slice() {
         [] => {
             if let Some(cluster) = cmd.cluster.as_deref() {
@@ -46,7 +49,9 @@ pub async fn handle_job_get(ctx: &AppContext, cmd: JobGetCommand) -> AppResult<C
                 cmd.job_id
             )))
         }
-        [job] => Ok(CommandResult::JobDetails { job: (*job).clone() }),
+        [job] => Ok(CommandResult::JobDetails {
+            job: (*job).clone(),
+        }),
         _ => {
             if cmd.cluster.is_some() {
                 return Err(AppError::invalid_argument(format!(
@@ -82,10 +87,43 @@ pub async fn handle_job_submit(
 
     let resolver = PathResolver::new(ctx.fs.as_ref());
     let resolved_local_path = resolver.resolve_local(&cmd.local_path)?;
-    let sbatch_selector = SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
-    let sbatchscript = sbatch_selector
-        .select(&resolved_local_path, cmd.sbatchscript.as_deref())
-        .await?;
+    let discovered_project =
+        discover_project_from_submit_root(ctx.fs.as_ref(), &resolved_local_path)?;
+    let sbatch_selector =
+        SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
+    let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
+        sbatch_selector
+            .select(&resolved_local_path, Some(explicit))
+            .await?
+    } else if let Some(project) = discovered_project.as_ref() {
+        if let Some(configured) = project.submit_sbatch_script.as_deref() {
+            resolve_orbitfile_sbatch_script(
+                ctx.fs.as_ref(),
+                &project.root,
+                &resolved_local_path,
+                configured,
+            )?
+        } else {
+            sbatch_selector.select(&resolved_local_path, None).await?
+        }
+    } else {
+        sbatch_selector.select(&resolved_local_path, None).await?
+    };
+
+    let mut filters = cmd.filters.clone();
+    let mut project_name = None;
+    let mut default_retrieve_path = None;
+    if let Some(project) = discovered_project {
+        validate_project_name(&project.name)?;
+        filters = merge_submit_filters(filters, &project.rules);
+        project_name = Some(project.name.clone());
+        default_retrieve_path = project.default_retrieve_path.clone();
+        let project_root = project.root.display().to_string();
+        let _ = ctx
+            .orbitd
+            .upsert_project(&project.name, &project_root)
+            .await?;
+    }
 
     let resolved_local_path_display = resolved_local_path.display().to_string();
     ctx.output
@@ -105,7 +143,9 @@ pub async fn handle_job_submit(
             cmd.new_directory,
             cmd.force,
             sbatchscript.clone(),
-            cmd.filters,
+            filters,
+            project_name,
+            default_retrieve_path,
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
@@ -135,11 +175,7 @@ pub async fn handle_job_logs(ctx: &AppContext, cmd: JobLogsCommand) -> AppResult
         )
         .await?;
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(stream_error(
-            &capture,
-            ErrorContext::Job,
-            "command failed",
-        ));
+        return Err(stream_error(&capture, ErrorContext::Job, "command failed"));
     }
     Ok(CommandResult::JobLogs { capture })
 }
@@ -169,11 +205,7 @@ pub async fn handle_job_cancel(
         .job_cancel(cmd.job_id, &mut *stream_output, ctx.interaction.as_ref())
         .await?;
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(stream_error(
-            &capture,
-            ErrorContext::Job,
-            "command failed",
-        ));
+        return Err(stream_error(&capture, ErrorContext::Job, "command failed"));
     }
 
     Ok(CommandResult::JobCancel {
@@ -207,9 +239,7 @@ pub async fn handle_job_cleanup(
                 .info("The job record will be deleted from the local database.")
                 .await?;
         }
-        ctx.output
-            .info("This action cannot be undone.")
-            .await?;
+        ctx.output.info("This action cannot be undone.").await?;
         let confirmed = ctx
             .interaction
             .confirm(
@@ -236,11 +266,7 @@ pub async fn handle_job_cleanup(
         )
         .await?;
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(stream_error(
-            &capture,
-            ErrorContext::Job,
-            "command failed",
-        ));
+        return Err(stream_error(&capture, ErrorContext::Job, "command failed"));
     }
 
     Ok(CommandResult::JobCleanup {
@@ -264,11 +290,7 @@ pub async fn handle_job_ls(ctx: &AppContext, cmd: JobLsCommand) -> AppResult<Com
         )
         .await?;
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(stream_error(
-            &capture,
-            ErrorContext::Job,
-            "command failed",
-        ));
+        return Err(stream_error(&capture, ErrorContext::Job, "command failed"));
     }
     Ok(CommandResult::JobLs { capture })
 }
@@ -291,15 +313,11 @@ pub async fn handle_job_retrieve(
         )
         .await?;
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(stream_error(
-            &capture,
-            ErrorContext::Job,
-            "command failed",
-        ));
+        return Err(stream_error(&capture, ErrorContext::Job, "command failed"));
     }
     Ok(CommandResult::JobRetrieve {
         job_id: cmd.job_id,
-        path: cmd.path,
+        path: cmd.path.unwrap_or_default(),
         output: local_target,
         capture,
     })
@@ -377,10 +395,7 @@ pub async fn handle_cluster_add(
         }) {
             return Err(AppError::conflict(format!(
                 "another cluster with name '{}' is already using {}:{}:{}; use 'cluster set' to update it.",
-                existing.name,
-                resolved.username,
-                host,
-                resolved.port
+                existing.name, resolved.username, host, resolved.port
             )));
         }
     }
@@ -591,8 +606,333 @@ pub async fn handle_cluster_delete(
     Ok(CommandResult::ClusterDelete { name: cmd.name })
 }
 
+pub async fn handle_project_init(
+    ctx: &AppContext,
+    cmd: ProjectInitCommand,
+) -> AppResult<CommandResult> {
+    let init_path = resolve_project_init_path(ctx, &cmd.path)?;
+    let parent = init_path.parent().ok_or_else(|| {
+        AppError::invalid_argument(format!(
+            "cannot initialize project at '{}'",
+            init_path.display()
+        ))
+    })?;
+    if !ctx.fs.is_dir(parent)? {
+        return Err(AppError::invalid_argument(format!(
+            "parent directory does not exist: {}",
+            parent.display()
+        )));
+    }
+    if !ctx.fs.is_dir(&init_path)? {
+        std::fs::create_dir_all(&init_path).map_err(|err| {
+            AppError::local_error(format!("failed to create project directory: {err}"))
+        })?;
+    }
+
+    let orbitfile_path = init_path.join("Orbitfile");
+    let resolved_name = resolve_project_init_name(ctx, cmd.name, &init_path).await?;
+    validate_project_name(&resolved_name)?;
+
+    let contents = if ctx.fs.is_file(&orbitfile_path)? {
+        let bytes = ctx.fs.read_file(&orbitfile_path)?;
+        let existing = String::from_utf8(bytes).map_err(|err| {
+            AppError::invalid_argument(format!("invalid Orbitfile encoding: {err}"))
+        })?;
+        upsert_orbitfile_project_name(Some(existing.as_str()), &resolved_name)?
+    } else {
+        build_default_orbitfile_contents(&resolved_name)?
+    };
+    std::fs::write(&orbitfile_path, contents)
+        .map_err(|err| AppError::local_error(format!("failed to write Orbitfile: {err}")))?;
+
+    let git_initialized = ensure_git_repository(&init_path)?;
+    let canonical = ctx.fs.canonicalize(&init_path)?;
+    let project_root = canonical.display().to_string();
+    let _ = ctx
+        .orbitd
+        .upsert_project(&resolved_name, &project_root)
+        .await?;
+
+    Ok(CommandResult::ProjectInit {
+        name: resolved_name,
+        path: canonical.clone(),
+        orbitfile: canonical.join("Orbitfile"),
+        git_initialized,
+    })
+}
+
+pub async fn handle_project_submit(
+    ctx: &AppContext,
+    cmd: ProjectSubmitCommand,
+) -> AppResult<CommandResult> {
+    let clusters = ctx.orbitd.list_clusters("").await?;
+    let cluster = clusters
+        .iter()
+        .find(|cluster| cluster.name == cmd.cluster)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::cluster_not_found(format!(
+                "cluster '{}' not found; use 'cluster add' to create it",
+                cmd.cluster
+            ))
+        })?;
+    validate_cluster_live(ctx, &cluster).await?;
+
+    let project = ctx.orbitd.get_project(&cmd.project).await?;
+    let project_root = ctx
+        .fs
+        .canonicalize(&PathBuf::from(&project.path))
+        .map_err(|err| {
+            AppError::local_error(format!(
+                "failed to resolve project path '{}': {}",
+                project.path, err.message
+            ))
+        })?;
+    let project_config = load_project_from_root(ctx.fs.as_ref(), &project_root)?;
+    if project_config.name != cmd.project {
+        return Err(AppError::invalid_argument(format!(
+            "registered project '{}' has Orbitfile name '{}'",
+            cmd.project, project_config.name
+        )));
+    }
+
+    let sbatch_selector =
+        SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
+    let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
+        sbatch_selector
+            .select(&project_root, Some(explicit))
+            .await?
+    } else if let Some(configured) = project_config.submit_sbatch_script.as_deref() {
+        resolve_orbitfile_sbatch_script(ctx.fs.as_ref(), &project_root, &project_root, configured)?
+    } else {
+        sbatch_selector.select(&project_root, None).await?
+    };
+
+    let filters = merge_submit_filters(cmd.filters, &project_config.rules);
+    let resolved_local_path_display = project_root.display().to_string();
+    ctx.output
+        .success(&format!("Selected sbatch script: {sbatchscript}"))
+        .await?;
+    ctx.output
+        .success(&format!("Local path: {resolved_local_path_display}"))
+        .await?;
+
+    let mut stream_output = ctx.output.stream_output(StreamKind::Submit);
+    let capture = ctx
+        .orbitd
+        .submit(
+            cmd.cluster.clone(),
+            resolved_local_path_display.clone(),
+            cmd.remote_path,
+            cmd.new_directory,
+            cmd.force,
+            sbatchscript.clone(),
+            filters,
+            Some(project_config.name.clone()),
+            project_config.default_retrieve_path.clone(),
+            &mut *stream_output,
+            ctx.interaction.as_ref(),
+        )
+        .await?;
+
+    if capture.exit_code.unwrap_or(0) != 0 {
+        return Err(submit_error(&capture));
+    }
+
+    Ok(CommandResult::JobSubmit {
+        cluster: cmd.cluster,
+        local_path: resolved_local_path_display,
+        sbatchscript,
+        capture,
+    })
+}
+
+pub async fn handle_project_list(
+    ctx: &AppContext,
+    _cmd: ProjectListCommand,
+) -> AppResult<CommandResult> {
+    let projects = ctx.orbitd.list_projects().await?;
+    Ok(CommandResult::ProjectList { projects })
+}
+
+pub async fn handle_project_check(
+    ctx: &AppContext,
+    cmd: ProjectCheckCommand,
+) -> AppResult<CommandResult> {
+    let projects = match cmd.name {
+        Some(name) => vec![ctx.orbitd.get_project(&name).await?],
+        None => ctx.orbitd.list_projects().await?,
+    };
+
+    let mut statuses = Vec::with_capacity(projects.len());
+    for project in projects {
+        if ctx.ui_mode.is_interactive() {
+            ctx.output
+                .info(&format!("checking {}...", project.name))
+                .await?;
+        }
+        let status = check_registered_project(
+            ctx.fs.as_ref(),
+            &project.name,
+            &PathBuf::from(&project.path),
+        );
+        if ctx.ui_mode.is_interactive() {
+            if status.ok {
+                ctx.output
+                    .success(&format!("{} healthy", status.name))
+                    .await?;
+            } else if let Some(reason) = status.reason.as_deref() {
+                ctx.output
+                    .warn(&format!("✗ {} failed check: {}", status.name, reason))
+                    .await?;
+            } else {
+                ctx.output
+                    .warn(&format!("✗ {} failed check", status.name))
+                    .await?;
+            }
+        }
+        statuses.push(status);
+    }
+
+    let checked = statuses.len();
+    let failed = statuses.iter().filter(|status| !status.ok).count();
+    let passed = checked.saturating_sub(failed);
+    if failed > 0 {
+        if ctx.ui_mode.is_interactive() {
+            ctx.output
+                .warn(&format!(
+                    "{checked} CHECKED, {failed} FAILED, {passed} PASSED"
+                ))
+                .await?;
+        }
+        let details = statuses
+            .iter()
+            .map(|status| {
+                if status.ok {
+                    json!({
+                        "name": status.name,
+                        "ok": true
+                    })
+                } else {
+                    json!({
+                        "name": status.name,
+                        "ok": false,
+                        "reason": status.reason.clone().unwrap_or_else(|| "unknown failure".to_string())
+                    })
+                }
+            })
+            .collect::<Vec<_>>();
+        return Err(
+            AppError::project_check_failed("One or more projects failed checks.")
+                .with_details(json!(details)),
+        );
+    }
+
+    Ok(CommandResult::ProjectCheck { checked })
+}
+
+pub async fn handle_project_delete(
+    ctx: &AppContext,
+    cmd: ProjectDeleteCommand,
+) -> AppResult<CommandResult> {
+    if !cmd.yes {
+        ctx.output
+            .info(&format!(
+                "WARNING:\nThis will delete project '{}' from the local registry.",
+                cmd.name
+            ))
+            .await?;
+        ctx.output.info("This action cannot be undone.").await?;
+        let confirmed = ctx
+            .interaction
+            .confirm(
+                "Continue with delete? (yes/no): ",
+                "Type yes to confirm, no to cancel.",
+            )
+            .await?;
+        if !confirmed {
+            return Ok(CommandResult::Message {
+                message: "Delete canceled.".to_string(),
+            });
+        }
+    }
+
+    let deleted = ctx.orbitd.delete_project(&cmd.name).await?;
+    if !deleted {
+        return Err(AppError::invalid_argument(format!(
+            "project name '{}' is not known",
+            cmd.name
+        )));
+    }
+
+    Ok(CommandResult::ProjectDelete { name: cmd.name })
+}
+
 fn bytes_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).to_string()
+}
+
+fn resolve_project_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(ctx.fs.current_dir()?.join(path))
+    }
+}
+
+async fn resolve_project_init_name(
+    ctx: &AppContext,
+    requested: Option<String>,
+    init_path: &std::path::Path,
+) -> AppResult<String> {
+    if let Some(name) = requested {
+        let trimmed = name.trim().to_string();
+        validate_project_name(&trimmed)?;
+        return Ok(trimmed);
+    }
+
+    if !ctx.ui_mode.is_interactive() {
+        return Err(AppError::invalid_argument(
+            "--name is required in non-interactive mode",
+        ));
+    }
+
+    let default_name = init_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(sanitize_project_name)
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| "project".to_string());
+    let prompt_value = ctx
+        .interaction
+        .prompt_line_with_default(
+            "Project name: ",
+            "Project identifier used by orbit project commands.",
+            &default_name,
+        )
+        .await?;
+    let name = prompt_value.trim().to_string();
+    validate_project_name(&name)?;
+    Ok(name)
+}
+
+fn ensure_git_repository(path: &std::path::Path) -> AppResult<bool> {
+    if path.join(".git").exists() {
+        return Ok(false);
+    }
+    let status = std::process::Command::new("git")
+        .arg("init")
+        .arg("--quiet")
+        .current_dir(path)
+        .status()
+        .map_err(|err| AppError::local_error(format!("failed to run git init: {err}")))?;
+    if !status.success() {
+        return Err(AppError::local_error(format!(
+            "git init failed in {}",
+            path.display()
+        )));
+    }
+    Ok(true)
 }
 
 fn message_from_bytes(bytes: &[u8]) -> Option<String> {
@@ -641,7 +981,10 @@ fn submit_error(capture: &SubmitCapture) -> AppError {
     AppError::with_exit_code(ErrorType::RemoteError, "submission failed", exit_code)
 }
 
-async fn validate_cluster_live(ctx: &AppContext, cluster: &ListClustersUnitResponse) -> AppResult<()> {
+async fn validate_cluster_live(
+    ctx: &AppContext,
+    cluster: &ListClustersUnitResponse,
+) -> AppResult<()> {
     let host = match cluster.host.as_ref() {
         Some(proto::list_clusters_unit_response::Host::Hostname(value)) => value.as_str(),
         Some(proto::list_clusters_unit_response::Host::Ipaddr(value)) => value.as_str(),
@@ -649,7 +992,7 @@ async fn validate_cluster_live(ctx: &AppContext, cluster: &ListClustersUnitRespo
             return Err(AppError::invalid_argument(format!(
                 "cluster '{}' has no configured host",
                 cluster.name
-            )))
+            )));
         }
     };
     let port = u16::try_from(cluster.port).map_err(|_| {

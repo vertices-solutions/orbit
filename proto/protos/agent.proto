@@ -140,6 +140,8 @@ message SubmitRequestInit {
   repeated SubmitPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
   bool new_directory = 6; // ignore prior remote dir for this local path
   bool force = 7; // allow reuse of a running remote directory
+  optional string project_name = 8; // project identifier from Orbitfile
+  optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
 }
 
 enum SubmitPathFilterAction {
@@ -244,10 +246,50 @@ message ListJobsUnitResponse {
   string local_path = 8; // Local directory used for submission
   string remote_path = 9; // Remote directory used for submission
   optional string scheduler_state = 10; // Scheduler state when known (PENDING, RUNNING)
+  optional string project_name = 11; // project identifier from Orbitfile at submit time
+  optional string default_retrieve_path = 12; // default retrieve path stored at submit time
 }
 
 message ListJobsResponse {
   repeated ListJobsUnitResponse jobs = 1;
+}
+
+message ProjectRecord {
+  string name = 1;
+  string path = 2;
+  string created_at = 3;
+  string updated_at = 4;
+}
+
+message UpsertProjectRequest {
+  string name = 1;
+  string path = 2;
+}
+
+message UpsertProjectResponse {
+  ProjectRecord project = 1;
+}
+
+message GetProjectRequest {
+  string name = 1;
+}
+
+message GetProjectResponse {
+  ProjectRecord project = 1;
+}
+
+message ListProjectsRequest {}
+
+message ListProjectsResponse {
+  repeated ProjectRecord projects = 1;
+}
+
+message DeleteProjectRequest {
+  string name = 1;
+}
+
+message DeleteProjectResponse {
+  bool deleted = 1;
 }
 
 // Client -> Server
@@ -287,4 +329,8 @@ service Agent {
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
+  rpc UpsertProject(UpsertProjectRequest) returns (UpsertProjectResponse);
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
 }

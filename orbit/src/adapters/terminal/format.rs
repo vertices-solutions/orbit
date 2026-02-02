@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
+use proto::{ListClustersUnitResponse, ListJobsUnitResponse, ProjectRecord};
 
 use crate::adapters::presentation::{cluster_host_string, job_status};
 
@@ -208,6 +208,52 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
     )
 }
 
+pub(super) fn format_projects_table(projects: &[ProjectRecord]) -> String {
+    let headers = ["name", "path", "updated"];
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    for project in projects {
+        rows.push((
+            project.name.clone(),
+            project.path.clone(),
+            project.updated_at.clone(),
+        ));
+    }
+
+    let mut widths: [usize; 3] = [
+        str_width(headers[0]),
+        str_width(headers[1]),
+        str_width(headers[2]),
+    ];
+    for row in &rows {
+        widths[0] = widths[0].max(str_width(&row.0));
+        widths[1] = widths[1].max(str_width(&row.1));
+        widths[2] = widths[2].max(str_width(&row.2));
+    }
+
+    let mut output = String::new();
+    output.push_str(&format!(
+        "{:<w0$}  {:<w1$}  {:<w2$}\n",
+        headers[0],
+        headers[1],
+        headers[2],
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2],
+    ));
+    for row in rows {
+        output.push_str(&format!(
+            "{:<w0$}  {:<w1$}  {:<w2$}\n",
+            row.0,
+            row.1,
+            row.2,
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+        ));
+    }
+    output
+}
+
 fn cluster_ssh_string(item: &ListClustersUnitResponse) -> String {
     let host = cluster_host_string(item);
     let formatted_host = if host.contains(':') && !(host.starts_with('[') && host.ends_with(']')) {
@@ -258,6 +304,8 @@ mod tests {
             scheduler_state: scheduler_state.map(|s| s.to_string()),
             local_path: "/tmp/project".to_string(),
             remote_path: "/remote/project".to_string(),
+            project_name: None,
+            default_retrieve_path: None,
         }
     }
 

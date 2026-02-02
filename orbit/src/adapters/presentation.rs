@@ -74,6 +74,8 @@ mod tests {
             scheduler_state: scheduler_state.map(|s| s.to_string()),
             local_path: "/tmp/project".to_string(),
             remote_path: "/remote/project".to_string(),
+            project_name: None,
+            default_retrieve_path: None,
         }
     }
 

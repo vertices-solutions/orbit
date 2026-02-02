@@ -8,10 +8,11 @@ use async_trait::async_trait;
 use proto::agent_server::Agent;
 use proto::{
     AddClusterRequest, CancelJobRequest, CleanupJobRequest, DeleteClusterRequest,
-    DeleteClusterResponse, JobLogsRequest, ListClustersRequest, ListClustersResponse,
-    ListJobsRequest, ListJobsResponse, LsRequest, MfaAnswer, PingReply, PingRequest,
-    ResolveHomeDirRequest, RetrieveJobRequest, SetClusterRequest, StreamEvent, SubmitRequest,
-    SubmitStreamEvent,
+    DeleteClusterResponse, DeleteProjectRequest, DeleteProjectResponse, GetProjectRequest,
+    GetProjectResponse, JobLogsRequest, ListClustersRequest, ListClustersResponse, ListJobsRequest,
+    ListJobsResponse, ListProjectsRequest, ListProjectsResponse, LsRequest, MfaAnswer, PingReply,
+    PingRequest, ResolveHomeDirRequest, RetrieveJobRequest, SetClusterRequest, StreamEvent,
+    SubmitRequest, SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -19,8 +20,9 @@ use tonic::{Request, Response, Status};
 
 use crate::adapters::grpc::mapping::{
     build_sync_filters, cluster_status_to_response, job_record_to_response,
+    project_record_to_response,
 };
-use crate::app::errors::{codes, AppError, AppErrorKind};
+use crate::app::errors::{AppError, AppErrorKind, codes};
 use crate::app::ports::{MfaPort, StreamOutputPort, SubmitStreamOutputPort};
 use crate::app::types::Address;
 use crate::app::usecases::{
@@ -81,7 +83,8 @@ impl SubmitStreamOutputPort for GrpcSubmitStreamOutput {
         self.sender.is_closed()
     }
 }
-
+/// gRPC-specific MFA port implementation. It will be owning
+/// the mpsc receiver of MfaAnswer
 struct GrpcMfaPort {
     receiver: mpsc::Receiver<MfaAnswer>,
 }
@@ -110,9 +113,7 @@ fn format_remote_addr(addr: Option<SocketAddr>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
-fn parse_add_cluster_host(
-    host: Option<proto::add_cluster_init::Host>,
-) -> Result<Address, Status> {
+fn parse_add_cluster_host(host: Option<proto::add_cluster_init::Host>) -> Result<Address, Status> {
     let host = match host {
         Some(v) => v,
         None => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
@@ -191,7 +192,10 @@ impl Agent for GrpcAgent {
                 Ok(Response::new(PingReply { message }))
             }
             Err(err) => {
-                log::warn!("ping rejected remote_addr={remote_addr} message={}", req.message);
+                log::warn!(
+                    "ping rejected remote_addr={remote_addr} message={}",
+                    req.message
+                );
                 Err(status_from_app_error(err))
             }
         }
@@ -260,7 +264,9 @@ impl Agent for GrpcAgent {
             session_name,
         };
         tokio::spawn(async move {
-            if let Err(err) = usecases.resolve_home_dir(input, &stream_output, &mut mfa_port).await
+            if let Err(err) = usecases
+                .resolve_home_dir(input, &stream_output, &mut mfa_port)
+                .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
@@ -375,7 +381,10 @@ impl Agent for GrpcAgent {
         };
         let usecases = self.usecases.clone();
         tokio::spawn(async move {
-            if let Err(err) = usecases.retrieve_job(input, &stream_output, &mut mfa_port).await {
+            if let Err(err) = usecases
+                .retrieve_job(input, &stream_output, &mut mfa_port)
+                .await
+            {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
         });
@@ -400,9 +409,7 @@ impl Agent for GrpcAgent {
             Some(proto::job_logs_request::Msg::Init(init)) => (init.job_id, init.stderr),
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
-        log::info!(
-            "job_logs start remote_addr={remote_addr} job_id={job_id} stderr={stderr}"
-        );
+        log::info!("job_logs start remote_addr={remote_addr} job_id={job_id} stderr={stderr}");
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
@@ -423,7 +430,10 @@ impl Agent for GrpcAgent {
         };
         let usecases = self.usecases.clone();
         tokio::spawn(async move {
-            if let Err(err) = usecases.job_logs(input, &stream_output, &mut mfa_port).await {
+            if let Err(err) = usecases
+                .job_logs(input, &stream_output, &mut mfa_port)
+                .await
+            {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
         });
@@ -469,7 +479,10 @@ impl Agent for GrpcAgent {
         };
         let usecases = self.usecases.clone();
         tokio::spawn(async move {
-            if let Err(err) = usecases.cancel_job(input, &stream_output, &mut mfa_port).await {
+            if let Err(err) = usecases
+                .cancel_job(input, &stream_output, &mut mfa_port)
+                .await
+            {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
         });
@@ -512,14 +525,21 @@ impl Agent for GrpcAgent {
             }
         });
 
-        let input = CleanupJobInput { job_id, force, full };
+        let input = CleanupJobInput {
+            job_id,
+            force,
+            full,
+        };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
         let stream_output = GrpcStreamOutput {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
         tokio::spawn(async move {
-            if let Err(err) = usecases.cleanup_job(input, &stream_output, &mut mfa_port).await {
+            if let Err(err) = usecases
+                .cleanup_job(input, &stream_output, &mut mfa_port)
+                .await
+            {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
         });
@@ -539,10 +559,7 @@ impl Agent for GrpcAgent {
             .list_clusters()
             .await
             .map_err(status_from_app_error)?;
-        let cluster_responses: Vec<_> = clusters
-            .iter()
-            .map(cluster_status_to_response)
-            .collect();
+        let cluster_responses: Vec<_> = clusters.iter().map(cluster_status_to_response).collect();
         let connected_count = cluster_responses
             .iter()
             .filter(|cluster| cluster.connected)
@@ -583,19 +600,30 @@ impl Agent for GrpcAgent {
             .map_err(|_| Status::unknown(codes::INTERNAL_ERROR))?
             .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
 
-        let (local_path, remote_path, name, sbatchscript, filters, new_directory, force) =
-            match init.msg {
-                Some(proto::submit_request::Msg::Init(init)) => (
-                    init.local_path,
-                    init.remote_path,
-                    init.name,
-                    init.sbatchscript,
-                    init.filters,
-                    init.new_directory,
-                    init.force,
-                ),
-                _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
-            };
+        let (
+            local_path,
+            remote_path,
+            name,
+            sbatchscript,
+            filters,
+            new_directory,
+            force,
+            project_name,
+            default_retrieve_path,
+        ) = match init.msg {
+            Some(proto::submit_request::Msg::Init(init)) => (
+                init.local_path,
+                init.remote_path,
+                init.name,
+                init.sbatchscript,
+                init.filters,
+                init.new_directory,
+                init.force,
+                init.project_name,
+                init.default_retrieve_path,
+            ),
+            _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
+        };
         log::info!(
             "submit start remote_addr={remote_addr} name={name} local_path={local_path} requested_remote_path={:?} sbatch={sbatchscript}",
             remote_path
@@ -626,6 +654,8 @@ impl Agent for GrpcAgent {
             filters,
             new_directory,
             force,
+            project_name,
+            default_retrieve_path,
         };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
         let stream_output = GrpcSubmitStreamOutput {
@@ -705,7 +735,10 @@ impl Agent for GrpcAgent {
         };
         let usecases = self.usecases.clone();
         tokio::spawn(async move {
-            if let Err(err) = usecases.add_cluster(input, &stream_output, &mut mfa_port).await {
+            if let Err(err) = usecases
+                .add_cluster(input, &stream_output, &mut mfa_port)
+                .await
+            {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
         });
@@ -778,7 +811,10 @@ impl Agent for GrpcAgent {
         };
         let usecases = self.usecases.clone();
         tokio::spawn(async move {
-            if let Err(err) = usecases.set_cluster(input, &stream_output, &mut mfa_port).await {
+            if let Err(err) = usecases
+                .set_cluster(input, &stream_output, &mut mfa_port)
+                .await
+            {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
         });
@@ -807,6 +843,85 @@ impl Agent for GrpcAgent {
             api_jobs.len()
         );
         Ok(Response::new(ListJobsResponse { jobs: api_jobs }))
+    }
+
+    async fn upsert_project(
+        &self,
+        request: Request<UpsertProjectRequest>,
+    ) -> Result<Response<UpsertProjectResponse>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let req = request.into_inner();
+        let project = self
+            .usecases
+            .upsert_project(&req.name, &req.path)
+            .await
+            .map_err(status_from_app_error)?;
+        log::info!(
+            "upsert_project remote_addr={remote_addr} name={} path={}",
+            project.name,
+            project.path
+        );
+        Ok(Response::new(UpsertProjectResponse {
+            project: Some(project_record_to_response(&project)),
+        }))
+    }
+
+    async fn get_project(
+        &self,
+        request: Request<GetProjectRequest>,
+    ) -> Result<Response<GetProjectResponse>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let req = request.into_inner();
+        let project = self
+            .usecases
+            .get_project_by_name(&req.name)
+            .await
+            .map_err(status_from_app_error)?;
+        log::info!(
+            "get_project remote_addr={remote_addr} name={} path={}",
+            project.name,
+            project.path
+        );
+        Ok(Response::new(GetProjectResponse {
+            project: Some(project_record_to_response(&project)),
+        }))
+    }
+
+    async fn list_projects(
+        &self,
+        request: Request<ListProjectsRequest>,
+    ) -> Result<Response<ListProjectsResponse>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let _ = request.into_inner();
+        let projects = self
+            .usecases
+            .list_projects()
+            .await
+            .map_err(status_from_app_error)?;
+        let projects = projects
+            .iter()
+            .map(project_record_to_response)
+            .collect::<Vec<_>>();
+        log::info!(
+            "list_projects remote_addr={remote_addr} count={}",
+            projects.len()
+        );
+        Ok(Response::new(ListProjectsResponse { projects }))
+    }
+
+    async fn delete_project(
+        &self,
+        request: Request<DeleteProjectRequest>,
+    ) -> Result<Response<DeleteProjectResponse>, Status> {
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let name = request.into_inner().name.trim().to_string();
+        let deleted = self
+            .usecases
+            .delete_project(&name)
+            .await
+            .map_err(status_from_app_error)?;
+        log::info!("delete_project remote_addr={remote_addr} name={name} deleted={deleted}");
+        Ok(Response::new(DeleteProjectResponse { deleted }))
     }
 }
 
