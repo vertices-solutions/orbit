@@ -33,3 +33,7 @@ audit:
 	@cargo audit
 depcheck:
 	@cargo deny check licenses
+
+local-install:
+	@cargo install --path orbit
+	@cargo install --path orbitd

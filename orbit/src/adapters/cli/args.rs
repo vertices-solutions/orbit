@@ -33,6 +33,8 @@ pub enum Cmd {
     Job(JobArgs),
     /// Operations on clusters: add, delete, poll, and manage clusters.
     Cluster(ClusterArgs),
+    /// Operations on local projects and Orbitfile metadata.
+    Project(ProjectArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
 }
@@ -120,7 +122,8 @@ pub struct ListJobsArgs {
 pub struct JobRetrieveArgs {
     /// Job id from the daemon.
     pub job_id: i64,
-    pub path: String,
+    /// Optional remote path (absolute or relative to the job run folder).
+    pub path: Option<String>,
     #[arg(
         long,
         help = "Directory where the requested file or directory will be placed."
@@ -143,13 +146,81 @@ pub struct JobLsArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ListClustersArgs {
-}
+pub struct ListClustersArgs {}
 
 #[derive(Args, Debug)]
 pub struct ClusterArgs {
     #[command(subcommand)]
     pub cmd: ClusterCmd,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectArgs {
+    #[command(subcommand)]
+    pub cmd: ProjectCmd,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProjectCmd {
+    /// Initialize a project root and Orbitfile.
+    Init(ProjectInitArgs),
+    /// Submit a registered project by project name.
+    Submit(ProjectSubmitArgs),
+    /// List registered projects.
+    List(ProjectListArgs),
+    /// Validate one or all registered projects.
+    Check(ProjectCheckArgs),
+    /// Delete a project from the local registry.
+    Delete(ProjectDeleteArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectInitArgs {
+    pub path: PathBuf,
+    /// Project name stored in Orbitfile and the local registry.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectSubmitArgs {
+    /// Registered project name.
+    pub project: String,
+    /// Cluster name.
+    pub cluster: String,
+    pub sbatchscript: Option<String>,
+    #[arg(long)]
+    pub remote_path: Option<String>,
+    /// Always create a new remote directory, even if this local path was submitted before.
+    #[arg(long)]
+    pub new_directory: bool,
+    /// Allow submitting into a remote directory even if another job is running there.
+    #[arg(long)]
+    pub force: bool,
+    /// Include paths matching PATTERN.
+    #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+    pub include: Vec<String>,
+    /// Exclude paths matching PATTERN.
+    #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+    pub exclude: Vec<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectListArgs {}
+
+#[derive(Args, Debug)]
+pub struct ProjectCheckArgs {
+    /// Project name. If omitted, all registered projects are checked.
+    pub name: Option<String>,
+}
+
+#[derive(Args, Debug)]
+pub struct ProjectDeleteArgs {
+    /// Registered project name.
+    pub name: String,
+    /// Skip the confirmation prompt.
+    #[arg(long, short = 'y')]
+    pub yes: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -377,6 +448,30 @@ mod tests {
         match args.cmd {
             Cmd::Completions(completions) => assert!(matches!(completions.shell, Shell::Bash)),
             _ => panic!("expected completions command"),
+        }
+    }
+
+    #[test]
+    fn project_delete_yes_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "project", "delete", "proj-a"]);
+        match args.cmd {
+            Cmd::Project(project) => match project.cmd {
+                ProjectCmd::Delete(delete) => assert!(!delete.yes),
+                _ => panic!("expected project delete command"),
+            },
+            _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn project_delete_yes_sets_true() {
+        let args = Cli::parse_from(["orbit", "project", "delete", "proj-a", "--yes"]);
+        match args.cmd {
+            Cmd::Project(project) => match project.cmd {
+                ProjectCmd::Delete(delete) => assert!(delete.yes),
+                _ => panic!("expected project delete command"),
+            },
+            _ => panic!("expected project command"),
         }
     }
 }

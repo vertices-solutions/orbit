@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use tokio::sync::RwLock;
 
-use crate::app::errors::{codes, AppError, AppErrorKind, AppResult};
+use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::types::SshConfig;
 
 use super::{SessionManager, SshParams};

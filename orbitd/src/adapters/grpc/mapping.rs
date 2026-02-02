@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use crate::app::errors::{codes, AppError, AppErrorKind};
-use crate::app::types::{ClusterStatus, JobRecord, SyncFilterAction, SyncFilterRule};
+use crate::app::errors::{AppError, AppErrorKind, codes};
+use crate::app::types::{
+    ClusterStatus, JobRecord, ProjectRecord, SyncFilterAction, SyncFilterRule,
+};
 use proto::{
-    list_clusters_unit_response, ListClustersUnitResponse, ListJobsUnitResponse,
-    SubmitPathFilterAction, SubmitPathFilterRule,
+    ListClustersUnitResponse, ListJobsUnitResponse, SubmitPathFilterAction, SubmitPathFilterRule,
+    list_clusters_unit_response,
 };
 
 pub fn build_sync_filters(
@@ -71,5 +73,16 @@ pub fn job_record_to_response(jr: &JobRecord) -> ListJobsUnitResponse {
         scheduler_state: jr.scheduler_state.clone(),
         local_path: jr.local_path.clone(),
         remote_path: jr.remote_path.clone(),
+        project_name: jr.project_name.clone(),
+        default_retrieve_path: jr.default_retrieve_path.clone(),
+    }
+}
+
+pub fn project_record_to_response(project: &ProjectRecord) -> proto::ProjectRecord {
+    proto::ProjectRecord {
+        name: project.name.clone(),
+        path: project.path.clone(),
+        created_at: project.created_at.clone(),
+        updated_at: project.updated_at.clone(),
     }
 }

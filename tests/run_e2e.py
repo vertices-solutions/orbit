@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 import signal
 
@@ -564,6 +565,78 @@ def main():
                     job_paths[cleanup_job_id],
                 )
                 print(f"{project['id']}: cleanup ok for job {cleanup_job_id}")
+
+        project_lifecycle_template = repo_root / "tests/93_hello_world"
+        project_lifecycle_src = out_dir / "_project_lifecycle_src"
+        if project_lifecycle_src.exists():
+            shutil.rmtree(project_lifecycle_src)
+        shutil.copytree(project_lifecycle_template, project_lifecycle_src)
+
+        project_name = f"e2e_proj_{uuid.uuid4().hex[:10]}"
+        run_cmd(
+            orbit_cmd
+            + [
+                "project",
+                "init",
+                str(project_lifecycle_src),
+                "--name",
+                project_name,
+            ]
+        )
+
+        listed = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
+        projects_payload = listed.get("projects") or []
+        project_record = next(
+            (item for item in projects_payload if item.get("name") == project_name),
+            None,
+        )
+        if project_record is None:
+            raise RuntimeError("project lifecycle: initialized project missing from project list")
+        expected_project_path = str(project_lifecycle_src.resolve())
+        if project_record.get("path") != expected_project_path:
+            raise RuntimeError(
+                "project lifecycle: listed project path mismatch "
+                f"(expected={expected_project_path}, actual={project_record.get('path')})"
+            )
+
+        checked = parse_json_output(
+            run_cmd(non_interactive_cmd + ["project", "check", project_name])
+        )
+        if checked.get("checked") != 1:
+            raise RuntimeError("project lifecycle: project check did not report checked=1")
+
+        project_submit_cmd = orbit_cmd + ["project", "submit", project_name, args.cluster]
+        project_submit = run_cmd(project_submit_cmd)
+        project_submit_output = (project_submit.stdout or "") + (project_submit.stderr or "")
+        project_job_id = parse_job_id(project_submit_output)
+        project_remote_path = parse_remote_path(project_submit_output)
+        print(f"project lifecycle: submitted job {project_job_id}")
+
+        status, terminal_state = job_status(orbit_cmd, project_job_id)
+        if status not in ("queued", "running", "completed"):
+            raise RuntimeError(
+                "project lifecycle: unexpected initial job status "
+                f"{status} (terminal_state={terminal_state})"
+            )
+
+        wait_for_job(orbit_cmd, project_job_id, args.timeout, args.poll)
+        status, terminal_state = job_status(orbit_cmd, project_job_id)
+        if status != "completed":
+            raise RuntimeError(
+                f"project lifecycle: expected completed status, got {status} "
+                f"(terminal_state={terminal_state})"
+            )
+        print(f"project lifecycle: job {project_job_id} completed")
+
+        cleanup_job_and_validate(orbit_cmd, args.cluster, project_job_id, project_remote_path)
+        print(f"project lifecycle: cleanup ok for job {project_job_id}")
+
+        run_cmd(orbit_cmd + ["project", "delete", project_name, "--yes"])
+        listed_after_delete = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
+        projects_after_delete = listed_after_delete.get("projects") or []
+        if any(item.get("name") == project_name for item in projects_after_delete):
+            raise RuntimeError("project lifecycle: project still present after delete")
+        print(f"project lifecycle: deleted project {project_name}")
 
         ping_result = parse_json_output(run_cmd(non_interactive_cmd + ["ping"]))
         if ping_result.get("message") != "pong":

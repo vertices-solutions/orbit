@@ -4,6 +4,11 @@ This workspace has three crates:
 - `proto` holds gRPC/protobuf definitions used by both client and server.
 - `orbitd` handles the core functionality (SSH/SFTP, job lifecycle, and persistence).
 
+Projects are a first-class concept in the CLI + daemon contract:
+- The CLI discovers and parses `Orbitfile` (nearest ancestor from submit root).
+- The daemon stores project metadata on jobs (`project_name`, `default_retrieve_path`).
+- A local project registry is persisted in SQLite and exposed over gRPC.
+
 # Terminology
 - Hexagonal architecture: a style where the application core depends only on ports
   (traits) and never on concrete external systems, keeping the domain isolated.
@@ -27,6 +32,8 @@ This workspace has three crates:
 - DTO: a data transfer object used between layers (command requests/results).
 - AppError: the unified error type with an `ErrorType`, message, and exit code.
 - UiMode: the UI mode (`Interactive` / `NonInteractive`) stored in `AppContext`.
+- Project root: nearest directory (walking upward) that contains `Orbitfile`.
+- Project name: stable identifier stored in `Orbitfile` `[project].name` and used in registry.
 
 # `orbit` architecture
 `orbit` uses a Command + Hexagonal Architecture: a thin CLI adapter builds command
@@ -37,6 +44,7 @@ by adapters.
 - `src/main.rs` is the entrypoint. It parses CLI args, selects `UiMode`, resolves the
   daemon endpoint, constructs adapters, and builds an `AppContext`.
 - `adapters/cli` maps clap arguments to `Command` and `*Command` DTOs.
+- Command families are grouped under `job`, `cluster`, and `project`.
 - `app/dispatcher.rs` routes each `Command` to a handler and delegates output to the appropriate method of `OutputPort`.
 
 ## Application core
@@ -51,6 +59,8 @@ by adapters.
     used in `handle_job_submit` before submit.
   - `SbatchSelector`: discovers `.sbatch` scripts under the submit root and prompts when
     multiple candidates exist; used in `handle_job_submit`.
+  - `project` service module: Orbitfile discovery/parsing, project name validation, submit filter merge,
+    Orbitfile sbatch resolution, and local project check helpers.
   - `local_validate_default_base_path`: validates base path rules for clusters; used in
     `handle_cluster_add` during default base path checks.
   - `default_base_path_from_home`: derives the default base path from a home directory;
@@ -62,6 +72,8 @@ by adapters.
 ## Ports and adapters
 Ports live in `app/ports`, adapters in `adapters/`:
 - `OrbitdPort` -> `adapters/grpc` (`GrpcOrbitdPort`), the tonic gRPC client. `OrbitdPort` is transport-independent.
+  - Includes unary project registry RPCs (`UpsertProject`, `GetProject`, `ListProjects`, `DeleteProject`) and
+    extended submit metadata fields (`project_name`, `default_retrieve_path`).
 - `OutputPort` -> `adapters/terminal` (human output) and `adapters/json` (JSON).
 - `StreamOutputPort` -> `TerminalStreamOutput` / `JsonStreamOutput`.
 - `InteractionPort` -> `TerminalInteraction` (prompts/MFA) and
@@ -85,7 +97,7 @@ Ports live in `app/ports`, adapters in `adapters/`:
   live to stdout/stderr.
 - JSON mode uses a stable envelope:
   - Success: `{ "ok": true, "result": { ... } }`
-  - Error: `{ "ok": false, "errorType": "...", "reason": "..." }`
+  - Error: `{ "ok": false, "errorType": "...", "reason": "...", "details"?: ... }`
 - Exit codes are determined by `ErrorType` (usage, MFA-required, or other).
 
 ## Data handling and validation
@@ -94,6 +106,12 @@ Ports live in `app/ports`, adapters in `adapters/`:
 - `PathResolver` canonicalizes local paths and surfaces validation errors.
 - `SbatchSelector` finds `.sbatch` scripts under the submit root and prompts when
   multiple candidates exist (or errors in non-interactive mode).
+- Orbitfile submit behavior:
+  - sbatch precedence is CLI explicit > Orbitfile `[submit].sbatch_script` > auto-detection.
+  - sync filter precedence is CLI rules first, then Orbitfile `[sync]` include/exclude.
+- `project init` creates/updates Orbitfile and upserts the registry entry.
+- `project check` validates registry path, Orbitfile parse/fields, and configured sbatch script path.
+- `project delete` removes a project from the local registry and requires explicit confirmation (`--yes` to skip prompt).
 - `validate_cluster_live` performs a reachability check and a lightweight `ls` RPC
   to confirm connectivity before submit.
 
@@ -114,9 +132,10 @@ should be established and defined as port.
 
 ## Application core (`orbitd/src/app`)
 - `app/usecases.rs` is the use-case entrypoint, with method-per-RPC (e.g.,
-  `ping`, `list_clusters`, `submit`, `retrieve_job`, `cleanup_job`).
+  `ping`, `list_clusters`, `submit`, `retrieve_job`, `cleanup_job`, `upsert_project`,
+  `get_project_by_name`, `list_projects`, `delete_project`).
 - `app/ports/` defines the required interfaces:
-  - `ClusterStorePort`, `JobStorePort`
+  - `ClusterStorePort`, `JobStorePort`, `ProjectStorePort`
   - `RemoteExecPort`, `FileSyncPort`
   - `LocalFilesystemPort`
   - `NetworkProbePort`
@@ -127,7 +146,7 @@ should be established and defined as port.
   - `remote_path`, `submit_paths`, `sbatch`, `slurm`
   - `shell`, `random`, `os`, `managers`
 - `app/types.rs` holds domain records/DTOs like `HostRecord`, `JobRecord`,
-  `NewHost`, `NewJob`, `SshConfig`, and sync filter types.
+  `NewHost`, `NewJob`, `ProjectRecord`, `SshConfig`, and sync filter types.
 - `app/errors.rs` provides `AppError` + stable error codes, which are mapped to
   gRPC `Status` by the gRPC adapter.
 
@@ -138,7 +157,8 @@ Inbound adapter:
   maps `AppError` into gRPC `Status`.
 
 Outbound adapters:
-- `adapters/db/sqlite_store.rs` implements `ClusterStorePort` and `JobStorePort`
+- `adapters/db/sqlite_store.rs` implements `ClusterStorePort`, `JobStorePort`, and
+  `ProjectStorePort`
   against SQLite via `sqlx`.
 - `adapters/ssh/` implements `RemoteExecPort` and `FileSyncPort` over SSH/SFTP,
   with `session_cache.rs` handling connection reuse.
@@ -155,7 +175,11 @@ Outbound adapters:
   bidirectional stream and passes answers into the core.
 
 ## Data handling and persistence
-- Cluster/job records lives in SQLite (`HostRecord`, `JobRecord`), accessed only
-  through store ports.
+- Cluster/job/project records live in SQLite (`HostRecord`, `JobRecord`, `ProjectRecord`),
+  accessed only through store ports.
+- `jobs` rows persist submit-time project metadata (`project_name`, `default_retrieve_path`)
+  so retrieve defaults are stable even if Orbitfile changes later.
+- `retrieve_job` resolves missing request path from stored `default_retrieve_path`; if absent,
+  it returns an invalid-argument error.
 - Remote execution and sync behavior are isolated behind `RemoteExecPort` and
   `FileSyncPort`, allowing the use-cases to be tested without SSH/SFTP.

@@ -32,6 +32,8 @@ pub(super) fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
         "local_path": item.local_path.as_str(),
         "remote_path": item.remote_path.as_str(),
         "name": item.name.as_str(),
+        "project_name": item.project_name.as_deref(),
+        "default_retrieve_path": item.default_retrieve_path.as_deref(),
         "status": status,
         "is_completed": item.is_completed,
         "terminal_state": item.terminal_state.as_deref(),

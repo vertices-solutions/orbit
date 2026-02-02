@@ -8,6 +8,7 @@ pub mod job_store;
 pub mod local_fs;
 pub mod mfa;
 pub mod network;
+pub mod project_store;
 pub mod remote_exec;
 pub mod stream_output;
 
@@ -18,5 +19,6 @@ pub use job_store::JobStorePort;
 pub use local_fs::LocalFilesystemPort;
 pub use mfa::MfaPort;
 pub use network::NetworkProbePort;
+pub use project_store::ProjectStorePort;
 pub use remote_exec::{ExecCapture, RemoteExecPort};
 pub use stream_output::{StreamOutputPort, SubmitStreamOutputPort};

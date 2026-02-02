@@ -26,34 +26,55 @@ pub struct SubmitCapture {
 
 #[derive(Debug, Clone)]
 pub enum CommandResult {
-    Message { message: String },
-    Pong { message: String },
-    JobList { jobs: Vec<ListJobsUnitResponse> },
-    JobDetails { job: ListJobsUnitResponse },
+    Message {
+        message: String,
+    },
+    Pong {
+        message: String,
+    },
+    JobList {
+        jobs: Vec<ListJobsUnitResponse>,
+    },
+    JobDetails {
+        job: ListJobsUnitResponse,
+    },
     JobSubmit {
         cluster: String,
         local_path: String,
         sbatchscript: String,
         capture: SubmitCapture,
     },
-    JobLogs { capture: StreamCapture },
-    JobCancel { job_id: i64, capture: StreamCapture },
+    JobLogs {
+        capture: StreamCapture,
+    },
+    JobCancel {
+        job_id: i64,
+        capture: StreamCapture,
+    },
     JobCleanup {
         job_id: i64,
         force: bool,
         full: bool,
         capture: StreamCapture,
     },
-    JobLs { capture: StreamCapture },
+    JobLs {
+        capture: StreamCapture,
+    },
     JobRetrieve {
         job_id: i64,
         path: String,
         output: PathBuf,
         capture: StreamCapture,
     },
-    ClusterList { clusters: Vec<ListClustersUnitResponse> },
-    ClusterDetails { cluster: ListClustersUnitResponse },
-    ClusterLs { capture: StreamCapture },
+    ClusterList {
+        clusters: Vec<ListClustersUnitResponse>,
+    },
+    ClusterDetails {
+        cluster: ListClustersUnitResponse,
+    },
+    ClusterLs {
+        capture: StreamCapture,
+    },
     ClusterAdd {
         name: String,
         username: String,
@@ -67,5 +88,22 @@ pub enum CommandResult {
         name: String,
         updated_fields: Vec<(String, String)>,
     },
-    ClusterDelete { name: String },
+    ClusterDelete {
+        name: String,
+    },
+    ProjectInit {
+        name: String,
+        path: PathBuf,
+        orbitfile: PathBuf,
+        git_initialized: bool,
+    },
+    ProjectList {
+        projects: Vec<proto::ProjectRecord>,
+    },
+    ProjectCheck {
+        checked: usize,
+    },
+    ProjectDelete {
+        name: String,
+    },
 }

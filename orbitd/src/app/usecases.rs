@@ -7,24 +7,23 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration as StdDuration, Instant};
 
 use proto::{
-    stream_event, submit_result, submit_status, submit_stream_event, StreamEvent, SubmitResult,
-    SubmitStatus, SubmitStreamEvent,
+    StreamEvent, SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event, submit_result,
+    submit_status, submit_stream_event,
 };
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
-use tokio::time::{sleep, Duration as TokioDuration};
+use tokio::time::{Duration as TokioDuration, sleep};
 
-use crate::app::errors::{codes, AppError, AppErrorKind, AppResult};
+use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
     ClockPort, ClusterStorePort, FileSyncPort, JobStorePort, LocalFilesystemPort, MfaPort,
-    NetworkProbePort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
+    NetworkProbePort, ProjectStorePort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
 };
-use crate::app::services::{
-    managers, os, random, remote_path, sbatch, shell, slurm, submit_paths,
-};
+use crate::app::services::{managers, os, random, remote_path, sbatch, shell, slurm, submit_paths};
 use crate::app::types::{
-    Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, SshConfig, SyncOptions,
+    Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, ProjectRecord, SshConfig,
+    SyncOptions,
 };
 
 const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
@@ -34,6 +33,7 @@ const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
 pub struct UseCases {
     pub(crate) clusters: std::sync::Arc<dyn ClusterStorePort>,
     pub(crate) jobs: std::sync::Arc<dyn JobStorePort>,
+    pub(crate) projects: std::sync::Arc<dyn ProjectStorePort>,
     pub(crate) remote_exec: std::sync::Arc<dyn RemoteExecPort>,
     pub(crate) file_sync: std::sync::Arc<dyn FileSyncPort>,
     pub(crate) local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
@@ -45,6 +45,7 @@ impl UseCases {
     pub fn new(
         clusters: std::sync::Arc<dyn ClusterStorePort>,
         jobs: std::sync::Arc<dyn JobStorePort>,
+        projects: std::sync::Arc<dyn ProjectStorePort>,
         remote_exec: std::sync::Arc<dyn RemoteExecPort>,
         file_sync: std::sync::Arc<dyn FileSyncPort>,
         local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
@@ -54,6 +55,7 @@ impl UseCases {
         Self {
             clusters,
             jobs,
+            projects,
             remote_exec,
             file_sync,
             local_fs,
@@ -132,6 +134,36 @@ impl UseCases {
         }
     }
 
+    pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
+        self.projects.upsert_project(name, path).await
+    }
+
+    pub async fn get_project_by_name(&self, name: &str) -> AppResult<ProjectRecord> {
+        match self.projects.get_project_by_name(name).await? {
+            Some(project) => Ok(project),
+            None => Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::NOT_FOUND,
+            )),
+        }
+    }
+
+    pub async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>> {
+        self.projects.list_projects().await
+    }
+
+    pub async fn delete_project(&self, name: &str) -> AppResult<bool> {
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+        let deleted = self.projects.delete_project_by_name(trimmed).await?;
+        Ok(deleted > 0)
+    }
+
     pub async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
@@ -204,7 +236,7 @@ impl UseCases {
                     return Err(AppError::new(
                         AppErrorKind::InvalidArgument,
                         codes::NOT_FOUND,
-                    ))
+                    ));
                 }
             };
             if !input.name.is_empty() && input.name != job.name {
@@ -222,7 +254,9 @@ impl UseCases {
                         ));
                     }
                     if PathBuf::from(&v).is_absolute() {
-                        remote_path::normalize_path(v).to_string_lossy().into_owned()
+                        remote_path::normalize_path(v)
+                            .to_string_lossy()
+                            .into_owned()
                     } else {
                         remote_path::resolve_relative(&job.remote_path, v)
                             .to_string_lossy()
@@ -250,7 +284,9 @@ impl UseCases {
                         ));
                     }
                     if PathBuf::from(&v).is_absolute() {
-                        remote_path::normalize_path(v).to_string_lossy().into_owned()
+                        remote_path::normalize_path(v)
+                            .to_string_lossy()
+                            .into_owned()
                     } else {
                         let default_base_path = self.get_default_base_path(&input.name).await?;
                         let base_path = PathBuf::from(default_base_path);
@@ -276,19 +312,13 @@ impl UseCases {
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()> {
-        if input.path.trim().is_empty() {
-            return Err(AppError::new(
-                AppErrorKind::InvalidArgument,
-                codes::INVALID_ARGUMENT,
-            ));
-        }
         let local_path = match input.local_path {
             Some(v) if !v.trim().is_empty() => v,
             _ => {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::INVALID_ARGUMENT,
-                ))
+                ));
             }
         };
 
@@ -297,13 +327,34 @@ impl UseCases {
             None => {
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
                 return Ok(());
             }
+        };
+
+        let requested_path = if input.path.trim().is_empty() {
+            match job
+                .default_retrieve_path
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                Some(value) => value.to_string(),
+                None => {
+                    return Err(AppError::with_message(
+                        AppErrorKind::InvalidArgument,
+                        codes::INVALID_ARGUMENT,
+                        format!(
+                            "No default retrieve path set for job {}; pass a path or define [retrieve].default_path in Orbitfile at submit time.",
+                            input.job_id
+                        ),
+                    ));
+                }
+            }
+        } else {
+            input.path.clone()
         };
 
         if !job.is_completed && !input.force {
@@ -318,9 +369,7 @@ impl UseCases {
                 .await;
             let _ = stream
                 .send(StreamEvent {
-                    event: Some(stream_event::Event::Error(
-                        codes::CONFLICT.to_string(),
-                    )),
+                    event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                 })
                 .await;
             return Ok(());
@@ -339,9 +388,7 @@ impl UseCases {
                         .await;
                     let _ = stream
                         .send(StreamEvent {
-                            event: Some(stream_event::Event::Error(
-                                codes::CONFLICT.to_string(),
-                            )),
+                            event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                         })
                         .await;
                     return Ok(());
@@ -374,13 +421,13 @@ impl UseCases {
             return Ok(());
         }
 
-        let path_is_absolute = PathBuf::from(&input.path).is_absolute();
+        let path_is_absolute = PathBuf::from(&requested_path).is_absolute();
         let remote_path = if path_is_absolute {
-            remote_path::normalize_path(&input.path)
+            remote_path::normalize_path(&requested_path)
                 .to_string_lossy()
                 .into_owned()
         } else {
-            remote_path::resolve_relative(&job.remote_path, &input.path)
+            remote_path::resolve_relative(&job.remote_path, &requested_path)
                 .to_string_lossy()
                 .into_owned()
         };
@@ -392,9 +439,7 @@ impl UseCases {
                 Err(err) => {
                     let _ = stream
                         .send(StreamEvent {
-                            event: Some(stream_event::Event::Error(
-                                codes::LOCAL_ERROR.to_string(),
-                            )),
+                            event: Some(stream_event::Event::Error(codes::LOCAL_ERROR.to_string())),
                         })
                         .await;
                     log::debug!("could not resolve local destination: {err}");
@@ -404,7 +449,7 @@ impl UseCases {
         }
 
         let local_target = match resolve_retrieve_local_target(
-            &input.path,
+            &requested_path,
             &remote_path,
             &local_base,
             path_is_absolute,
@@ -444,9 +489,7 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
             }
@@ -459,18 +502,14 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::CONFLICT.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                     })
                     .await;
             }
             Err(_) => {
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::REMOTE_ERROR.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                     })
                     .await;
             }
@@ -499,9 +538,7 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -533,8 +570,10 @@ impl UseCases {
             }
         } else {
             if job.stdout_path.trim().is_empty() {
-                let message =
-                    format!("stdout log file is not configured for job {}\n", input.job_id);
+                let message = format!(
+                    "stdout log file is not configured for job {}\n",
+                    input.job_id
+                );
                 let _ = stream
                     .send(StreamEvent {
                         event: Some(stream_event::Event::Stderr(message.into_bytes())),
@@ -542,9 +581,7 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -594,9 +631,7 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -604,9 +639,7 @@ impl UseCases {
             Err(_) => {
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::REMOTE_ERROR.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -621,9 +654,7 @@ impl UseCases {
         {
             let _ = stream
                 .send(StreamEvent {
-                    event: Some(stream_event::Event::Error(
-                        codes::REMOTE_ERROR.to_string(),
-                    )),
+                    event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                 })
                 .await;
         }
@@ -650,9 +681,7 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -671,9 +700,7 @@ impl UseCases {
                 .await;
             let _ = stream
                 .send(StreamEvent {
-                    event: Some(stream_event::Event::Error(
-                        codes::CONFLICT.to_string(),
-                    )),
+                    event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                 })
                 .await;
             return Ok(());
@@ -730,9 +757,7 @@ impl UseCases {
             Err(_) => {
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::REMOTE_ERROR.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -754,9 +779,7 @@ impl UseCases {
                 .await;
             let _ = stream
                 .send(StreamEvent {
-                    event: Some(stream_event::Event::Error(
-                        codes::REMOTE_ERROR.to_string(),
-                    )),
+                    event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                 })
                 .await;
             return Ok(());
@@ -811,9 +834,7 @@ impl UseCases {
                     .await;
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::NOT_FOUND.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -927,8 +948,7 @@ impl UseCases {
                     } else {
                         err_text.trim().to_string()
                     };
-                    let message =
-                        format!("failed to cancel job {}: {}\n", input.job_id, detail);
+                    let message = format!("failed to cancel job {}: {}\n", input.job_id, detail);
                     let _ = stream
                         .send(StreamEvent {
                             event: Some(stream_event::Event::Stderr(message.into_bytes())),
@@ -962,9 +982,7 @@ impl UseCases {
                             );
                             let _ = stream
                                 .send(StreamEvent {
-                                    event: Some(stream_event::Event::Stderr(
-                                        message.into_bytes(),
-                                    )),
+                                    event: Some(stream_event::Event::Stderr(message.into_bytes())),
                                 })
                                 .await;
                             let _ = stream
@@ -998,8 +1016,7 @@ impl UseCases {
                 }
 
                 if start.elapsed() >= CLEANUP_CANCEL_TIMEOUT {
-                    let message =
-                        format!("timed out waiting for job {} to cancel\n", input.job_id);
+                    let message = format!("timed out waiting for job {} to cancel\n", input.job_id);
                     let _ = stream
                         .send(StreamEvent {
                             event: Some(stream_event::Event::Stderr(message.into_bytes())),
@@ -1007,9 +1024,7 @@ impl UseCases {
                         .await;
                     let _ = stream
                         .send(StreamEvent {
-                            event: Some(stream_event::Event::Error(
-                                codes::CONFLICT.to_string(),
-                            )),
+                            event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                         })
                         .await;
                     return Ok(());
@@ -1039,9 +1054,7 @@ impl UseCases {
             Err(_) => {
                 let _ = stream
                     .send(StreamEvent {
-                        event: Some(stream_event::Event::Error(
-                            codes::REMOTE_ERROR.to_string(),
-                        )),
+                        event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                     })
                     .await;
                 return Ok(());
@@ -1066,9 +1079,7 @@ impl UseCases {
                 .await;
             let _ = stream
                 .send(StreamEvent {
-                    event: Some(stream_event::Event::Error(
-                        codes::REMOTE_ERROR.to_string(),
-                    )),
+                    event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                 })
                 .await;
             return Ok(());
@@ -1121,7 +1132,7 @@ impl UseCases {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
-                ))
+                ));
             }
         };
         let config = self.config_for_host(&host).await.map_err(|err| {
@@ -1203,7 +1214,10 @@ impl UseCases {
             ));
         }
 
-        let remote_path_exists = self.remote_exec.directory_exists(&config, &remote_path).await?;
+        let remote_path_exists = self
+            .remote_exec
+            .directory_exists(&config, &remote_path)
+            .await?;
         if remote_path_exists && !allow_existing_remote_path {
             return Err(AppError::new(AppErrorKind::AlreadyExists, codes::CONFLICT));
         }
@@ -1406,6 +1420,8 @@ impl UseCases {
             remote_path: remote_path.clone(),
             stdout_path,
             stderr_path,
+            project_name: input.project_name.clone(),
+            default_retrieve_path: input.default_retrieve_path.clone(),
         };
 
         match self.jobs.insert_job(&job).await {
@@ -1442,15 +1458,19 @@ impl UseCases {
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()> {
-        self.cluster_upsert(ClusterUpsertInput {
-            name: input.name,
-            username: input.username,
-            address: input.address,
-            port: input.port,
-            identity_path: input.identity_path,
-            default_base_path: input.default_base_path,
-            emit_progress: true,
-        }, stream, mfa)
+        self.cluster_upsert(
+            ClusterUpsertInput {
+                name: input.name,
+                username: input.username,
+                address: input.address,
+                port: input.port,
+                identity_path: input.identity_path,
+                default_base_path: input.default_base_path,
+                emit_progress: true,
+            },
+            stream,
+            mfa,
+        )
         .await
     }
 
@@ -1472,7 +1492,7 @@ impl UseCases {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
-                ))
+                ));
             }
         };
 
@@ -1493,21 +1513,27 @@ impl UseCases {
             }
             None => existing.username.clone(),
         };
-        let identity_path = input.identity_path.or_else(|| existing.identity_path.clone());
+        let identity_path = input
+            .identity_path
+            .or_else(|| existing.identity_path.clone());
         let default_base_path = input
             .default_base_path
             .or_else(|| existing.default_base_path.clone());
         let port = input.port.unwrap_or(existing.port);
 
-        self.cluster_upsert(ClusterUpsertInput {
-            name: input.name,
-            username,
-            address,
-            port,
-            identity_path,
-            default_base_path,
-            emit_progress: false,
-        }, stream, mfa)
+        self.cluster_upsert(
+            ClusterUpsertInput {
+                name: input.name,
+                username,
+                address,
+                port,
+                identity_path,
+                default_base_path,
+                emit_progress: false,
+            },
+            stream,
+            mfa,
+        )
         .await
     }
 
@@ -1607,9 +1633,7 @@ impl UseCases {
                             continue;
                         }
                         None => {
-                            log::debug!(
-                                "sacct returned no terminal state for {name} job {job_id}"
-                            );
+                            log::debug!("sacct returned no terminal state for {name} job {job_id}");
                         }
                     };
 
@@ -1755,9 +1779,7 @@ impl UseCases {
         {
             let _ = stream
                 .send(StreamEvent {
-                    event: Some(stream_event::Event::Error(
-                        codes::REMOTE_ERROR.to_string(),
-                    )),
+                    event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                 })
                 .await;
         }
@@ -1771,7 +1793,7 @@ impl UseCases {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
-                ))
+                ));
             }
         };
         match host.default_base_path {
@@ -1790,7 +1812,7 @@ impl UseCases {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
-                ))
+                ));
             }
         };
         self.config_for_host(&host).await
@@ -1916,17 +1938,20 @@ impl UseCases {
             return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
         }
         let config_text = String::from_utf8_lossy(&capture.stdout);
-        let accounting_enabled = slurm::parse_accounting_enabled_from_scontrol(&config_text)
-            .unwrap_or(false);
+        let accounting_enabled =
+            slurm::parse_accounting_enabled_from_scontrol(&config_text).unwrap_or(false);
         if input.emit_progress {
-            let accounting_state = if accounting_enabled { "enabled" } else { "disabled" };
+            let accounting_state = if accounting_enabled {
+                "enabled"
+            } else {
+                "disabled"
+            };
             send_add_cluster_progress(stream, &format!("Accounting: {accounting_state}")).await;
         }
 
         let resolved_default_base_path =
             resolve_default_base_path(input.default_base_path, &home_dir)?;
-        let normalized_default_base_path =
-            normalize_default_base_path(resolved_default_base_path)?;
+        let normalized_default_base_path = normalize_default_base_path(resolved_default_base_path)?;
         if let Some(ref dbp) = normalized_default_base_path {
             let command = format!("mkdir -p {}", dbp);
             let capture = self
@@ -2018,6 +2043,8 @@ pub struct SubmitInput {
     pub filters: Vec<crate::app::types::SyncFilterRule>,
     pub new_directory: bool,
     pub force: bool,
+    pub project_name: Option<String>,
+    pub default_retrieve_path: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -2283,7 +2310,10 @@ mod tests {
         let resolved = resolve_default_base_path(Some("~".to_string()), home).unwrap();
         assert_eq!(resolved, Some(home.to_string()));
 
-        let expected = PathBuf::from(home).join("runs").to_string_lossy().into_owned();
+        let expected = PathBuf::from(home)
+            .join("runs")
+            .to_string_lossy()
+            .into_owned();
         let resolved = resolve_default_base_path(Some("~/runs".to_string()), home).unwrap();
         assert_eq!(resolved, Some(expected));
     }
@@ -2291,7 +2321,10 @@ mod tests {
     #[test]
     fn resolve_default_base_path_defaults_to_home_runs() {
         let home = "/home/alice";
-        let expected = PathBuf::from(home).join("runs").to_string_lossy().into_owned();
+        let expected = PathBuf::from(home)
+            .join("runs")
+            .to_string_lossy()
+            .into_owned();
         let resolved = resolve_default_base_path(None, home).unwrap();
         assert_eq!(resolved, Some(expected));
     }

@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 use std::net::SocketAddr;
 
-use crate::app::errors::{codes, AppError, AppErrorKind, AppResult};
+use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::NetworkProbePort;
 use crate::app::types::Address;
 

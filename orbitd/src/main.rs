@@ -97,6 +97,7 @@ async fn main() -> anyhow::Result<()> {
     let usecases = app::usecases::UseCases::new(
         store.clone(),
         store.clone(),
+        store.clone(),
         ssh_adapter.clone(),
         ssh_adapter.clone(),
         local_fs,

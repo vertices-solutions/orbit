@@ -12,12 +12,12 @@ use tokio::fs as tokiofs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::mpsc;
 
-use super::SessionManager;
-use super::super::sync::{sync_dir_with_executor, BoxFuture, SyncExecutor, SyncOptions};
+use super::super::sync::{BoxFuture, SyncExecutor, SyncOptions, sync_dir_with_executor};
 use super::super::utils::{
     build_remote_dir_paths, build_remote_hash_script, local_block_hashes, parse_remote_hash_output,
     sh_escape,
 };
+use super::SessionManager;
 
 impl SessionManager {
     async fn sftp(&self) -> Result<SftpSession> {

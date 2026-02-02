@@ -5,11 +5,16 @@ use clap::ArgMatches;
 use proto::{SubmitPathFilterAction, SubmitPathFilterRule};
 
 pub(super) fn submit_filters_from_matches(matches: &ArgMatches) -> Vec<SubmitPathFilterRule> {
-    let Some(("job", job_matches)) = matches.subcommand() else {
-        return Vec::new();
-    };
-    let Some(("submit", sub_matches)) = job_matches.subcommand() else {
-        return Vec::new();
+    let sub_matches = match matches.subcommand() {
+        Some(("job", scope)) => match scope.subcommand() {
+            Some(("submit", submit)) => submit,
+            _ => return Vec::new(),
+        },
+        Some(("project", scope)) => match scope.subcommand() {
+            Some(("submit", submit)) => submit,
+            _ => return Vec::new(),
+        },
+        _ => return Vec::new(),
     };
 
     let mut ordered: Vec<(usize, SubmitPathFilterAction, String)> = Vec::new();
@@ -70,6 +75,33 @@ mod tests {
             actions,
             vec![
                 SubmitPathFilterAction::Include as i32,
+                SubmitPathFilterAction::Exclude as i32,
+                SubmitPathFilterAction::Include as i32
+            ]
+        );
+    }
+
+    #[test]
+    fn project_submit_filters_preserve_flag_order() {
+        let matches = Cli::command().get_matches_from([
+            "orbit",
+            "project",
+            "submit",
+            "proj-a",
+            "cluster-a",
+            "--exclude",
+            "tmp/**",
+            "--include",
+            "src/**",
+        ]);
+        let filters = submit_filters_from_matches(&matches);
+        let patterns: Vec<&str> = filters.iter().map(|f| f.pattern.as_str()).collect();
+        let actions: Vec<i32> = filters.iter().map(|f| f.action).collect();
+
+        assert_eq!(patterns, vec!["tmp/**", "src/**"]);
+        assert_eq!(
+            actions,
+            vec![
                 SubmitPathFilterAction::Exclude as i32,
                 SubmitPathFilterAction::Include as i32
             ]
