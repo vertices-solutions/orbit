@@ -55,6 +55,7 @@ case "$HASH_METHOD" in
 esac
 
 mkdir -p "$DATA_DIR" "$RESULTS_DIR"
+rm -f "$DATA_DIR"/random-*.bin
 cp "inputs.txt" "$RESULTS_DIR/inputs.txt"
 
 for i in $(seq -w 1 "$FILE_COUNT"); do

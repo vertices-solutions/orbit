@@ -6,6 +6,7 @@ import os
 import re
 import shlex
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -45,6 +46,113 @@ def command_with_config(command, config_path):
     return cmd
 
 
+DEFAULT_ORBITD_PORT = 50056
+
+
+def load_toml_config(path: Path) -> dict:
+    try:
+        import tomllib
+    except ModuleNotFoundError:  # pragma: no cover - fallback for older Python
+        tomllib = None
+    if tomllib is not None:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+        return data if isinstance(data, dict) else {}
+
+    try:
+        import tomli as tomllib  # type: ignore[import-not-found]
+    except ModuleNotFoundError:
+        tomllib = None
+
+    if tomllib is not None:
+        with path.open("rb") as handle:
+            data = tomllib.load(handle)
+        return data if isinstance(data, dict) else {}
+
+    data: dict = {}
+    for raw_line in path.read_text().splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.split("#", 1)[0].strip()
+        if not key or not value:
+            continue
+        if value.startswith(("\"", "'")) and value.endswith(("\"", "'")):
+            data[key] = value[1:-1]
+            continue
+        lowered = value.lower()
+        if lowered in ("true", "false"):
+            data[key] = lowered == "true"
+            continue
+        try:
+            data[key] = int(value)
+        except ValueError:
+            data[key] = value
+    return data
+
+
+def port_available(port: int) -> bool:
+    if port <= 0 or port > 65535:
+        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        try:
+            sock.bind(("127.0.0.1", port))
+        except OSError:
+            return False
+    return True
+
+
+def allocate_free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def maybe_isolate_config(config_path: Path, out_dir: Path) -> Path:
+    config_data = load_toml_config(config_path)
+    port = config_data.get("port", DEFAULT_ORBITD_PORT)
+    if not isinstance(port, int):
+        raise RuntimeError("config port must be an integer")
+    if port_available(port):
+        return config_path
+
+    isolated_port = allocate_free_port()
+    db_dir = out_dir / "db"
+    db_dir.mkdir(parents=True, exist_ok=True)
+    db_path = db_dir / f"orbit_{uuid.uuid4().hex[:8]}.sqlite"
+    config_lines = [
+        f"port = {isolated_port}",
+        f"database_path = \"{db_path}\"",
+    ]
+    job_interval = config_data.get("job_check_interval_secs")
+    if isinstance(job_interval, int):
+        config_lines.append(f"job_check_interval_secs = {job_interval}")
+    verbose = config_data.get("verbose")
+    if isinstance(verbose, bool):
+        config_lines.append(f"verbose = {'true' if verbose else 'false'}")
+
+    isolated_path = out_dir / f"config.e2e.{isolated_port}.toml"
+    isolated_path.write_text("\n".join(config_lines) + "\n")
+    print(
+        f"config port {port} is in use; using isolated config {isolated_path} "
+        f"(port {isolated_port})"
+    )
+    source_db = config_data.get("database_path")
+    if isinstance(source_db, str):
+        source_db_path = Path(source_db)
+        if not source_db_path.is_absolute():
+            source_db_path = config_path.parent / source_db_path
+        if source_db_path.exists():
+            shutil.copy2(source_db_path, db_path)
+            for suffix in ("-wal", "-shm"):
+                extra = Path(str(source_db_path) + suffix)
+                if extra.exists():
+                    shutil.copy2(extra, Path(str(db_path) + suffix))
+    return isolated_path
+
+
 def start_daemon(daemon_cmd, ping_cmd, timeout_secs, poll_secs):
     proc = subprocess.Popen(daemon_cmd, start_new_session=True)
     deadline = time.monotonic() + timeout_secs
@@ -64,6 +172,8 @@ def start_daemon(daemon_cmd, ping_cmd, timeout_secs, poll_secs):
 def stop_daemon(proc, timeout_secs=10):
     if proc is None:
         return
+    if proc.poll() is not None:
+        return
     try:
         if os.name == "nt":
             proc.terminate()
@@ -71,13 +181,21 @@ def stop_daemon(proc, timeout_secs=10):
             os.killpg(proc.pid, signal.SIGTERM)
     except ProcessLookupError:
         return
+    except PermissionError:
+        try:
+            proc.terminate()
+        except Exception:
+            return
     try:
         proc.wait(timeout=timeout_secs)
     except subprocess.TimeoutExpired:
         if os.name == "nt":
             proc.kill()
         else:
-            os.killpg(proc.pid, signal.SIGKILL)
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except PermissionError:
+                proc.kill()
         proc.wait(timeout=timeout_secs)
 
 
@@ -425,11 +543,13 @@ def main():
         config_path = (repo_root / config_path).resolve()
     if not config_path.is_file():
         raise RuntimeError(f"config file not found: {config_path}")
+    out_dir = Path(args.out_dir).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    config_path = maybe_isolate_config(config_path, out_dir)
+
     orbit_cmd = command_with_config(args.orbit_bin, config_path)
     orbitd_cmd = command_with_config(args.orbitd_bin, config_path)
     non_interactive_cmd = orbit_cmd + ["--non-interactive"]
-    out_dir = Path(args.out_dir).resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
     keep_outputs = args.keep
 
     daemon_proc = None
@@ -500,6 +620,7 @@ def main():
                     "hash_method=sha256",
                     "--field",
                     "file_count=3",
+                    "--fill-defaults",
                 ],
                 "retrieve": ["results"],
                 "validate": lambda out: validate_templated_hashes(out, 3, "sha256"),
