@@ -15,8 +15,12 @@ pub(super) fn confirm_action(prompt: &str, hint: &str) -> anyhow::Result<bool> {
     if !std::io::stdin().is_terminal() || !std::io::stdout().is_terminal() {
         bail!("confirmation requires a TTY; pass --yes to skip the prompt");
     }
+    prompt_yes_no(prompt, hint)
+}
+
+pub(super) fn prompt_yes_no(prompt: &str, hint: &str) -> anyhow::Result<bool> {
     loop {
-        let input = prompt_line_with_default(prompt, hint, Some("no"))?;
+        let input = prompt_line(prompt, hint)?;
         let normalized = input.trim().to_ascii_lowercase();
         match normalized.as_str() {
             "y" | "yes" => return Ok(true),
@@ -51,6 +55,9 @@ fn prompt_line_with_default_result(
     let mut stdout = std::io::stdout();
     execute!(stdout, cursor::MoveToColumn(0))?;
     let mut editor = LineEditor::new(prompt, 0, hint, default);
+    if default.is_some() {
+        editor.apply_default_if_empty();
+    }
     editor.render(&mut stdout)?;
     loop {
         match event::read()? {

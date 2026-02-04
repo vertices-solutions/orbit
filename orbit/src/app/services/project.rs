@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use proto::{SubmitPathFilterAction, SubmitPathFilterRule};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 
 use crate::app::errors::{AppError, AppResult};
 use crate::app::ports::FilesystemPort;
@@ -21,13 +23,40 @@ pub struct ProjectRuleSet {
 
 /// Parsed and validated project configuration loaded from Orbitfile
 /// This is the canonical in-memory representation used by project discovery and validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct OrbitfileProjectConfig {
     pub root: PathBuf,
     pub name: String,
     pub default_retrieve_path: Option<String>,
     pub submit_sbatch_script: Option<String>,
     pub rules: ProjectRuleSet,
+    pub template: Option<TemplateConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateConfig {
+    pub fields: BTreeMap<String, TemplateField>,
+    pub files: Vec<String>,
+    pub presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TemplateFieldType {
+    String,
+    Integer,
+    Float,
+    Json,
+    FilePath,
+    FileContents,
+    Enum,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TemplateField {
+    pub field_type: TemplateFieldType,
+    pub default: Option<JsonValue>,
+    pub description: Option<String>,
+    pub enum_values: Vec<String>,
 }
 
 /// Result of checking a registered project on disk.
@@ -55,6 +84,8 @@ struct RawOrbitfile {
     submit: Option<RawSubmit>,
     #[serde(default)]
     sync: Option<RawSync>,
+    #[serde(default)]
+    template: Option<RawTemplate>,
 }
 
 /// Raw [project] section used while loading and writing Orbitfiles.
@@ -90,6 +121,34 @@ struct RawSync {
     exclude: Vec<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RawTemplate {
+    #[serde(default)]
+    fields: BTreeMap<String, RawTemplateField>,
+    #[serde(default)]
+    files: RawTemplateFiles,
+    #[serde(default)]
+    presets: BTreeMap<String, BTreeMap<String, toml::Value>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RawTemplateField {
+    #[serde(rename = "type")]
+    field_type: String,
+    #[serde(default)]
+    default: Option<toml::Value>,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    values: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct RawTemplateFiles {
+    #[serde(default)]
+    paths: Vec<String>,
+}
+
 pub fn validate_project_name(name: &str) -> AppResult<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
@@ -110,14 +169,8 @@ pub fn sanitize_project_name(input: &str) -> String {
     input
         .trim()
         .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' {
-                ch
-            } else {
-                '-'
-            }
-        })
-        .collect::<String>()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+        .collect()
 }
 
 pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
@@ -132,6 +185,7 @@ pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
         include: Vec::new(),
         exclude: vec!["/.git/".to_string()],
     });
+    raw.template = Some(RawTemplate::default());
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
 }
 
@@ -198,24 +252,33 @@ pub fn load_project_from_root(
     let raw = toml::from_str::<RawOrbitfile>(&content)
         .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?;
 
-    let project = raw
-        .project
+    let RawOrbitfile {
+        project,
+        retrieve,
+        submit,
+        sync,
+        template,
+    } = raw;
+
+    let project = project
         .ok_or_else(|| AppError::invalid_argument("Orbitfile is missing [project]"))?;
     let name = project.name.trim().to_string();
     validate_project_name(&name)?;
 
     let default_retrieve_path =
-        trim_optional(raw.retrieve.and_then(|section| section.default_path))
+        trim_optional(retrieve.and_then(|section| section.default_path))
             .map(|value| value.to_string());
-    let submit_sbatch_script = trim_optional(raw.submit.and_then(|section| section.sbatch_script))
+    let submit_sbatch_script = trim_optional(submit.and_then(|section| section.sbatch_script))
         .map(|value| value.to_string());
 
     let mut include = Vec::new();
     let mut exclude = Vec::new();
-    if let Some(sync) = raw.sync {
+    if let Some(sync) = sync {
         include = normalize_patterns(sync.include, "sync.include")?;
         exclude = normalize_patterns(sync.exclude, "sync.exclude")?;
     }
+
+    let template = parse_template_config(template)?;
 
     Ok(OrbitfileProjectConfig {
         root: project_root.to_path_buf(),
@@ -223,6 +286,7 @@ pub fn load_project_from_root(
         default_retrieve_path,
         submit_sbatch_script,
         rules: ProjectRuleSet { include, exclude },
+        template,
     })
 }
 
@@ -394,6 +458,278 @@ fn normalize_patterns(values: Vec<String>, field: &str) -> AppResult<Vec<String>
     Ok(out)
 }
 
+fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateConfig>> {
+    let Some(raw) = raw else {
+        return Ok(None);
+    };
+
+    let mut fields = BTreeMap::new();
+    for (name, raw_field) in raw.fields {
+        let field_name = name.trim();
+        if field_name.is_empty() {
+            return Err(AppError::invalid_argument(
+                "template field name cannot be empty",
+            ));
+        }
+        validate_template_field_name(field_name)?;
+        let field_type = parse_template_field_type(&raw_field.field_type)?;
+        let enum_values = normalize_enum_values(field_name, field_type, raw_field.values)?;
+        let field = TemplateField {
+            field_type,
+            default: None,
+            description: trim_optional(raw_field.description),
+            enum_values,
+        };
+        let default = match raw_field.default {
+            Some(value) => Some(
+                parse_template_value_from_toml(&field, &value).map_err(|err| {
+                    AppError::invalid_argument(format!(
+                        "template field '{field_name}' default is invalid: {}",
+                        err.message
+                    ))
+                })?,
+            ),
+            None => None,
+        };
+        let field = TemplateField {
+            default,
+            ..field
+        };
+        fields.insert(
+            field_name.to_string(),
+            field,
+        );
+    }
+
+    let mut files = Vec::new();
+    let mut seen_files = BTreeSet::new();
+    for file in raw.files.paths {
+        let trimmed = file.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::invalid_argument(
+                "template file path cannot be empty",
+            ));
+        }
+        if !seen_files.insert(trimmed.to_string()) {
+            return Err(AppError::invalid_argument(format!(
+                "template file '{trimmed}' is listed more than once"
+            )));
+        }
+        files.push(trimmed.to_string());
+    }
+
+    let mut presets = BTreeMap::new();
+    for (preset_name, values) in raw.presets {
+        let preset_key = preset_name.trim();
+        if preset_key.is_empty() {
+            return Err(AppError::invalid_argument(
+                "template preset name cannot be empty",
+            ));
+        }
+        if presets.contains_key(preset_key) {
+            return Err(AppError::invalid_argument(format!(
+                "template preset '{preset_key}' is listed more than once"
+            )));
+        }
+        let mut preset_values = BTreeMap::new();
+        for (field_name, value) in values {
+            let field_key = field_name.trim();
+            if field_key.is_empty() {
+                return Err(AppError::invalid_argument(format!(
+                    "template preset '{preset_key}' contains an empty field name"
+                )));
+            }
+            let Some(field) = fields.get(field_key) else {
+                return Err(AppError::invalid_argument(format!(
+                    "template preset '{preset_key}' references unknown field '{field_key}'"
+                )));
+            };
+            let parsed = parse_template_value_from_toml(field, &value).map_err(|err| {
+                AppError::invalid_argument(format!(
+                    "template preset '{preset_key}' field '{field_key}' is invalid: {}",
+                    err.message
+                ))
+            })?;
+            preset_values.insert(field_key.to_string(), parsed);
+        }
+        presets.insert(preset_key.to_string(), preset_values);
+    }
+
+    Ok(Some(TemplateConfig {
+        fields,
+        files,
+        presets,
+    }))
+}
+
+fn validate_template_field_name(name: &str) -> AppResult<()> {
+    let mut chars = name.chars();
+    let Some(first) = chars.next() else {
+        return Err(AppError::invalid_argument(
+            "template field name cannot be empty",
+        ));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(AppError::invalid_argument(format!(
+            "template field name '{name}' must start with a letter or underscore"
+        )));
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(AppError::invalid_argument(format!(
+            "template field name '{name}' must match ^[A-Za-z_][A-Za-z0-9_]*$"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_template_field_type(value: &str) -> AppResult<TemplateFieldType> {
+    match value.trim() {
+        "string" => Ok(TemplateFieldType::String),
+        "integer" => Ok(TemplateFieldType::Integer),
+        "float" => Ok(TemplateFieldType::Float),
+        "json" => Ok(TemplateFieldType::Json),
+        "file_path" => Ok(TemplateFieldType::FilePath),
+        "file_contents" => Ok(TemplateFieldType::FileContents),
+        "enum" => Ok(TemplateFieldType::Enum),
+        other => Err(AppError::invalid_argument(format!(
+            "unknown template field type '{other}'"
+        ))),
+    }
+}
+
+fn parse_template_value_from_toml(
+    field: &TemplateField,
+    value: &toml::Value,
+) -> AppResult<JsonValue> {
+    match field.field_type {
+        TemplateFieldType::String
+        | TemplateFieldType::FilePath
+        | TemplateFieldType::FileContents => {
+            match value {
+                toml::Value::String(v) => Ok(JsonValue::String(v.clone())),
+                _ => Err(AppError::invalid_argument(format!(
+                    "expected string, got {}",
+                    toml_type_name(value)
+                ))),
+            }
+        }
+        TemplateFieldType::Integer => match value {
+            toml::Value::Integer(v) => Ok(JsonValue::Number((*v).into())),
+            toml::Value::Float(v) if v.fract() == 0.0 => {
+                Ok(JsonValue::Number((*v as i64).into()))
+            }
+            _ => Err(AppError::invalid_argument(format!(
+                "expected integer, got {}",
+                toml_type_name(value)
+            ))),
+        },
+        TemplateFieldType::Float => match value {
+            toml::Value::Integer(v) => Ok(JsonValue::Number((*v).into())),
+            toml::Value::Float(v) => serde_json::Number::from_f64(*v)
+                .map(JsonValue::Number)
+                .ok_or_else(|| {
+                    AppError::invalid_argument("float value is not representable as JSON")
+                }),
+            _ => Err(AppError::invalid_argument(format!(
+                "expected float, got {}",
+                toml_type_name(value)
+            ))),
+        },
+        TemplateFieldType::Json => toml_value_to_json(value),
+        TemplateFieldType::Enum => match value {
+            toml::Value::String(v) => {
+                if field.enum_values.iter().any(|item| item == v) {
+                    Ok(JsonValue::String(v.clone()))
+                } else {
+                    Err(AppError::invalid_argument(format!(
+                        "expected one of [{}]",
+                        field.enum_values.join(", ")
+                    )))
+                }
+            }
+            _ => Err(AppError::invalid_argument(format!(
+                "expected string, got {}",
+                toml_type_name(value)
+            ))),
+        },
+    }
+}
+
+fn normalize_enum_values(
+    field_name: &str,
+    field_type: TemplateFieldType,
+    values: Vec<String>,
+) -> AppResult<Vec<String>> {
+    if field_type != TemplateFieldType::Enum {
+        if values.is_empty() {
+            return Ok(Vec::new());
+        }
+        return Err(AppError::invalid_argument(format!(
+            "template field '{field_name}' has enum values but is not type 'enum'"
+        )));
+    }
+    let mut out = Vec::new();
+    let mut seen = BTreeSet::new();
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(AppError::invalid_argument(format!(
+                "template field '{field_name}' has an empty enum value"
+            )));
+        }
+        if !seen.insert(trimmed.to_string()) {
+            return Err(AppError::invalid_argument(format!(
+                "template field '{field_name}' has duplicate enum value '{trimmed}'"
+            )));
+        }
+        out.push(trimmed.to_string());
+    }
+    if out.is_empty() {
+        return Err(AppError::invalid_argument(format!(
+            "template field '{field_name}' enum values cannot be empty"
+        )));
+    }
+    Ok(out)
+}
+
+fn toml_value_to_json(value: &toml::Value) -> AppResult<JsonValue> {
+    match value {
+        toml::Value::String(v) => Ok(JsonValue::String(v.clone())),
+        toml::Value::Integer(v) => Ok(JsonValue::Number((*v).into())),
+        toml::Value::Float(v) => serde_json::Number::from_f64(*v)
+            .map(JsonValue::Number)
+            .ok_or_else(|| AppError::invalid_argument("float value is not representable as JSON")),
+        toml::Value::Boolean(v) => Ok(JsonValue::Bool(*v)),
+        toml::Value::Datetime(v) => Ok(JsonValue::String(v.to_string())),
+        toml::Value::Array(values) => {
+            let mut out = Vec::with_capacity(values.len());
+            for item in values {
+                out.push(toml_value_to_json(item)?);
+            }
+            Ok(JsonValue::Array(out))
+        }
+        toml::Value::Table(table) => {
+            let mut map = serde_json::Map::new();
+            for (key, value) in table {
+                map.insert(key.clone(), toml_value_to_json(value)?);
+            }
+            Ok(JsonValue::Object(map))
+        }
+    }
+}
+
+fn toml_type_name(value: &toml::Value) -> &'static str {
+    match value {
+        toml::Value::String(_) => "string",
+        toml::Value::Integer(_) => "integer",
+        toml::Value::Float(_) => "float",
+        toml::Value::Boolean(_) => "boolean",
+        toml::Value::Datetime(_) => "datetime",
+        toml::Value::Array(_) => "array",
+        toml::Value::Table(_) => "table",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -431,5 +767,52 @@ mod tests {
         assert!(content.contains("name = \"demo\""));
         assert!(content.contains("[sync]"));
         assert!(content.contains("/.git/"));
+        assert!(content.contains("[template.files]"));
+        assert!(content.contains("paths = []"));
+    }
+
+    #[test]
+    fn parse_template_config_accepts_fields_files_and_presets() {
+        let raw = toml::from_str::<RawOrbitfile>(
+            r#"
+            [project]
+            name = "demo"
+
+            [template]
+
+            [template.fields.sample_name]
+            type = "string"
+            default = "demo"
+
+            [template.fields.num_steps]
+            type = "integer"
+
+            [template.fields.config]
+            type = "json"
+            default = { mode = "fast" }
+
+            [template.fields.mode]
+            type = "enum"
+            values = ["fast", "accurate"]
+            default = "fast"
+
+            [template.files]
+            paths = ["configs/run.yaml"]
+
+            [template.presets.fast]
+            num_steps = 500
+            "#,
+        )
+        .expect("orbitfile");
+        let template = parse_template_config(raw.template)
+            .expect("parse")
+            .expect("template");
+        assert!(template.fields.contains_key("sample_name"));
+        assert!(template.fields.contains_key("num_steps"));
+        assert!(template.fields.contains_key("config"));
+        let mode = template.fields.get("mode").expect("mode");
+        assert_eq!(mode.enum_values, vec!["fast", "accurate"]);
+        assert_eq!(template.files, vec!["configs/run.yaml"]);
+        assert!(template.presets.contains_key("fast"));
     }
 }

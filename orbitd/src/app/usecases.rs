@@ -20,7 +20,9 @@ use crate::app::ports::{
     ClockPort, ClusterStorePort, FileSyncPort, JobStorePort, LocalFilesystemPort, MfaPort,
     NetworkProbePort, ProjectStorePort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
 };
-use crate::app::services::{managers, os, random, remote_path, sbatch, shell, slurm, submit_paths};
+use crate::app::services::{
+    managers, os, random, remote_path, sbatch, shell, slurm, submit_paths, templates,
+};
 use crate::app::types::{
     Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, ProjectRecord, SshConfig,
     SyncOptions,
@@ -1202,6 +1204,18 @@ impl UseCases {
             return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
         }
 
+        let mut sync_root = PathBuf::from(&input.local_path);
+        let mut template_values_json = None;
+        let mut _template_guard = None;
+        if let Some(prepared) = templates::prepare_template_submission(
+            &sync_root,
+            input.template_values_json.as_deref(),
+        )? {
+            sync_root = prepared.staging_root;
+            template_values_json = Some(prepared.values_json);
+            _template_guard = Some(prepared.temp_dir);
+        }
+
         if let Err(err) = self
             .remote_exec
             .ensure_connected_submit(&config, stream, mfa)
@@ -1244,7 +1258,7 @@ impl UseCases {
         let sync_result = tokio::select! {
             res = self.file_sync.sync_dir(
                 &config,
-                Path::new(&input.local_path),
+                &sync_root,
                 &remote_path,
                 sync_options,
                 stream,
@@ -1354,7 +1368,7 @@ impl UseCases {
             if sbatch_path.is_absolute() {
                 sbatch_path
             } else {
-                PathBuf::from(&input.local_path).join(&input.sbatchscript)
+                sync_root.join(&input.sbatchscript)
             }
         };
 
@@ -1422,6 +1436,7 @@ impl UseCases {
             stderr_path,
             project_name: input.project_name.clone(),
             default_retrieve_path: input.default_retrieve_path.clone(),
+            template_values: template_values_json,
         };
 
         match self.jobs.insert_job(&job).await {
@@ -2045,6 +2060,7 @@ pub struct SubmitInput {
     pub force: bool,
     pub project_name: Option<String>,
     pub default_retrieve_path: Option<String>,
+    pub template_values_json: Option<String>,
 }
 
 #[derive(Clone, Debug)]

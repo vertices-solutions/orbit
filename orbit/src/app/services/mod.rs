@@ -13,13 +13,15 @@ use crate::app::errors::{AppError, AppResult};
 use crate::app::ports::{FilesystemPort, InteractionPort, NetworkPort, OutputPort};
 
 mod project;
+mod templates;
 pub use project::{
     CheckedProjectStatus, OrbitfileProjectConfig, ProjectCheckFailure, ProjectCheckStatus,
-    ProjectRuleSet, build_default_orbitfile_contents, check_registered_project,
-    discover_project_from_submit_root, load_project_from_root, merge_submit_filters,
-    resolve_orbitfile_sbatch_script, sanitize_project_name, upsert_orbitfile_project_name,
-    validate_project_name,
+    ProjectRuleSet, TemplateConfig, TemplateField, TemplateFieldType,
+    build_default_orbitfile_contents, check_registered_project, discover_project_from_submit_root,
+    load_project_from_root, merge_submit_filters, resolve_orbitfile_sbatch_script,
+    sanitize_project_name, upsert_orbitfile_project_name, validate_project_name,
 };
+pub use templates::{TemplateValues, resolve_template_values};
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_BASE_PATH: &str = "~/runs";
@@ -691,6 +693,16 @@ mod tests {
         }
 
         async fn select_sbatch(&self, _options: &[String]) -> AppResult<Option<String>> {
+            Err(AppError::internal_error("unexpected selection"))
+        }
+
+        async fn select_enum(
+            &self,
+            _name: &str,
+            _options: &[String],
+            _default: Option<&str>,
+            _help: &str,
+        ) -> AppResult<String> {
             Err(AppError::internal_error("unexpected selection"))
         }
 

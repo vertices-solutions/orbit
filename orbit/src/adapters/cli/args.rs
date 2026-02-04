@@ -189,6 +189,15 @@ pub struct ProjectSubmitArgs {
     /// Cluster name.
     pub cluster: String,
     pub sbatchscript: Option<String>,
+    /// Apply a template preset before prompting for missing fields.
+    #[arg(long)]
+    pub preset: Option<String>,
+    /// Template field override in KEY=VALUE form (repeatable).
+    #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub field: Vec<String>,
+    /// Accept default template values without prompting (interactive mode only).
+    #[arg(long)]
+    pub fill_defaults: bool,
     #[arg(long)]
     pub remote_path: Option<String>,
     /// Always create a new remote directory, even if this local path was submitted before.
@@ -286,6 +295,15 @@ pub struct SubmitArgs {
     pub name: String,
     pub local_path: String,
     pub sbatchscript: Option<String>,
+    /// Apply a template preset before prompting for missing fields.
+    #[arg(long)]
+    pub preset: Option<String>,
+    /// Template field override in KEY=VALUE form (repeatable).
+    #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub field: Vec<String>,
+    /// Accept default template values without prompting (interactive mode only).
+    #[arg(long)]
+    pub fill_defaults: bool,
     #[arg(long)]
     pub remote_path: Option<String>,
     /// Always create a new remote directory, even if this local path was submitted before.

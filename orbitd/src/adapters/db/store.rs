@@ -151,6 +151,7 @@ impl HostStore {
         )
         .execute(&self.pool)
         .await?;
+
         Ok(())
     }
 
@@ -189,6 +190,7 @@ impl HostStore {
             stderr_path TEXT,
             project_name TEXT,
             default_retrieve_path TEXT,
+            template_values TEXT,
             is_completed boolean default 0,
             created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             completed_at text,
@@ -200,6 +202,18 @@ impl HostStore {
         )
         .execute(&self.pool)
         .await?;
+
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(jobs)")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+        if !columns.iter().any(|name| name == "template_values") {
+            sqlx::query("ALTER TABLE jobs ADD COLUMN template_values TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
         Ok(())
     }
 
@@ -661,9 +675,9 @@ impl HostStore {
             r#"
         insert into jobs(
             scheduler_id, host_id, local_path, remote_path, stdout_path, stderr_path,
-            project_name, default_retrieve_path
+            project_name, default_retrieve_path, template_values
         )
-        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         returning id;
     "#,
         )
@@ -675,6 +689,7 @@ impl HostStore {
         .bind(job.stderr_path.clone())
         .bind(job.project_name.clone())
         .bind(job.default_retrieve_path.clone())
+        .bind(job.template_values.clone())
         .fetch_one(&self.pool)
         .await?;
         Ok(rec.try_get::<i64, _>("id")?)
@@ -730,7 +745,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs where host_id = ?1
             )
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -757,6 +772,7 @@ impl HostStore {
                    aj.stderr_path as stderr_path,
                    aj.project_name as project_name,
                    aj.default_retrieve_path as default_retrieve_path,
+                   aj.template_values as template_values,
                    h.name as name
             from jobs aj
             join hosts h on aj.host_id = h.id
@@ -775,7 +791,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs
             )
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -789,7 +805,7 @@ impl HostStore {
     pub async fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let rows = sqlx::query(
             r#"
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.project_name as project_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as name
             from jobs aj
             join hosts h
               on aj.host_id = h.id
@@ -942,6 +958,7 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
         stderr_path: row.try_get("stderr_path").ok().flatten(),
         project_name: row.try_get("project_name").ok().flatten(),
         default_retrieve_path: row.try_get("default_retrieve_path").ok().flatten(),
+        template_values: row.try_get("template_values").ok().flatten(),
     }
 }
 
@@ -1202,6 +1219,7 @@ mod tests {
             stderr_path: Some("/remote/run/slurm-42.out".into()),
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         db.insert_job(&job).await.unwrap();
 
@@ -1220,6 +1238,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn job_round_trips_template_values() {
+        let db = HostStore::open_memory().await.unwrap();
+        let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
+        db.insert_host(&host).await.unwrap();
+
+        let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
+        let job = NewJob {
+            scheduler_id: Some(77),
+            host_id: host_row.id,
+            local_path: "/tmp/local".into(),
+            remote_path: "/remote/run".into(),
+            stdout_path: "/remote/run/slurm-77.out".into(),
+            stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
+            template_values: Some(r#"{"alpha": "beta"}"#.to_string()),
+        };
+        let job_id = db.insert_job(&job).await.unwrap();
+
+        let fetched = db.get_job_by_job_id(job_id).await.unwrap().unwrap();
+        assert_eq!(
+            fetched.template_values.as_deref(),
+            Some(r#"{"alpha": "beta"}"#)
+        );
+    }
+
+    #[tokio::test]
     async fn latest_remote_path_for_local_path_returns_latest() {
         let db = HostStore::open_memory().await.unwrap();
         let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
@@ -1235,6 +1280,7 @@ mod tests {
             stderr_path: None,
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         let job2 = NewJob {
             scheduler_id: Some(41),
@@ -1245,6 +1291,7 @@ mod tests {
             stderr_path: None,
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         db.insert_job(&job1).await.unwrap();
         db.insert_job(&job2).await.unwrap();
@@ -1278,6 +1325,7 @@ mod tests {
             stderr_path: None,
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         let job_id = db.insert_job(&job).await.unwrap();
 
@@ -1314,6 +1362,7 @@ mod tests {
             stderr_path: Some("/remote/run-a/slurm-42.out".into()),
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         let job_id = db.insert_job(&job).await.unwrap();
 
@@ -1339,6 +1388,7 @@ mod tests {
             stderr_path: Some("/remote/run-a/slurm-42.out".into()),
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         let job_id = db.insert_job(&job).await.unwrap();
 
@@ -1366,6 +1416,7 @@ mod tests {
             stderr_path: Some("/remote/run1/slurm-101.out".into()),
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         let job2 = NewJob {
             scheduler_id: Some(102),
@@ -1376,6 +1427,7 @@ mod tests {
             stderr_path: Some("/remote/run2/slurm-102.out".into()),
             project_name: None,
             default_retrieve_path: None,
+            template_values: None,
         };
         let job1_id = db.insert_job(&job1).await.unwrap();
         let job2_id = db.insert_job(&job2).await.unwrap();

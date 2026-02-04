@@ -25,6 +25,18 @@ pub struct SubmitCapture {
 }
 
 #[derive(Debug, Clone)]
+pub enum InitActionStatus {
+    Success,
+    Failed(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectInitAction {
+    pub status: InitActionStatus,
+    pub message: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum CommandResult {
     Message {
         message: String,
@@ -96,6 +108,7 @@ pub enum CommandResult {
         path: PathBuf,
         orbitfile: PathBuf,
         git_initialized: bool,
+        actions: Vec<ProjectInitAction>,
     },
     ProjectList {
         projects: Vec<proto::ProjectRecord>,

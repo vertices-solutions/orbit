@@ -610,6 +610,7 @@ impl Agent for GrpcAgent {
             force,
             project_name,
             default_retrieve_path,
+            template_values_json,
         ) = match init.msg {
             Some(proto::submit_request::Msg::Init(init)) => (
                 init.local_path,
@@ -621,6 +622,7 @@ impl Agent for GrpcAgent {
                 init.force,
                 init.project_name,
                 init.default_retrieve_path,
+                init.template_values_json,
             ),
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
@@ -656,6 +658,7 @@ impl Agent for GrpcAgent {
             force,
             project_name,
             default_retrieve_path,
+            template_values_json,
         };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
         let stream_output = GrpcSubmitStreamOutput {

@@ -7,7 +7,7 @@ use proto::SubmitPathFilterRule;
 
 mod results;
 
-pub use results::{CommandResult, StreamCapture, SubmitCapture};
+pub use results::{CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture};
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -41,6 +41,9 @@ pub struct SubmitJobCommand {
     pub new_directory: bool,
     pub force: bool,
     pub filters: Vec<SubmitPathFilterRule>,
+    pub template_preset: Option<String>,
+    pub template_fields: Vec<String>,
+    pub fill_defaults: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -162,6 +165,9 @@ pub struct ProjectSubmitCommand {
     pub new_directory: bool,
     pub force: bool,
     pub filters: Vec<SubmitPathFilterRule>,
+    pub template_preset: Option<String>,
+    pub template_fields: Vec<String>,
+    pub fill_defaults: bool,
 }
 
 #[derive(Debug, Clone)]
