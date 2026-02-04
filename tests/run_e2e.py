@@ -330,6 +330,44 @@ def validate_binary_output(project_out, repo_root):
         raise RuntimeError("binary_output: sample_copy.txt mismatch")
 
 
+def validate_templated_hashes(project_out, expected_count, expected_method):
+    results_dir = project_out / "results"
+    summary_path = results_dir / "summary.txt"
+    if not summary_path.is_file():
+        raise RuntimeError("templated_hashes: summary.txt missing")
+    summary_lines = summary_path.read_text().splitlines()
+    method_line = next(
+        (line for line in summary_lines if line.startswith("hash_method: ")),
+        None,
+    )
+    if method_line != f"hash_method: {expected_method}":
+        raise RuntimeError("templated_hashes: hash_method mismatch")
+    files_line = next(
+        (line for line in summary_lines if line.startswith("files: ")),
+        None,
+    )
+    if files_line != f"files: {expected_count}":
+        raise RuntimeError("templated_hashes: file count mismatch")
+
+    hashes_path = results_dir / f"hashes.{expected_method}"
+    if not hashes_path.is_file():
+        raise RuntimeError("templated_hashes: hashes file missing")
+    hash_lines = [line for line in hashes_path.read_text().splitlines() if line.strip()]
+    if len(hash_lines) != expected_count:
+        raise RuntimeError("templated_hashes: hashes count mismatch")
+
+    inputs_path = results_dir / "inputs.txt"
+    if not inputs_path.is_file():
+        raise RuntimeError("templated_hashes: inputs.txt missing")
+    input_lines = inputs_path.read_text().splitlines()
+    if len(input_lines) < 2:
+        raise RuntimeError("templated_hashes: inputs.txt incomplete")
+    if input_lines[0] != f"Number of files: {expected_count}":
+        raise RuntimeError("templated_hashes: inputs.txt file count mismatch")
+    if input_lines[1] != f"Hashing algorithm: {expected_method}":
+        raise RuntimeError("templated_hashes: inputs.txt hash method mismatch")
+
+
 def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, extra_args=None):
     cmd = orbit_cmd + [
         "job",
@@ -453,6 +491,18 @@ def main():
                 "cancel": True,
                 "retrieve": [],
                 "validate": lambda out: None,
+            },
+            {
+                "id": "06_templated_hashes",
+                "path": repo_root / "tests/06_templated_hashes",
+                "submit_args": [
+                    "--field",
+                    "hash_method=sha256",
+                    "--field",
+                    "file_count=3",
+                ],
+                "retrieve": ["results"],
+                "validate": lambda out: validate_templated_hashes(out, 3, "sha256"),
             },
         ]
 

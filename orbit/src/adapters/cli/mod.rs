@@ -60,6 +60,9 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                     new_directory: args.new_directory,
                     force: args.force,
                     filters,
+                    template_preset: args.preset,
+                    template_fields: args.field,
+                    fill_defaults: args.fill_defaults,
                 })
             }
             JobCmd::List(args) => JobCommand::List(ListJobsCommand {
@@ -137,6 +140,9 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                     new_directory: args.new_directory,
                     force: args.force,
                     filters,
+                    template_preset: args.preset,
+                    template_fields: args.field,
+                    fill_defaults: args.fill_defaults,
                 })
             }
             ProjectCmd::List(_args) => ProjectCommand::List(ProjectListCommand),

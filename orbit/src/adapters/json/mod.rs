@@ -5,7 +5,7 @@ mod format;
 
 use serde_json::{Value, json};
 
-use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
+use crate::app::commands::{CommandResult, InitActionStatus, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
 use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
 use format::{cluster_to_json, job_to_json};
@@ -99,6 +99,18 @@ impl InteractionPort for NonInteractiveInteraction {
     async fn select_sbatch(&self, _options: &[String]) -> AppResult<Option<String>> {
         Err(AppError::invalid_argument(
             "interactive selection required; rerun without --non-interactive",
+        ))
+    }
+
+    async fn select_enum(
+        &self,
+        _name: &str,
+        _options: &[String],
+        _default: Option<&str>,
+        _help: &str,
+    ) -> AppResult<String> {
+        Err(AppError::invalid_argument(
+            "input required; rerun without --non-interactive or pass --field",
         ))
     }
 
@@ -333,11 +345,26 @@ fn result_to_json(result: &CommandResult) -> Value {
             path,
             orbitfile,
             git_initialized,
+            actions,
         } => json!({
             "name": name,
             "path": path.display().to_string(),
             "orbitfile": orbitfile.display().to_string(),
             "gitInitialized": git_initialized,
+            "actions": actions.iter().map(|action| {
+                let status = match &action.status {
+                    InitActionStatus::Success => "success",
+                    InitActionStatus::Failed(_) => "failed",
+                };
+                let mut value = json!({
+                    "status": status,
+                    "message": action.message,
+                });
+                if let InitActionStatus::Failed(reason) = &action.status {
+                    value["reason"] = json!(reason);
+                }
+                value
+            }).collect::<Vec<_>>(),
             "status": "initialized",
         }),
         CommandResult::ProjectList { projects } => {

@@ -454,6 +454,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         filters: Vec<SubmitPathFilterRule>,
         project_name: Option<String>,
         default_retrieve_path: Option<String>,
+        template_values_json: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<SubmitCapture> {
@@ -472,6 +473,7 @@ impl OrbitdPort for GrpcOrbitdPort {
                     force,
                     project_name,
                     default_retrieve_path,
+                    template_values_json,
                 })),
             })
             .await

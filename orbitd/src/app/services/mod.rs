@@ -9,3 +9,4 @@ pub mod sbatch;
 pub mod shell;
 pub mod slurm;
 pub mod submit_paths;
+pub mod templates;

@@ -80,6 +80,7 @@ pub trait OrbitdPort: Send + Sync {
         filters: Vec<proto::SubmitPathFilterRule>,
         project_name: Option<String>,
         default_retrieve_path: Option<String>,
+        template_values_json: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<SubmitCapture>;
@@ -145,6 +146,13 @@ pub trait InteractionPort: Send + Sync {
         default: &str,
     ) -> AppResult<String>;
     async fn select_sbatch(&self, options: &[String]) -> AppResult<Option<String>>;
+    async fn select_enum(
+        &self,
+        name: &str,
+        options: &[String],
+        default: Option<&str>,
+        help: &str,
+    ) -> AppResult<String>;
     async fn prompt_mfa(&self, mfa: &proto::MfaPrompt) -> AppResult<proto::MfaAnswer>;
     async fn prompt_mfa_transient(
         &self,

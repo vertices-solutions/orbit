@@ -136,6 +136,7 @@ pub struct NewJob {
     pub stderr_path: Option<String>,
     pub project_name: Option<String>,
     pub default_retrieve_path: Option<String>,
+    pub template_values: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +156,7 @@ pub struct JobRecord {
     pub stderr_path: Option<String>,
     pub project_name: Option<String>,
     pub default_retrieve_path: Option<String>,
+    pub template_values: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

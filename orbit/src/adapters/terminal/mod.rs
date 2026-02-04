@@ -4,15 +4,19 @@
 mod console;
 mod format;
 mod mfa;
+mod enum_picker;
 mod prompt;
 mod sbatch_picker;
 
 use std::io::Write;
 
-use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
+use crate::app::commands::{
+    CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
+};
 use crate::app::errors::{AppError, AppResult, format_server_error};
 use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
 use console::{print_with_green_check_stderr, print_with_green_check_stdout};
+use enum_picker::pick_enum_value;
 use format::{
     format_cluster_details, format_clusters_table, format_job_details, format_jobs_table,
     format_projects_table,
@@ -26,6 +30,26 @@ impl TerminalOutput {
     pub fn new() -> Self {
         Self
     }
+}
+
+fn render_project_init_actions(actions: &[ProjectInitAction]) -> AppResult<()> {
+    for action in actions {
+        match &action.status {
+            InitActionStatus::Success => {
+                print_with_green_check_stdout(&action.message)
+                    .map_err(|err| AppError::local_error(err.to_string()))?;
+            }
+            InitActionStatus::Failed(reason) => {
+                let message = if reason.is_empty() {
+                    action.message.clone()
+                } else {
+                    format!("{}: {}", action.message, reason)
+                };
+                eprintln!("{message}");
+            }
+        }
+    }
+    Ok(())
 }
 
 #[tonic::async_trait]
@@ -72,15 +96,11 @@ impl OutputPort for TerminalOutput {
             }
             CommandResult::ProjectInit {
                 name,
-                path,
-                orbitfile,
-                git_initialized,
+                actions,
+                ..
             } => {
-                println!("Project '{}' initialized at {}", name, path.display());
-                println!("Orbitfile: {}", orbitfile.display());
-                if *git_initialized {
-                    println!("Initialized git repository.");
-                }
+                render_project_init_actions(actions)?;
+                println!("Project '{}' initialized", name);
             }
             CommandResult::ProjectList { projects } => {
                 if projects.is_empty() {
@@ -160,6 +180,17 @@ impl InteractionPort for TerminalInteraction {
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
+    async fn select_enum(
+        &self,
+        name: &str,
+        options: &[String],
+        default: Option<&str>,
+        help: &str,
+    ) -> AppResult<String> {
+        pick_enum_value(name, help, options.to_vec(), default)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
     async fn prompt_mfa(&self, mfa: &proto::MfaPrompt) -> AppResult<proto::MfaAnswer> {
         collect_mfa_answers(mfa)
             .await
@@ -204,6 +235,22 @@ impl TerminalStreamOutput {
     }
 }
 
+fn is_submit_conflict_message(text: &str) -> bool {
+    let trimmed = text.trim();
+    if !trimmed.starts_with("job ") {
+        return false;
+    }
+    let infix = " is still running in ";
+    let suffix = "; use --force to submit anyway";
+    let Some((_, rest)) = trimmed.split_once(infix) else {
+        return false;
+    };
+    let Some((path, _)) = rest.split_once(suffix) else {
+        return false;
+    };
+    !path.trim().is_empty()
+}
+
 #[tonic::async_trait]
 impl StreamOutputPort for TerminalStreamOutput {
     async fn on_stdout(&mut self, bytes: &[u8]) -> AppResult<()> {
@@ -217,10 +264,20 @@ impl StreamOutputPort for TerminalStreamOutput {
     }
 
     async fn on_stderr(&mut self, bytes: &[u8]) -> AppResult<()> {
-        std::io::stderr()
-            .write_all(bytes)
-            .and_then(|_| std::io::stderr().flush())
-            .map_err(|err| AppError::local_error(err.to_string()))?;
+        let mut printed = true;
+        if self.kind == StreamKind::Submit {
+            if let Ok(text) = std::str::from_utf8(bytes) {
+                if is_submit_conflict_message(text) {
+                    printed = false;
+                }
+            }
+        }
+        if printed {
+            std::io::stderr()
+                .write_all(bytes)
+                .and_then(|_| std::io::stderr().flush())
+                .map_err(|err| AppError::local_error(err.to_string()))?;
+        }
         self.stream.stderr.extend_from_slice(bytes);
         self.record_submit(|capture| capture.stderr.extend_from_slice(bytes));
         Ok(())
@@ -235,7 +292,9 @@ impl StreamOutputPort for TerminalStreamOutput {
     async fn on_error(&mut self, code: &str) -> AppResult<()> {
         self.stream.error_code = Some(code.to_string());
         self.record_submit(|capture| capture.error_code = Some(code.to_string()));
-        eprintln!("{}", format_server_error(code));
+        if self.kind != StreamKind::Submit {
+            eprintln!("{}", format_server_error(code));
+        }
         Ok(())
     }
 

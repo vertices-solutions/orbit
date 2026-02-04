@@ -16,8 +16,8 @@ use crate::app::services::{
     AddClusterResolver, PathResolver, SbatchSelector, build_default_orbitfile_contents,
     check_registered_project, default_base_path_from_home, discover_project_from_submit_root,
     load_project_from_root, local_validate_default_base_path, merge_submit_filters,
-    resolve_orbitfile_sbatch_script, sanitize_project_name, upsert_orbitfile_project_name,
-    validate_project_name,
+    resolve_orbitfile_sbatch_script, resolve_template_values, sanitize_project_name,
+    upsert_orbitfile_project_name, validate_project_name,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -113,16 +113,42 @@ pub async fn handle_job_submit(
     let mut filters = cmd.filters.clone();
     let mut project_name = None;
     let mut default_retrieve_path = None;
+    let mut template_values_json = None;
     if let Some(project) = discovered_project {
         validate_project_name(&project.name)?;
         filters = merge_submit_filters(filters, &project.rules);
         project_name = Some(project.name.clone());
         default_retrieve_path = project.default_retrieve_path.clone();
         let project_root = project.root.display().to_string();
+        if let Some(template) = project.template.as_ref() {
+            let values = resolve_template_values(
+                template,
+                cmd.template_preset.as_deref(),
+                &cmd.template_fields,
+                cmd.fill_defaults,
+                &project.root,
+                ctx.fs.as_ref(),
+                ctx.interaction.as_ref(),
+                ctx.output.as_ref(),
+                ctx.ui_mode,
+            )
+            .await?;
+            let json = serde_json::to_string(&values)
+                .map_err(|err| AppError::internal_error(format!("failed to serialize templates: {err}")))?;
+            template_values_json = Some(json);
+        } else if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
+            return Err(AppError::invalid_argument(
+                "template values provided but Orbitfile has no [template] section",
+            ));
+        }
         let _ = ctx
             .orbitd
             .upsert_project(&project.name, &project_root)
             .await?;
+    } else if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
+        return Err(AppError::invalid_argument(
+            "template values require an Orbitfile with a [template] section",
+        ));
     }
 
     let resolved_local_path_display = resolved_local_path.display().to_string();
@@ -146,6 +172,7 @@ pub async fn handle_job_submit(
             filters,
             project_name,
             default_retrieve_path,
+            template_values_json,
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
@@ -630,10 +657,11 @@ pub async fn handle_project_init(
     }
 
     let orbitfile_path = init_path.join("Orbitfile");
+    let orbitfile_exists = ctx.fs.is_file(&orbitfile_path)?;
     let resolved_name = resolve_project_init_name(ctx, cmd.name, &init_path).await?;
     validate_project_name(&resolved_name)?;
 
-    let contents = if ctx.fs.is_file(&orbitfile_path)? {
+    let contents = if orbitfile_exists {
         let bytes = ctx.fs.read_file(&orbitfile_path)?;
         let existing = String::from_utf8(bytes).map_err(|err| {
             AppError::invalid_argument(format!("invalid Orbitfile encoding: {err}"))
@@ -646,6 +674,24 @@ pub async fn handle_project_init(
         .map_err(|err| AppError::local_error(format!("failed to write Orbitfile: {err}")))?;
 
     let git_initialized = ensure_git_repository(&init_path)?;
+    let mut actions = Vec::new();
+    if orbitfile_exists {
+        actions.push(ProjectInitAction {
+            status: InitActionStatus::Success,
+            message: "Orbitfile updated".to_string(),
+        });
+    } else {
+        actions.push(ProjectInitAction {
+            status: InitActionStatus::Success,
+            message: "Orbitfile created".to_string(),
+        });
+    }
+    if git_initialized {
+        actions.push(ProjectInitAction {
+            status: InitActionStatus::Success,
+            message: "git repository initialized".to_string(),
+        });
+    }
     let canonical = ctx.fs.canonicalize(&init_path)?;
     let project_root = canonical.display().to_string();
     let _ = ctx
@@ -658,6 +704,7 @@ pub async fn handle_project_init(
         path: canonical.clone(),
         orbitfile: canonical.join("Orbitfile"),
         git_initialized,
+        actions,
     })
 }
 
@@ -717,6 +764,33 @@ pub async fn handle_project_submit(
         .success(&format!("Local path: {resolved_local_path_display}"))
         .await?;
 
+    let template_values_json = if let Some(template) = project_config.template.as_ref() {
+        let values = resolve_template_values(
+            template,
+            cmd.template_preset.as_deref(),
+            &cmd.template_fields,
+            cmd.fill_defaults,
+            &project_root,
+            ctx.fs.as_ref(),
+            ctx.interaction.as_ref(),
+            ctx.output.as_ref(),
+            ctx.ui_mode,
+        )
+        .await?;
+        Some(
+            serde_json::to_string(&values).map_err(|err| {
+                AppError::internal_error(format!("failed to serialize templates: {err}"))
+            })?,
+        )
+    } else {
+        if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
+            return Err(AppError::invalid_argument(
+                "template values provided but Orbitfile has no [template] section",
+            ));
+        }
+        None
+    };
+
     let mut stream_output = ctx.output.stream_output(StreamKind::Submit);
     let capture = ctx
         .orbitd
@@ -730,6 +804,7 @@ pub async fn handle_project_submit(
             filters,
             Some(project_config.name.clone()),
             project_config.default_retrieve_path.clone(),
+            template_values_json,
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
@@ -888,6 +963,11 @@ async fn resolve_project_init_name(
     if let Some(name) = requested {
         let trimmed = name.trim().to_string();
         validate_project_name(&trimmed)?;
+        if ctx.ui_mode.is_interactive() {
+            ctx.output
+                .success(&format!("Project name: {trimmed}"))
+                .await?;
+        }
         return Ok(trimmed);
     }
 
@@ -913,6 +993,9 @@ async fn resolve_project_init_name(
         .await?;
     let name = prompt_value.trim().to_string();
     validate_project_name(&name)?;
+    if ctx.ui_mode.is_interactive() {
+        ctx.output.success(&format!("Project name: {name}")).await?;
+    }
     Ok(name)
 }
 
@@ -971,6 +1054,9 @@ fn submit_error(capture: &SubmitCapture) -> AppError {
         }
     }
     if let Some(message) = message_from_bytes(&capture.stderr) {
+        if let Some(normalized) = normalize_submit_conflict_message(&message) {
+            return AppError::with_exit_code(ErrorType::Conflict, normalized, exit_code);
+        }
         return AppError::with_exit_code(ErrorType::RemoteError, message, exit_code);
     }
     if let Some(code) = capture.error_code.as_deref() {
@@ -979,6 +1065,24 @@ fn submit_error(capture: &SubmitCapture) -> AppError {
         return AppError::with_exit_code(kind, message, exit_code);
     }
     AppError::with_exit_code(ErrorType::RemoteError, "submission failed", exit_code)
+}
+
+fn normalize_submit_conflict_message(message: &str) -> Option<String> {
+    let trimmed = message.trim();
+    if !trimmed.starts_with("job ") {
+        return None;
+    }
+    let infix = " is still running in ";
+    let suffix = "; use --force to submit anyway";
+    let (job_prefix, rest) = trimmed.split_once(infix)?;
+    let (remote_path, _) = rest.split_once(suffix)?;
+    let remote_path = remote_path.trim();
+    if remote_path.is_empty() {
+        return None;
+    }
+    Some(format!(
+        "Error: {job_prefix}{infix}{remote_path}: use --force to submit anyway"
+    ))
 }
 
 async fn validate_cluster_live(

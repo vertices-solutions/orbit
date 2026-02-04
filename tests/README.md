@@ -12,6 +12,7 @@ Projects overview:
 - project_lifecycle (runner-managed): `project init`/`project list`/`project check`/`project submit`/`project delete`.
 - 91_queued_state: job held in PENDING to exercise queued status.
 - 92_long_running_hashes: ~100 MiB data sync with sequential hashing (manual-only).
+- 06_templated_hashes: templated hashing job with remote data generation (manual-only).
 
 Common workflow (replace <cluster> and <job_id>):
 - orbit job submit <cluster> tests/01_smoke
