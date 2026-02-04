@@ -52,7 +52,9 @@ fn load_config(config_path_override: Option<PathBuf>) -> AppResult<Config> {
     Ok(Config { port })
 }
 
-fn resolve_config_path(config_path_override: Option<PathBuf>) -> AppResult<(Option<PathBuf>, bool)> {
+fn resolve_config_path(
+    config_path_override: Option<PathBuf>,
+) -> AppResult<(Option<PathBuf>, bool)> {
     if let Some(path) = config_path_override {
         return Ok((Some(expand_path(path)), true));
     }

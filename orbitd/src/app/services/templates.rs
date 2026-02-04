@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use tera::Context;
 use tempfile::TempDir;
+use tera::Context;
 use walkdir::WalkDir;
 
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
@@ -162,7 +162,10 @@ fn load_template_config(orbitfile_path: &Path) -> AppResult<Option<TemplateConfi
         ))
     })?;
     let raw = toml::from_str::<RawOrbitfile>(&content).map_err(|err| {
-        invalid_argument(format!("invalid Orbitfile {}: {err}", orbitfile_path.display()))
+        invalid_argument(format!(
+            "invalid Orbitfile {}: {err}",
+            orbitfile_path.display()
+        ))
     })?;
     parse_template_config(raw.template)
 }
@@ -188,14 +191,14 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
             enum_values,
         };
         let default = match raw_field.default {
-            Some(value) => Some(parse_template_value_from_toml(&field, &value).map_err(
-                |err| {
+            Some(value) => Some(
+                parse_template_value_from_toml(&field, &value).map_err(|err| {
                     invalid_argument(format!(
                         "template field '{field_name}' default is invalid: {}",
                         err.message()
                     ))
-                },
-            )?),
+                })?,
+            ),
             None => None,
         };
         let field = TemplateField { default, ..field };
@@ -276,13 +279,10 @@ fn resolve_template_values(
         if trimmed.is_empty() {
             return Err(invalid_argument("template values JSON cannot be empty"));
         }
-        let parsed: JsonValue = serde_json::from_str(trimmed).map_err(|err| {
-            invalid_argument(format!("invalid template values JSON: {err}"))
-        })?;
+        let parsed: JsonValue = serde_json::from_str(trimmed)
+            .map_err(|err| invalid_argument(format!("invalid template values JSON: {err}")))?;
         let Some(map) = parsed.as_object() else {
-            return Err(invalid_argument(
-                "template values JSON must be an object",
-            ));
+            return Err(invalid_argument("template values JSON must be an object"));
         };
         for (name, value) in map {
             let Some(field) = config.fields.get(name) else {
@@ -350,10 +350,12 @@ fn resolve_template_values(
         }
     }
 
-    let values_json = serde_json::to_string(&values).map_err(|err| {
-        local_error(format!("failed to serialize template values: {err}"))
-    })?;
-    Ok(ResolvedTemplateValues { values, values_json })
+    let values_json = serde_json::to_string(&values)
+        .map_err(|err| local_error(format!("failed to serialize template values: {err}")))?;
+    Ok(ResolvedTemplateValues {
+        values,
+        values_json,
+    })
 }
 
 fn stage_project(
@@ -363,26 +365,23 @@ fn stage_project(
     values: &BTreeMap<String, JsonValue>,
 ) -> AppResult<StagedProject> {
     let templated_files = resolve_templated_files(submit_root, project_root, &config.files)?;
-    let temp_dir = TempDir::new().map_err(|err| {
-        local_error(format!("failed to create staging directory: {err}"))
-    })?;
+    let temp_dir = TempDir::new()
+        .map_err(|err| local_error(format!("failed to create staging directory: {err}")))?;
     let staging_root = temp_dir.path().to_path_buf();
 
-    let context =
-        Context::from_serialize(values).map_err(|err| {
-            local_error(format!("failed to build template context: {err}"))
-        })?;
+    let context = Context::from_serialize(values)
+        .map_err(|err| local_error(format!("failed to build template context: {err}")))?;
 
     for entry in WalkDir::new(submit_root).follow_links(false) {
-        let entry = entry.map_err(|err| {
-            local_error(format!("failed to walk submit root: {err}"))
-        })?;
+        let entry =
+            entry.map_err(|err| local_error(format!("failed to walk submit root: {err}")))?;
         if !entry.file_type().is_file() {
             continue;
         }
-        let rel = entry.path().strip_prefix(submit_root).map_err(|_| {
-            local_error("failed to compute relative template path".to_string())
-        })?;
+        let rel = entry
+            .path()
+            .strip_prefix(submit_root)
+            .map_err(|_| local_error("failed to compute relative template path".to_string()))?;
         let dest = staging_root.join(rel);
         if let Some(parent) = dest.parent() {
             std::fs::create_dir_all(parent).map_err(|err| {
@@ -442,13 +441,12 @@ fn resolve_templated_files(
     Ok(out)
 }
 
-fn render_template_file(
-    source: &Path,
-    dest: &Path,
-    context: &Context,
-) -> AppResult<()> {
+fn render_template_file(source: &Path, dest: &Path, context: &Context) -> AppResult<()> {
     let contents = std::fs::read_to_string(source).map_err(|err| {
-        local_error(format!("failed to read template {}: {err}", source.display()))
+        local_error(format!(
+            "failed to read template {}: {err}",
+            source.display()
+        ))
     })?;
     let rendered = tera::Tera::one_off(&contents, context, false).map_err(|err| {
         invalid_argument(format!(
@@ -457,7 +455,10 @@ fn render_template_file(
         ))
     })?;
     std::fs::write(dest, rendered).map_err(|err| {
-        local_error(format!("failed to write template {}: {err}", dest.display()))
+        local_error(format!(
+            "failed to write template {}: {err}",
+            dest.display()
+        ))
     })?;
     copy_permissions(source, dest)?;
     Ok(())
@@ -518,20 +519,16 @@ fn parse_template_value_from_toml(
     match field.field_type {
         TemplateFieldType::String
         | TemplateFieldType::FilePath
-        | TemplateFieldType::FileContents => {
-            match value {
-                toml::Value::String(v) => Ok(JsonValue::String(v.clone())),
-                _ => Err(invalid_argument(format!(
-                    "expected string, got {}",
-                    toml_type_name(value)
-                ))),
-            }
-        }
+        | TemplateFieldType::FileContents => match value {
+            toml::Value::String(v) => Ok(JsonValue::String(v.clone())),
+            _ => Err(invalid_argument(format!(
+                "expected string, got {}",
+                toml_type_name(value)
+            ))),
+        },
         TemplateFieldType::Integer => match value {
             toml::Value::Integer(v) => Ok(JsonValue::Number((*v).into())),
-            toml::Value::Float(v) if v.fract() == 0.0 => {
-                Ok(JsonValue::Number((*v as i64).into()))
-            }
+            toml::Value::Float(v) if v.fract() == 0.0 => Ok(JsonValue::Number((*v as i64).into())),
             _ => Err(invalid_argument(format!(
                 "expected integer, got {}",
                 toml_type_name(value)
@@ -730,7 +727,11 @@ fn trim_optional(value: Option<String>) -> Option<String> {
 }
 
 fn invalid_argument(message: impl Into<String>) -> AppError {
-    AppError::with_message(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT, message)
+    AppError::with_message(
+        AppErrorKind::InvalidArgument,
+        codes::INVALID_ARGUMENT,
+        message,
+    )
 }
 
 fn local_error(message: impl Into<String>) -> AppError {
@@ -754,15 +755,11 @@ mod tests {
             paths = ["config.txt"]
         "#;
         std::fs::write(root.path().join("Orbitfile"), orbitfile).expect("orbitfile");
-        std::fs::write(root.path().join("config.txt"), "hello {{ name }}")
-            .expect("template file");
+        std::fs::write(root.path().join("config.txt"), "hello {{ name }}").expect("template file");
 
-        let prepared = prepare_template_submission(
-            root.path(),
-            Some(r#"{ "name": "Ada" }"#),
-        )
-        .expect("prepare")
-        .expect("template");
+        let prepared = prepare_template_submission(root.path(), Some(r#"{ "name": "Ada" }"#))
+            .expect("prepare")
+            .expect("template");
 
         let rendered =
             std::fs::read_to_string(prepared.staging_root.join("config.txt")).expect("rendered");

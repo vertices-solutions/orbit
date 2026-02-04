@@ -264,9 +264,9 @@ fn default_data_dir() -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::OsString;
     use std::fs;
     use std::sync::Mutex;
-    use std::ffi::OsString;
     use tempfile::TempDir;
 
     static ENV_LOCK: Mutex<()> = Mutex::new(());
@@ -538,8 +538,7 @@ mod tests {
         .unwrap();
         let _env = EnvVarGuard::set(CONFIG_ENV_VAR, config_path.to_str().unwrap());
 
-        let LoadResult { config, report } =
-            load_with_report(None, Overrides::default()).unwrap();
+        let LoadResult { config, report } = load_with_report(None, Overrides::default()).unwrap();
         assert_eq!(config.port, 40001);
         assert_eq!(config.config_path, Some(config_path));
         assert_eq!(report.config_path_source, Some(ConfigSource::Env));

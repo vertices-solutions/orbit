@@ -7,7 +7,9 @@ use proto::SubmitPathFilterRule;
 
 mod results;
 
-pub use results::{CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture};
+pub use results::{
+    CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
+};
 
 #[derive(Debug, Clone)]
 pub enum Command {

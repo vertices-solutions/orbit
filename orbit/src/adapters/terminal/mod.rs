@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Alex Sizykh
 
 mod console;
+mod enum_picker;
 mod format;
 mod mfa;
-mod enum_picker;
 mod prompt;
 mod sbatch_picker;
 
@@ -106,11 +106,7 @@ impl OutputPort for TerminalOutput {
             CommandResult::ClusterDelete { name } => {
                 println!("Cluster '{}' deleted.", name);
             }
-            CommandResult::ProjectInit {
-                name,
-                actions,
-                ..
-            } => {
+            CommandResult::ProjectInit { name, actions, .. } => {
                 render_project_init_actions(actions)?;
                 println!("Project '{}' initialized", name);
             }

@@ -133,8 +133,9 @@ pub async fn handle_job_submit(
                 ctx.ui_mode,
             )
             .await?;
-            let json = serde_json::to_string(&values)
-                .map_err(|err| AppError::internal_error(format!("failed to serialize templates: {err}")))?;
+            let json = serde_json::to_string(&values).map_err(|err| {
+                AppError::internal_error(format!("failed to serialize templates: {err}"))
+            })?;
             template_values_json = Some(json);
         } else if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
             return Err(AppError::invalid_argument(
@@ -354,10 +355,7 @@ pub async fn handle_cluster_list(
     ctx: &AppContext,
     cmd: ListClustersCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx
-        .orbitd
-        .list_clusters("", cmd.check_reachability)
-        .await?;
+    let clusters = ctx.orbitd.list_clusters("", cmd.check_reachability).await?;
     Ok(CommandResult::ClusterList {
         clusters,
         check_reachability: cmd.check_reachability,
@@ -783,11 +781,9 @@ pub async fn handle_project_submit(
             ctx.ui_mode,
         )
         .await?;
-        Some(
-            serde_json::to_string(&values).map_err(|err| {
-                AppError::internal_error(format!("failed to serialize templates: {err}"))
-            })?,
-        )
+        Some(serde_json::to_string(&values).map_err(|err| {
+            AppError::internal_error(format!("failed to serialize templates: {err}"))
+        })?)
     } else {
         if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
             return Err(AppError::invalid_argument(
