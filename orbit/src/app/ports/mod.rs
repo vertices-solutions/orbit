@@ -17,7 +17,11 @@ pub enum StreamKind {
 #[tonic::async_trait]
 pub trait OrbitdPort: Send + Sync {
     async fn ping(&self) -> AppResult<()>;
-    async fn list_clusters(&self, filter: &str) -> AppResult<Vec<ListClustersUnitResponse>>;
+    async fn list_clusters(
+        &self,
+        filter: &str,
+        check_reachability: bool,
+    ) -> AppResult<Vec<ListClustersUnitResponse>>;
     async fn list_jobs(&self, cluster: Option<String>) -> AppResult<Vec<ListJobsUnitResponse>>;
     async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord>;
     async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;

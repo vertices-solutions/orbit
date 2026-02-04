@@ -260,14 +260,13 @@ pub fn load_project_from_root(
         template,
     } = raw;
 
-    let project = project
-        .ok_or_else(|| AppError::invalid_argument("Orbitfile is missing [project]"))?;
+    let project =
+        project.ok_or_else(|| AppError::invalid_argument("Orbitfile is missing [project]"))?;
     let name = project.name.trim().to_string();
     validate_project_name(&name)?;
 
-    let default_retrieve_path =
-        trim_optional(retrieve.and_then(|section| section.default_path))
-            .map(|value| value.to_string());
+    let default_retrieve_path = trim_optional(retrieve.and_then(|section| section.default_path))
+        .map(|value| value.to_string());
     let submit_sbatch_script = trim_optional(submit.and_then(|section| section.sbatch_script))
         .map(|value| value.to_string());
 
@@ -491,14 +490,8 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
             ),
             None => None,
         };
-        let field = TemplateField {
-            default,
-            ..field
-        };
-        fields.insert(
-            field_name.to_string(),
-            field,
-        );
+        let field = TemplateField { default, ..field };
+        fields.insert(field_name.to_string(), field);
     }
 
     let mut files = Vec::new();
@@ -604,20 +597,16 @@ fn parse_template_value_from_toml(
     match field.field_type {
         TemplateFieldType::String
         | TemplateFieldType::FilePath
-        | TemplateFieldType::FileContents => {
-            match value {
-                toml::Value::String(v) => Ok(JsonValue::String(v.clone())),
-                _ => Err(AppError::invalid_argument(format!(
-                    "expected string, got {}",
-                    toml_type_name(value)
-                ))),
-            }
-        }
+        | TemplateFieldType::FileContents => match value {
+            toml::Value::String(v) => Ok(JsonValue::String(v.clone())),
+            _ => Err(AppError::invalid_argument(format!(
+                "expected string, got {}",
+                toml_type_name(value)
+            ))),
+        },
         TemplateFieldType::Integer => match value {
             toml::Value::Integer(v) => Ok(JsonValue::Number((*v).into())),
-            toml::Value::Float(v) if v.fract() == 0.0 => {
-                Ok(JsonValue::Number((*v as i64).into()))
-            }
+            toml::Value::Float(v) if v.fract() == 0.0 => Ok(JsonValue::Number((*v as i64).into())),
             _ => Err(AppError::invalid_argument(format!(
                 "expected integer, got {}",
                 toml_type_name(value)

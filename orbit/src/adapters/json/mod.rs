@@ -308,11 +308,17 @@ fn result_to_json(result: &CommandResult) -> Value {
             "stderr": bytes_to_string(&capture.stderr),
             "exit_code": capture.exit_code.unwrap_or(0),
         }),
-        CommandResult::ClusterList { clusters } => {
-            let data: Vec<Value> = clusters.iter().map(cluster_to_json).collect();
+        CommandResult::ClusterList {
+            clusters,
+            check_reachability,
+        } => {
+            let data: Vec<Value> = clusters
+                .iter()
+                .map(|item| cluster_to_json(item, *check_reachability))
+                .collect();
             Value::Array(data)
         }
-        CommandResult::ClusterDetails { cluster } => cluster_to_json(cluster),
+        CommandResult::ClusterDetails { cluster } => cluster_to_json(cluster, true),
         CommandResult::ClusterLs { capture } => stream_capture_json(capture),
         CommandResult::ClusterAdd {
             name,

@@ -69,10 +69,15 @@ impl OrbitdPort for GrpcOrbitdPort {
         }
     }
 
-    async fn list_clusters(&self, filter: &str) -> AppResult<Vec<proto::ListClustersUnitResponse>> {
+    async fn list_clusters(
+        &self,
+        filter: &str,
+        check_reachability: bool,
+    ) -> AppResult<Vec<proto::ListClustersUnitResponse>> {
         let mut client = self.connect().await?;
         let list_clusters_request = ListClustersRequest {
             filter: filter.to_string(),
+            check_reachability: Some(check_reachability),
         };
         let response = match timeout(
             Duration::from_secs(5),

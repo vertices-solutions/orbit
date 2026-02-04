@@ -80,6 +80,7 @@ pub enum CommandResult {
     },
     ClusterList {
         clusters: Vec<ListClustersUnitResponse>,
+        check_reachability: bool,
     },
     ClusterDetails {
         cluster: ListClustersUnitResponse,

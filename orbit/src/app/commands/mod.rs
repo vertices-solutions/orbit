@@ -7,7 +7,9 @@ use proto::SubmitPathFilterRule;
 
 mod results;
 
-pub use results::{CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture};
+pub use results::{
+    CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
+};
 
 #[derive(Debug, Clone)]
 pub enum Command {
@@ -104,7 +106,9 @@ pub enum ClusterCommand {
 }
 
 #[derive(Debug, Clone)]
-pub struct ListClustersCommand;
+pub struct ListClustersCommand {
+    pub check_reachability: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct ClusterGetCommand {

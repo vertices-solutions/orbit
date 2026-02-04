@@ -12,7 +12,7 @@ pub struct Cli {
         short,
         long,
         value_name = "PATH",
-        help = "Path to a TOML config file. When omitted, orbit uses the default config file location if available."
+        help = "Path to a TOML config file. When omitted, orbit uses ORBIT_CONFIG_PATH if set, otherwise the default config file location if available."
     )]
     pub config: Option<PathBuf>,
     #[arg(
@@ -146,7 +146,11 @@ pub struct JobLsArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ListClustersArgs {}
+pub struct ListClustersArgs {
+    /// Perform reachability checks and include the reachable column.
+    #[arg(long)]
+    pub check_reachability: bool,
+}
 
 #[derive(Args, Debug)]
 pub struct ClusterArgs {
@@ -490,6 +494,30 @@ mod tests {
                 _ => panic!("expected project delete command"),
             },
             _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn cluster_list_check_reachability_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "cluster", "list"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::List(list) => assert!(!list.check_reachability),
+                _ => panic!("expected cluster list command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_list_check_reachability_sets_true() {
+        let args = Cli::parse_from(["orbit", "cluster", "list", "--check-reachability"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::List(list) => assert!(list.check_reachability),
+                _ => panic!("expected cluster list command"),
+            },
+            _ => panic!("expected cluster command"),
         }
     }
 }

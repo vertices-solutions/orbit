@@ -156,9 +156,16 @@ async fn prompt_for_field(
                 "template field '{name}' has no enum values"
             )));
         }
-        let default_value = default.and_then(|value| value.as_str()).map(|v| v.to_string());
+        let default_value = default
+            .and_then(|value| value.as_str())
+            .map(|v| v.to_string());
         let selected = interaction
-            .select_enum(name, enum_values, default_value.as_deref(), description.unwrap_or(""))
+            .select_enum(
+                name,
+                enum_values,
+                default_value.as_deref(),
+                description.unwrap_or(""),
+            )
             .await?;
         let parsed = JsonValue::String(selected.clone());
         let message = format_confirmation_message(name, &parsed, Some(&selected))?;
@@ -228,16 +235,16 @@ fn parse_template_value_from_string(
             Ok(JsonValue::Number(value.into()))
         }
         TemplateFieldType::Float => {
-            let value = raw.trim().parse::<f64>().map_err(|_| {
-                AppError::invalid_argument(format!("expected float, got '{raw}'"))
-            })?;
+            let value = raw
+                .trim()
+                .parse::<f64>()
+                .map_err(|_| AppError::invalid_argument(format!("expected float, got '{raw}'")))?;
             serde_json::Number::from_f64(value)
                 .map(JsonValue::Number)
                 .ok_or_else(|| AppError::invalid_argument("float value is not representable"))
         }
-        TemplateFieldType::Json => serde_json::from_str(raw).map_err(|err| {
-            AppError::invalid_argument(format!("invalid json value: {err}"))
-        }),
+        TemplateFieldType::Json => serde_json::from_str(raw)
+            .map_err(|err| AppError::invalid_argument(format!("invalid json value: {err}"))),
         TemplateFieldType::Enum => {
             let trimmed = raw.trim();
             if enum_values.iter().any(|value| value == trimmed) {

@@ -2,9 +2,9 @@
 // Copyright (C) 2026 Alex Sizykh
 
 mod console;
+mod enum_picker;
 mod format;
 mod mfa;
-mod enum_picker;
 mod prompt;
 mod sbatch_picker;
 
@@ -68,7 +68,11 @@ impl OutputPort for TerminalOutput {
                 println!("{message}");
             }
             CommandResult::JobList { jobs } => {
-                print!("{}", format_jobs_table(jobs));
+                if jobs.is_empty() {
+                    println!("No jobs registered");
+                } else {
+                    print!("{}", format_jobs_table(jobs));
+                }
             }
             CommandResult::JobDetails { job } => {
                 print!("{}", format_job_details(job));
@@ -81,8 +85,11 @@ impl OutputPort for TerminalOutput {
             CommandResult::JobRetrieve { output, .. } => {
                 eprintln!("Wrote to {}", output.display());
             }
-            CommandResult::ClusterList { clusters } => {
-                print!("{}", format_clusters_table(clusters));
+            CommandResult::ClusterList {
+                clusters,
+                check_reachability,
+            } => {
+                print!("{}", format_clusters_table(clusters, *check_reachability));
             }
             CommandResult::ClusterDetails { cluster } => {
                 print!("{}", format_cluster_details(cluster));
@@ -99,11 +106,7 @@ impl OutputPort for TerminalOutput {
             CommandResult::ClusterDelete { name } => {
                 println!("Cluster '{}' deleted.", name);
             }
-            CommandResult::ProjectInit {
-                name,
-                actions,
-                ..
-            } => {
+            CommandResult::ProjectInit { name, actions, .. } => {
                 render_project_init_actions(actions)?;
                 println!("Project '{}' initialized", name);
             }

@@ -71,7 +71,7 @@ pub async fn handle_job_submit(
     ctx: &AppContext,
     cmd: SubmitJobCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.name)
@@ -133,8 +133,9 @@ pub async fn handle_job_submit(
                 ctx.ui_mode,
             )
             .await?;
-            let json = serde_json::to_string(&values)
-                .map_err(|err| AppError::internal_error(format!("failed to serialize templates: {err}")))?;
+            let json = serde_json::to_string(&values).map_err(|err| {
+                AppError::internal_error(format!("failed to serialize templates: {err}"))
+            })?;
             template_values_json = Some(json);
         } else if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
             return Err(AppError::invalid_argument(
@@ -352,17 +353,20 @@ pub async fn handle_job_retrieve(
 
 pub async fn handle_cluster_list(
     ctx: &AppContext,
-    _cmd: ListClustersCommand,
+    cmd: ListClustersCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
-    Ok(CommandResult::ClusterList { clusters })
+    let clusters = ctx.orbitd.list_clusters("", cmd.check_reachability).await?;
+    Ok(CommandResult::ClusterList {
+        clusters,
+        check_reachability: cmd.check_reachability,
+    })
 }
 
 pub async fn handle_cluster_get(
     ctx: &AppContext,
     cmd: ClusterGetCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.name)
@@ -401,7 +405,7 @@ pub async fn handle_cluster_add(
     cmd: AddClusterCommand,
 ) -> AppResult<CommandResult> {
     ctx.output.info("Adding new cluster...").await?;
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let existing_names = clusters
         .iter()
         .map(|cluster| cluster.name.clone())
@@ -546,7 +550,7 @@ pub async fn handle_cluster_set(
         updated_fields.push(("default_base_path".to_string(), value.to_string()));
     }
 
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.name)
@@ -712,7 +716,7 @@ pub async fn handle_project_submit(
     ctx: &AppContext,
     cmd: ProjectSubmitCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.cluster)
@@ -777,11 +781,9 @@ pub async fn handle_project_submit(
             ctx.ui_mode,
         )
         .await?;
-        Some(
-            serde_json::to_string(&values).map_err(|err| {
-                AppError::internal_error(format!("failed to serialize templates: {err}"))
-            })?,
-        )
+        Some(serde_json::to_string(&values).map_err(|err| {
+            AppError::internal_error(format!("failed to serialize templates: {err}"))
+        })?)
     } else {
         if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
             return Err(AppError::invalid_argument(

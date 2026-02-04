@@ -77,27 +77,33 @@ impl UseCases {
         }
     }
 
-    pub async fn list_clusters(&self) -> AppResult<Vec<ClusterStatus>> {
+    pub async fn list_clusters(&self, check_reachability: bool) -> AppResult<Vec<ClusterStatus>> {
         let hosts = self.clusters.list_hosts(None).await?;
         let mut out = Vec::with_capacity(hosts.len());
         for host in hosts {
-            let reachable = match self
-                .network
-                .check_host_reachable(&host.address, host.port)
-                .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    log::debug!(
-                        "reachability check failed name={} host={} error={}",
-                        host.name,
-                        format_address(&host.address),
-                        err
-                    );
-                    false
+            let reachable = if check_reachability {
+                match self
+                    .network
+                    .check_host_reachable(&host.address, host.port)
+                    .await
+                {
+                    Ok(value) => value,
+                    Err(err) => {
+                        log::debug!(
+                            "reachability check failed name={} host={} error={}",
+                            host.name,
+                            format_address(&host.address),
+                            err
+                        );
+                        false
+                    }
                 }
+            } else {
+                false
             };
-            let connected = if reachable {
+            let connected = if check_reachability && !reachable {
+                false
+            } else {
                 match self.remote_exec.is_connected(&host.name).await {
                     Ok(value) => value,
                     Err(err) => {
@@ -110,8 +116,6 @@ impl UseCases {
                         false
                     }
                 }
-            } else {
-                false
             };
             out.push(ClusterStatus {
                 host,

@@ -14,7 +14,8 @@ use clap::{CommandFactory, FromArgMatches, Parser};
     after_help = "orbitd server\n\
 \n\
 Configuration precedence: defaults < config file < command-line flags.\n\
-If --config is omitted, orbitd tries the default config file location; missing default config is OK.\n\
+Config path precedence: defaults < ORBIT_CONFIG_PATH < command-line flags.\n\
+If --config is omitted, orbitd tries ORBIT_CONFIG_PATH, then the default config file location; missing default config is OK.\n\
 Paths in the config file are resolved relative to the config file directory; paths passed as flags are resolved relative to the current working directory."
 )]
 pub struct Opts {
@@ -22,7 +23,7 @@ pub struct Opts {
         short,
         long,
         value_name = "PATH",
-        help = "Path to a TOML config file. When omitted, orbitd uses the default config file location if available."
+        help = "Path to a TOML config file. When omitted, orbitd uses ORBIT_CONFIG_PATH if set, otherwise the default config file location if available."
     )]
     pub config: Option<PathBuf>,
     #[arg(

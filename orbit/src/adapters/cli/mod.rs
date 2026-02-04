@@ -100,7 +100,9 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             }),
         }),
         Cmd::Cluster(cluster_args) => Command::Cluster(match cluster_args.cmd {
-            ClusterCmd::List(_args) => ClusterCommand::List(ListClustersCommand),
+            ClusterCmd::List(args) => ClusterCommand::List(ListClustersCommand {
+                check_reachability: args.check_reachability,
+            }),
             ClusterCmd::Get(args) => ClusterCommand::Get(ClusterGetCommand { name: args.name }),
             ClusterCmd::Ls(args) => ClusterCommand::Ls(ClusterLsCommand {
                 name: args.name,

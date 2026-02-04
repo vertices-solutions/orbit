@@ -553,10 +553,11 @@ impl Agent for GrpcAgent {
         request: Request<ListClustersRequest>,
     ) -> Result<Response<ListClustersResponse>, Status> {
         let remote_addr = format_remote_addr(request.remote_addr());
-        let _inbound = request.into_inner();
+        let inbound = request.into_inner();
+        let check_reachability = inbound.check_reachability.unwrap_or(true);
         let clusters = self
             .usecases
-            .list_clusters()
+            .list_clusters(check_reachability)
             .await
             .map_err(status_from_app_error)?;
         let cluster_responses: Vec<_> = clusters.iter().map(cluster_status_to_response).collect();
