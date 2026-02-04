@@ -12,7 +12,7 @@ pub struct Cli {
         short,
         long,
         value_name = "PATH",
-        help = "Path to a TOML config file. When omitted, orbit uses the default config file location if available."
+        help = "Path to a TOML config file. When omitted, orbit uses ORBIT_CONFIG_PATH if set, otherwise the default config file location if available."
     )]
     pub config: Option<PathBuf>,
     #[arg(

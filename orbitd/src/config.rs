@@ -10,6 +10,7 @@ use std::{
 
 const APP_DIR_NAME: &str = "orbit";
 const CONFIG_FILE_NAME: &str = "orbit.toml";
+const CONFIG_ENV_VAR: &str = "ORBIT_CONFIG_PATH";
 const DATABASE_FILE_NAME: &str = "orbit.sqlite";
 const DEFAULT_JOB_CHECK_INTERVAL_SECS: u64 = 5;
 const DEFAULT_PORT: u16 = 50056;
@@ -35,6 +36,7 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSource {
     Override,
+    Env,
     ConfigFile,
     Default,
 }
@@ -43,6 +45,7 @@ impl ConfigSource {
     pub fn as_str(self) -> &'static str {
         match self {
             ConfigSource::Override => "override",
+            ConfigSource::Env => "env",
             ConfigSource::ConfigFile => "config",
             ConfigSource::Default => "default",
         }
@@ -89,12 +92,14 @@ pub fn load_with_report(
     config_path_override: Option<PathBuf>,
     overrides: Overrides,
 ) -> Result<LoadResult> {
-    let required = config_path_override.is_some();
-    let (config_path, config_path_source) = match config_path_override {
-        Some(path) => (Some(expand_path(path)), Some(ConfigSource::Override)),
-        None => match default_config_path().ok() {
-            Some(path) => (Some(path), Some(ConfigSource::Default)),
-            None => (None, None),
+    let (config_path, config_path_source, required) = match config_path_override {
+        Some(path) => (Some(expand_path(path)), Some(ConfigSource::Override), true),
+        None => match config_path_from_env()? {
+            Some(path) => (Some(expand_path(path)), Some(ConfigSource::Env), true),
+            None => match default_config_path().ok() {
+                Some(path) => (Some(path), Some(ConfigSource::Default), false),
+                None => (None, None, false),
+            },
         },
     };
     let config_file_present = config_path
@@ -226,6 +231,18 @@ fn expand_path(path: PathBuf) -> PathBuf {
     PathBuf::from(expanded.as_ref())
 }
 
+fn config_path_from_env() -> Result<Option<PathBuf>> {
+    match std::env::var_os(CONFIG_ENV_VAR) {
+        Some(value) => {
+            if value.is_empty() {
+                anyhow::bail!("{CONFIG_ENV_VAR} is set but empty");
+            }
+            Ok(Some(PathBuf::from(value)))
+        }
+        None => Ok(None),
+    }
+}
+
 fn default_config_path() -> Result<PathBuf> {
     Ok(default_config_dir()?.join(CONFIG_FILE_NAME))
 }
@@ -248,7 +265,55 @@ fn default_data_dir() -> Result<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
+    use std::ffi::OsString;
     use tempfile::TempDir;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        prev: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let prev = std::env::var_os(key);
+            // SAFETY: tests serialize env mutations with ENV_LOCK.
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, prev }
+        }
+
+        fn clear(key: &'static str) -> Self {
+            let prev = std::env::var_os(key);
+            // SAFETY: tests serialize env mutations with ENV_LOCK.
+            unsafe {
+                std::env::remove_var(key);
+            }
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => {
+                    // SAFETY: tests serialize env mutations with ENV_LOCK.
+                    unsafe {
+                        std::env::set_var(self.key, value);
+                    }
+                }
+                None => {
+                    // SAFETY: tests serialize env mutations with ENV_LOCK.
+                    unsafe {
+                        std::env::remove_var(self.key);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn missing_optional_config_file_is_ok() {
@@ -458,5 +523,51 @@ mod tests {
     #[test]
     fn ensure_database_dir_no_parent_does_not_error() {
         ensure_database_dir(Path::new("orbit.sqlite")).unwrap();
+    }
+
+    #[test]
+    fn env_config_path_used_when_no_override() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::clear(CONFIG_ENV_VAR);
+        let dir = TempDir::new().unwrap();
+        let config_path = dir.path().join("orbit.toml");
+        fs::write(
+            &config_path,
+            "database_path = \"db/orbit.sqlite\"\nport = 40001\n",
+        )
+        .unwrap();
+        let _env = EnvVarGuard::set(CONFIG_ENV_VAR, config_path.to_str().unwrap());
+
+        let LoadResult { config, report } =
+            load_with_report(None, Overrides::default()).unwrap();
+        assert_eq!(config.port, 40001);
+        assert_eq!(config.config_path, Some(config_path));
+        assert_eq!(report.config_path_source, Some(ConfigSource::Env));
+    }
+
+    #[test]
+    fn cli_config_path_takes_precedence_over_env() {
+        let _lock = ENV_LOCK.lock().unwrap();
+        let _env = EnvVarGuard::clear(CONFIG_ENV_VAR);
+        let dir = TempDir::new().unwrap();
+        let env_path = dir.path().join("env.toml");
+        let cli_path = dir.path().join("cli.toml");
+        fs::write(
+            &env_path,
+            "database_path = \"db/orbit.sqlite\"\nport = 40001\n",
+        )
+        .unwrap();
+        fs::write(
+            &cli_path,
+            "database_path = \"db/orbit.sqlite\"\nport = 40002\n",
+        )
+        .unwrap();
+        let _env = EnvVarGuard::set(CONFIG_ENV_VAR, env_path.to_str().unwrap());
+
+        let LoadResult { config, report } =
+            load_with_report(Some(cli_path.clone()), Overrides::default()).unwrap();
+        assert_eq!(config.port, 40002);
+        assert_eq!(config.config_path, Some(cli_path));
+        assert_eq!(report.config_path_source, Some(ConfigSource::Override));
     }
 }
