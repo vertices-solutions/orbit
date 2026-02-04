@@ -126,7 +126,7 @@ struct RawTemplate {
     #[serde(default)]
     fields: BTreeMap<String, RawTemplateField>,
     #[serde(default)]
-    files: Vec<RawTemplateFile>,
+    files: RawTemplateFiles,
     #[serde(default)]
     presets: BTreeMap<String, BTreeMap<String, toml::Value>>,
 }
@@ -144,8 +144,9 @@ struct RawTemplateField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct RawTemplateFile {
-    path: String,
+struct RawTemplateFiles {
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 pub fn validate_project_name(name: &str) -> AppResult<()> {
@@ -184,6 +185,7 @@ pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
         include: Vec::new(),
         exclude: vec!["/.git/".to_string()],
     });
+    raw.template = Some(RawTemplate::default());
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
 }
 
@@ -501,8 +503,8 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
 
     let mut files = Vec::new();
     let mut seen_files = BTreeSet::new();
-    for file in raw.files {
-        let trimmed = file.path.trim();
+    for file in raw.files.paths {
+        let trimmed = file.trim();
         if trimmed.is_empty() {
             return Err(AppError::invalid_argument(
                 "template file path cannot be empty",
@@ -765,6 +767,8 @@ mod tests {
         assert!(content.contains("name = \"demo\""));
         assert!(content.contains("[sync]"));
         assert!(content.contains("/.git/"));
+        assert!(content.contains("[template.files]"));
+        assert!(content.contains("paths = []"));
     }
 
     #[test]
@@ -792,8 +796,8 @@ mod tests {
             values = ["fast", "accurate"]
             default = "fast"
 
-            [[template.files]]
-            path = "configs/run.yaml"
+            [template.files]
+            paths = ["configs/run.yaml"]
 
             [template.presets.fast]
             num_steps = 500

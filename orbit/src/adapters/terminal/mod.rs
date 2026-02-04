@@ -8,7 +8,12 @@ mod enum_picker;
 mod prompt;
 mod sbatch_picker;
 
-use std::io::Write;
+use std::io::{IsTerminal, Write};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::time::Duration;
 
 use crate::app::commands::{
     CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
@@ -216,6 +221,7 @@ struct TerminalStreamOutput {
     stream: StreamCapture,
     submit: SubmitCapture,
     printed_remote_path: bool,
+    transfer_spinner: Option<Spinner>,
 }
 
 impl TerminalStreamOutput {
@@ -225,12 +231,26 @@ impl TerminalStreamOutput {
             stream: StreamCapture::default(),
             submit: SubmitCapture::default(),
             printed_remote_path: false,
+            transfer_spinner: None,
         }
     }
 
     fn record_submit(&mut self, f: impl FnOnce(&mut SubmitCapture)) {
         if self.kind == StreamKind::Submit {
             f(&mut self.submit);
+        }
+    }
+
+    fn start_transfer_spinner(&mut self) {
+        if self.transfer_spinner.is_some() {
+            return;
+        }
+        self.transfer_spinner = Spinner::start("Transferring files...");
+    }
+
+    fn stop_transfer_spinner(&mut self) {
+        if let Some(mut spinner) = self.transfer_spinner.take() {
+            spinner.stop();
         }
     }
 }
@@ -254,6 +274,9 @@ fn is_submit_conflict_message(text: &str) -> bool {
 #[tonic::async_trait]
 impl StreamOutputPort for TerminalStreamOutput {
     async fn on_stdout(&mut self, bytes: &[u8]) -> AppResult<()> {
+        if self.kind == StreamKind::Submit {
+            self.stop_transfer_spinner();
+        }
         std::io::stdout()
             .write_all(bytes)
             .and_then(|_| std::io::stdout().flush())
@@ -264,6 +287,9 @@ impl StreamOutputPort for TerminalStreamOutput {
     }
 
     async fn on_stderr(&mut self, bytes: &[u8]) -> AppResult<()> {
+        if self.kind == StreamKind::Submit {
+            self.stop_transfer_spinner();
+        }
         let mut printed = true;
         if self.kind == StreamKind::Submit {
             if let Ok(text) = std::str::from_utf8(bytes) {
@@ -284,12 +310,18 @@ impl StreamOutputPort for TerminalStreamOutput {
     }
 
     async fn on_exit_code(&mut self, code: i32) -> AppResult<()> {
+        if self.kind == StreamKind::Submit {
+            self.stop_transfer_spinner();
+        }
         self.stream.exit_code = Some(code);
         self.record_submit(|capture| capture.exit_code = Some(code));
         Ok(())
     }
 
     async fn on_error(&mut self, code: &str) -> AppResult<()> {
+        if self.kind == StreamKind::Submit {
+            self.stop_transfer_spinner();
+        }
         self.stream.error_code = Some(code.to_string());
         self.record_submit(|capture| capture.error_code = Some(code.to_string()));
         if self.kind != StreamKind::Submit {
@@ -315,7 +347,11 @@ impl StreamOutputPort for TerminalStreamOutput {
                     self.submit.remote_path = Some(status.remote_path.clone());
                 }
             }
+            proto::submit_status::Phase::TransferStart => {
+                self.start_transfer_spinner();
+            }
             proto::submit_status::Phase::TransferDone => {
+                self.stop_transfer_spinner();
                 print_with_green_check_stderr("Data transfer complete.")
                     .map_err(|err| AppError::local_error(err.to_string()))?;
             }
@@ -328,6 +364,7 @@ impl StreamOutputPort for TerminalStreamOutput {
         if self.kind != StreamKind::Submit {
             return Ok(());
         }
+        self.stop_transfer_spinner();
         let status = proto::submit_result::Status::try_from(result.status)
             .unwrap_or(proto::submit_result::Status::Unspecified);
         match status {
@@ -369,5 +406,55 @@ impl StreamOutputPort for TerminalStreamOutput {
 
     fn take_submit_capture(&mut self) -> SubmitCapture {
         std::mem::take(&mut self.submit)
+    }
+}
+
+struct Spinner {
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Spinner {
+    fn start(message: &str) -> Option<Self> {
+        if !std::io::stderr().is_terminal() {
+            return None;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_signal = Arc::clone(&stop);
+        let message = message.to_string();
+        let handle = std::thread::spawn(move || {
+            let mut stderr = std::io::stderr();
+            let frames = ['⠾', '⠷', '⠯', '⠟', '⠻', '⠽'];
+            let mut idx = 0usize;
+            while !stop_signal.load(Ordering::Relaxed) {
+                let frame = frames[idx % frames.len()];
+                let line = format!("\r{} {}", frame, message);
+                let _ = stderr.write_all(line.as_bytes());
+                let _ = stderr.flush();
+                std::thread::sleep(Duration::from_millis(120));
+                idx = idx.wrapping_add(1);
+            }
+            let clear_width = message.len() + 2;
+            let clear = format!("\r{}{}\r", " ".repeat(clear_width), " ");
+            let _ = stderr.write_all(clear.as_bytes());
+            let _ = stderr.flush();
+        });
+        Some(Self {
+            stop,
+            handle: Some(handle),
+        })
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        self.stop();
     }
 }

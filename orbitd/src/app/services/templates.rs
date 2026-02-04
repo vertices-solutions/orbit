@@ -58,7 +58,7 @@ struct RawTemplate {
     #[serde(default)]
     fields: BTreeMap<String, RawTemplateField>,
     #[serde(default)]
-    files: Vec<RawTemplateFile>,
+    files: RawTemplateFiles,
     #[serde(default)]
     presets: BTreeMap<String, BTreeMap<String, toml::Value>>,
 }
@@ -76,8 +76,9 @@ struct RawTemplateField {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct RawTemplateFile {
-    path: String,
+struct RawTemplateFiles {
+    #[serde(default)]
+    paths: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -203,8 +204,8 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
 
     let mut files = Vec::new();
     let mut seen_files = BTreeSet::new();
-    for file in raw.files {
-        let trimmed = file.path.trim();
+    for file in raw.files.paths {
+        let trimmed = file.trim();
         if trimmed.is_empty() {
             return Err(invalid_argument("template file path cannot be empty"));
         }
@@ -749,8 +750,8 @@ mod tests {
             [template.fields.name]
             type = "string"
 
-            [[template.files]]
-            path = "config.txt"
+            [template.files]
+            paths = ["config.txt"]
         "#;
         std::fs::write(root.path().join("Orbitfile"), orbitfile).expect("orbitfile");
         std::fs::write(root.path().join("config.txt"), "hello {{ name }}")
