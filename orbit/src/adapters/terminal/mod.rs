@@ -68,7 +68,11 @@ impl OutputPort for TerminalOutput {
                 println!("{message}");
             }
             CommandResult::JobList { jobs } => {
-                print!("{}", format_jobs_table(jobs));
+                if jobs.is_empty() {
+                    println!("No jobs registered");
+                } else {
+                    print!("{}", format_jobs_table(jobs));
+                }
             }
             CommandResult::JobDetails { job } => {
                 print!("{}", format_job_details(job));
