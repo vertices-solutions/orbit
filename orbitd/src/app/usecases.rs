@@ -1141,9 +1141,25 @@ impl UseCases {
             AppError::with_message(AppErrorKind::Internal, err.code(), err.message())
         })?;
 
+        let mut sync_root = PathBuf::from(&input.local_path);
+        let mut template_values_json = None;
+        let mut _template_guard = None;
+        if let Some(prepared) = templates::prepare_template_submission(
+            &sync_root,
+            input.template_values_json.as_deref(),
+        )? {
+            sync_root = prepared.staging_root;
+            template_values_json = Some(prepared.values_json);
+            _template_guard = Some(prepared.temp_dir);
+        }
+
         let reuse_remote_path = if input.remote_path.is_none() && !input.new_directory {
             self.jobs
-                .latest_remote_path_for_local_path(&input.name, &input.local_path)
+                .latest_remote_path_for_local_path(
+                    &input.name,
+                    &input.local_path,
+                    template_values_json.as_deref(),
+                )
                 .await?
         } else {
             None
@@ -1202,18 +1218,6 @@ impl UseCases {
 
         if *cancel_rx.borrow() {
             return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
-        }
-
-        let mut sync_root = PathBuf::from(&input.local_path);
-        let mut template_values_json = None;
-        let mut _template_guard = None;
-        if let Some(prepared) = templates::prepare_template_submission(
-            &sync_root,
-            input.template_values_json.as_deref(),
-        )? {
-            sync_root = prepared.staging_root;
-            template_values_json = Some(prepared.values_json);
-            _template_guard = Some(prepared.temp_dir);
         }
 
         if let Err(err) = self

@@ -116,9 +116,10 @@ impl JobStorePort for SqliteStoreAdapter {
         &self,
         host_name: &str,
         local_path: &str,
+        template_values: Option<&str>,
     ) -> AppResult<Option<String>> {
         self.store
-            .latest_remote_path_for_local_path(host_name, local_path)
+            .latest_remote_path_for_local_path(host_name, local_path, template_values)
             .await
             .map_err(map_store_error)
     }
