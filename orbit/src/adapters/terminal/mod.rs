@@ -85,8 +85,11 @@ impl OutputPort for TerminalOutput {
             CommandResult::JobRetrieve { output, .. } => {
                 eprintln!("Wrote to {}", output.display());
             }
-            CommandResult::ClusterList { clusters } => {
-                print!("{}", format_clusters_table(clusters));
+            CommandResult::ClusterList {
+                clusters,
+                check_reachability,
+            } => {
+                print!("{}", format_clusters_table(clusters, *check_reachability));
             }
             CommandResult::ClusterDetails { cluster } => {
                 print!("{}", format_cluster_details(cluster));

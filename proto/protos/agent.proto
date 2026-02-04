@@ -187,6 +187,7 @@ message ResolveHomeDirRequest {
 }
 message ListClustersRequest {
   string filter = 1;
+  optional bool check_reachability = 2;
 }
 
 message ListClustersUnitResponse {

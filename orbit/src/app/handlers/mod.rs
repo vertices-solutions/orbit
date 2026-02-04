@@ -71,7 +71,7 @@ pub async fn handle_job_submit(
     ctx: &AppContext,
     cmd: SubmitJobCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.name)
@@ -352,17 +352,23 @@ pub async fn handle_job_retrieve(
 
 pub async fn handle_cluster_list(
     ctx: &AppContext,
-    _cmd: ListClustersCommand,
+    cmd: ListClustersCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
-    Ok(CommandResult::ClusterList { clusters })
+    let clusters = ctx
+        .orbitd
+        .list_clusters("", cmd.check_reachability)
+        .await?;
+    Ok(CommandResult::ClusterList {
+        clusters,
+        check_reachability: cmd.check_reachability,
+    })
 }
 
 pub async fn handle_cluster_get(
     ctx: &AppContext,
     cmd: ClusterGetCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.name)
@@ -401,7 +407,7 @@ pub async fn handle_cluster_add(
     cmd: AddClusterCommand,
 ) -> AppResult<CommandResult> {
     ctx.output.info("Adding new cluster...").await?;
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let existing_names = clusters
         .iter()
         .map(|cluster| cluster.name.clone())
@@ -546,7 +552,7 @@ pub async fn handle_cluster_set(
         updated_fields.push(("default_base_path".to_string(), value.to_string()));
     }
 
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.name)
@@ -712,7 +718,7 @@ pub async fn handle_project_submit(
     ctx: &AppContext,
     cmd: ProjectSubmitCommand,
 ) -> AppResult<CommandResult> {
-    let clusters = ctx.orbitd.list_clusters("").await?;
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
         .find(|cluster| cluster.name == cmd.cluster)
