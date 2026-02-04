@@ -18,6 +18,7 @@ pub trait JobStorePort: Send + Sync {
         &self,
         host_name: &str,
         local_path: &str,
+        template_values: Option<&str>,
     ) -> AppResult<Option<String>>;
     async fn running_job_id_for_remote_path(
         &self,

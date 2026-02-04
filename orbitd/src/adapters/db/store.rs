@@ -699,19 +699,21 @@ impl HostStore {
         &self,
         host_name: &str,
         local_path: &str,
+        template_values: Option<&str>,
     ) -> Result<Option<String>> {
         let row = sqlx::query(
             r#"
             select j.remote_path as remote_path
             from jobs j
             join hosts h on j.host_id = h.id
-            where h.name = ?1 and j.local_path = ?2
+            where h.name = ?1 and j.local_path = ?2 and j.template_values is ?3
             order by j.id desc
             limit 1
             "#,
         )
         .bind(host_name)
         .bind(local_path)
+        .bind(template_values)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|r| r.try_get::<String, _>("remote_path").unwrap()))
@@ -1297,13 +1299,95 @@ mod tests {
         db.insert_job(&job2).await.unwrap();
 
         let latest = db
-            .latest_remote_path_for_local_path("host-a", "/tmp/project")
+            .latest_remote_path_for_local_path("host-a", "/tmp/project", None)
             .await
             .unwrap();
         assert_eq!(latest.as_deref(), Some("/remote/run2"));
 
         let missing = db
-            .latest_remote_path_for_local_path("host-a", "/tmp/missing")
+            .latest_remote_path_for_local_path("host-a", "/tmp/missing", None)
+            .await
+            .unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn latest_remote_path_for_local_path_matches_template_values() {
+        let db = HostStore::open_memory().await.unwrap();
+        let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
+        db.insert_host(&host).await.unwrap();
+
+        let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
+        let job1 = NewJob {
+            scheduler_id: Some(50),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run1".into(),
+            stdout_path: "/remote/run1/slurm-50.out".into(),
+            stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let job2 = NewJob {
+            scheduler_id: Some(51),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run2".into(),
+            stdout_path: "/remote/run2/slurm-51.out".into(),
+            stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
+            template_values: Some(r#"{"mode":"a"}"#.to_string()),
+        };
+        let job3 = NewJob {
+            scheduler_id: Some(52),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run3".into(),
+            stdout_path: "/remote/run3/slurm-52.out".into(),
+            stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
+            template_values: Some(r#"{"mode":"b"}"#.to_string()),
+        };
+        let job4 = NewJob {
+            scheduler_id: Some(53),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run4".into(),
+            stdout_path: "/remote/run4/slurm-53.out".into(),
+            stderr_path: None,
+            project_name: None,
+            default_retrieve_path: None,
+            template_values: None,
+        };
+
+        db.insert_job(&job1).await.unwrap();
+        db.insert_job(&job2).await.unwrap();
+        db.insert_job(&job3).await.unwrap();
+        db.insert_job(&job4).await.unwrap();
+
+        let latest_none = db
+            .latest_remote_path_for_local_path("host-a", "/tmp/project", None)
+            .await
+            .unwrap();
+        assert_eq!(latest_none.as_deref(), Some("/remote/run4"));
+
+        let latest_a = db
+            .latest_remote_path_for_local_path("host-a", "/tmp/project", Some(r#"{"mode":"a"}"#))
+            .await
+            .unwrap();
+        assert_eq!(latest_a.as_deref(), Some("/remote/run2"));
+
+        let latest_b = db
+            .latest_remote_path_for_local_path("host-a", "/tmp/project", Some(r#"{"mode":"b"}"#))
+            .await
+            .unwrap();
+        assert_eq!(latest_b.as_deref(), Some("/remote/run3"));
+
+        let missing = db
+            .latest_remote_path_for_local_path("host-a", "/tmp/project", Some(r#"{"mode":"c"}"#))
             .await
             .unwrap();
         assert!(missing.is_none());
