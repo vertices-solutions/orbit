@@ -7,4 +7,5 @@ pub mod fs;
 pub mod grpc;
 pub mod network;
 pub mod ssh;
+pub mod telemetry;
 pub mod time;

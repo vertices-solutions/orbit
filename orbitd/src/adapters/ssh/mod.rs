@@ -154,6 +154,12 @@ fn to_ssh_filters(filters: &[AppSyncFilterRule]) -> Vec<SyncFilterRule> {
 
 #[async_trait]
 impl RemoteExecPort for SshAdapter {
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self, config, command),
+        fields(op = "exec_capture", host = %config.host, user = %config.username, port = config.addr.port())
+    )]
     async fn exec_capture(
         &self,
         config: &SshConfig,
@@ -171,6 +177,12 @@ impl RemoteExecPort for SshAdapter {
         })
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self, config, command, stream, mfa),
+        fields(op = "exec_stream", host = %config.host, user = %config.username, port = config.addr.port())
+    )]
     async fn exec_stream(
         &self,
         config: &SshConfig,
@@ -223,6 +235,12 @@ impl RemoteExecPort for SshAdapter {
         }
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self, config, stream, mfa),
+        fields(op = "ensure_connected", host = %config.host, user = %config.username, port = config.addr.port())
+    )]
     async fn ensure_connected(
         &self,
         config: &SshConfig,
@@ -272,6 +290,12 @@ impl RemoteExecPort for SshAdapter {
         }
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self, config, stream, mfa),
+        fields(op = "ensure_connected_submit", host = %config.host, user = %config.username, port = config.addr.port())
+    )]
     async fn ensure_connected_submit(
         &self,
         config: &SshConfig,
@@ -321,11 +345,23 @@ impl RemoteExecPort for SshAdapter {
         }
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self, config),
+        fields(op = "needs_connect", host = %config.host, user = %config.username, port = config.addr.port())
+    )]
     async fn needs_connect(&self, config: &SshConfig) -> AppResult<bool> {
         let session = self.sessions.get_or_create(config).await?;
         Ok(session.needs_connect().await)
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self, config, remote_dir),
+        fields(op = "directory_exists", host = %config.host, user = %config.username, port = config.addr.port(), path = %remote_dir)
+    )]
     async fn directory_exists(&self, config: &SshConfig, remote_dir: &str) -> AppResult<bool> {
         let session = self.sessions.get_or_create(config).await?;
         session
@@ -334,10 +370,22 @@ impl RemoteExecPort for SshAdapter {
             .map_err(map_directory_error)
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self),
+        fields(op = "is_connected", session = %session_name)
+    )]
     async fn is_connected(&self, session_name: &str) -> AppResult<bool> {
         Ok(self.sessions.is_connected(session_name).await)
     }
 
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self),
+        fields(op = "remove_session", session = %session_name)
+    )]
     async fn remove_session(&self, session_name: &str) -> AppResult<bool> {
         Ok(self.sessions.remove_and_shutdown(session_name).await)
     }
@@ -345,6 +393,12 @@ impl RemoteExecPort for SshAdapter {
 
 #[async_trait]
 impl FileSyncPort for SshAdapter {
+    #[tracing::instrument(
+        name = "sftp",
+        level = "debug",
+        skip(self, config, local_dir, remote_dir, options, stream, mfa),
+        fields(op = "sync_dir", host = %config.host, user = %config.username, port = config.addr.port(), path = %remote_dir)
+    )]
     async fn sync_dir(
         &self,
         config: &SshConfig,
@@ -410,6 +464,12 @@ impl FileSyncPort for SshAdapter {
         }
     }
 
+    #[tracing::instrument(
+        name = "sftp",
+        level = "debug",
+        skip(self, config, remote_path, local_path),
+        fields(op = "retrieve_path", host = %config.host, user = %config.username, port = config.addr.port(), path = %remote_path, overwrite = overwrite)
+    )]
     async fn retrieve_path(
         &self,
         config: &SshConfig,

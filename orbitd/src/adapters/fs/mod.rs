@@ -19,6 +19,7 @@ impl LocalFilesystem {
 
 #[async_trait]
 impl LocalFilesystemPort for LocalFilesystem {
+    #[tracing::instrument(name = "fs", level = "debug", skip(self), fields(op = "current_dir"))]
     async fn current_dir(&self) -> AppResult<PathBuf> {
         std::env::current_dir().map_err(|err| {
             AppError::with_message(
@@ -29,6 +30,7 @@ impl LocalFilesystemPort for LocalFilesystem {
         })
     }
 
+    #[tracing::instrument(name = "fs", level = "debug", skip(self, path), fields(op = "read_to_string", path = %path.display()))]
     async fn read_to_string(&self, path: &Path) -> AppResult<String> {
         std::fs::read_to_string(path).map_err(|err| {
             AppError::with_message(

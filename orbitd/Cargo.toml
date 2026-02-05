@@ -14,8 +14,10 @@ anyhow = "1.0.99"
 async-trait = "0.1.89"
 tokio-stream = "0.1.17"
 clap = { version = "4.5.46", features = ["derive"] }
-log = "0.4.27"
-env_logger = "0.11.8"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter", "fmt", "json", "time"] }
+tracing-error = "0.2.0"
+tracing-appender = "0.2.3"
 walkdir = "2.5.0"
 globset = "0.4.18"
 sha2 = "0.10.9"

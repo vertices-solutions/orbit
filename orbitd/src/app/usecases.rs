@@ -19,6 +19,7 @@ use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
     ClockPort, ClusterStorePort, FileSyncPort, JobStorePort, LocalFilesystemPort, MfaPort,
     NetworkProbePort, ProjectStorePort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
+    TelemetryEvent, TelemetryPort,
 };
 use crate::app::services::{
     managers, os, random, remote_path, sbatch, shell, slurm, submit_paths, templates,
@@ -41,6 +42,7 @@ pub struct UseCases {
     pub(crate) local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
     pub(crate) network: std::sync::Arc<dyn NetworkProbePort>,
     pub(crate) clock: std::sync::Arc<dyn ClockPort>,
+    pub(crate) telemetry: std::sync::Arc<dyn TelemetryPort>,
 }
 
 impl UseCases {
@@ -53,6 +55,7 @@ impl UseCases {
         local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
         network: std::sync::Arc<dyn NetworkProbePort>,
         clock: std::sync::Arc<dyn ClockPort>,
+        telemetry: std::sync::Arc<dyn TelemetryPort>,
     ) -> Self {
         Self {
             clusters,
@@ -63,6 +66,7 @@ impl UseCases {
             local_fs,
             network,
             clock,
+            telemetry,
         }
     }
 
@@ -89,7 +93,7 @@ impl UseCases {
                 {
                     Ok(value) => value,
                     Err(err) => {
-                        log::debug!(
+                        tracing::debug!(
                             "reachability check failed name={} host={} error={}",
                             host.name,
                             format_address(&host.address),
@@ -107,7 +111,7 @@ impl UseCases {
                 match self.remote_exec.is_connected(&host.name).await {
                     Ok(value) => value,
                     Err(err) => {
-                        log::debug!(
+                        tracing::debug!(
                             "connectivity check failed name={} host={} error={}",
                             host.name,
                             format_address(&host.address),
@@ -127,6 +131,7 @@ impl UseCases {
     }
 
     pub async fn list_jobs(&self, name_filter: Option<&str>) -> AppResult<Vec<JobRecord>> {
+        let cluster_name = name_filter.map(str::to_string);
         if let Some(name) = name_filter {
             let Some(host) = self.clusters.get_by_name(name).await? else {
                 return Err(AppError::new(
@@ -134,14 +139,38 @@ impl UseCases {
                     codes::NOT_FOUND,
                 ));
             };
-            self.jobs.list_jobs_for_host(host.id).await
+            let jobs = self.jobs.list_jobs_for_host(host.id).await?;
+            self.telemetry.event(
+                "jobs.listed",
+                TelemetryEvent {
+                    cluster: cluster_name,
+                    ..TelemetryEvent::default()
+                },
+            );
+            Ok(jobs)
         } else {
-            self.jobs.list_all_jobs().await
+            let jobs = self.jobs.list_all_jobs().await?;
+            self.telemetry.event(
+                "jobs.listed",
+                TelemetryEvent {
+                    cluster: cluster_name,
+                    ..TelemetryEvent::default()
+                },
+            );
+            Ok(jobs)
         }
     }
 
     pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
-        self.projects.upsert_project(name, path).await
+        let project = self.projects.upsert_project(name, path).await?;
+        self.telemetry.event(
+            "project.upserted",
+            TelemetryEvent {
+                project: Some(project.name.clone()),
+                ..TelemetryEvent::default()
+            },
+        );
+        Ok(project)
     }
 
     pub async fn get_project_by_name(&self, name: &str) -> AppResult<ProjectRecord> {
@@ -155,7 +184,9 @@ impl UseCases {
     }
 
     pub async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>> {
-        self.projects.list_projects().await
+        let projects = self.projects.list_projects().await?;
+        self.telemetry.event("projects.listed", TelemetryEvent::default());
+        Ok(projects)
     }
 
     pub async fn delete_project(&self, name: &str) -> AppResult<bool> {
@@ -167,6 +198,15 @@ impl UseCases {
             ));
         }
         let deleted = self.projects.delete_project_by_name(trimmed).await?;
+        if deleted > 0 {
+            self.telemetry.event(
+                "project.deleted",
+                TelemetryEvent {
+                    project: Some(trimmed.to_string()),
+                    ..TelemetryEvent::default()
+                },
+            );
+        }
         Ok(deleted > 0)
     }
 
@@ -186,6 +226,13 @@ impl UseCases {
             ));
         }
         let _ = self.remote_exec.remove_session(trimmed).await;
+        self.telemetry.event(
+            "cluster.deleted",
+            TelemetryEvent {
+                cluster: Some(trimmed.to_string()),
+                ..TelemetryEvent::default()
+            },
+        );
         Ok(true)
     }
 
@@ -321,6 +368,13 @@ impl UseCases {
         let local_path = match input.local_path {
             Some(v) if !v.trim().is_empty() => v,
             _ => {
+                self.telemetry.event(
+                    "job.retrieve.failed",
+                    TelemetryEvent {
+                        job_id: Some(input.job_id),
+                        ..TelemetryEvent::default()
+                    },
+                );
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::INVALID_ARGUMENT,
@@ -336,9 +390,25 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
+                self.telemetry.event(
+                    "job.retrieve.failed",
+                    TelemetryEvent {
+                        job_id: Some(input.job_id),
+                        ..TelemetryEvent::default()
+                    },
+                );
                 return Ok(());
             }
         };
+        let telemetry_base = TelemetryEvent {
+            project: job.project_name.clone(),
+            cluster: Some(job.name.clone()),
+            job_id: Some(input.job_id),
+            remote_path: Some(job.remote_path.clone()),
+            ..TelemetryEvent::default()
+        };
+        self.telemetry
+            .event("job.retrieve.started", telemetry_base.clone());
 
         let requested_path = if input.path.trim().is_empty() {
             match job
@@ -349,6 +419,8 @@ impl UseCases {
             {
                 Some(value) => value.to_string(),
                 None => {
+                    self.telemetry
+                        .event("job.retrieve.failed", telemetry_base.clone());
                     return Err(AppError::with_message(
                         AppErrorKind::InvalidArgument,
                         codes::INVALID_ARGUMENT,
@@ -378,6 +450,8 @@ impl UseCases {
                     event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                 })
                 .await;
+            self.telemetry
+                .event("job.retrieve.failed", telemetry_base.clone());
             return Ok(());
         }
         if !input.force {
@@ -397,6 +471,8 @@ impl UseCases {
                             event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                         })
                         .await;
+                    self.telemetry
+                        .event("job.retrieve.failed", telemetry_base.clone());
                     return Ok(());
                 }
             }
@@ -410,6 +486,8 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(err.code().to_string())),
                     })
                     .await;
+                self.telemetry
+                    .event("job.retrieve.failed", telemetry_base.clone());
                 return Ok(());
             }
         };
@@ -424,6 +502,8 @@ impl UseCases {
                     event: Some(stream_event::Event::Error(err.code().to_string())),
                 })
                 .await;
+            self.telemetry
+                .event("job.retrieve.failed", telemetry_base.clone());
             return Ok(());
         }
 
@@ -448,7 +528,9 @@ impl UseCases {
                             event: Some(stream_event::Event::Error(codes::LOCAL_ERROR.to_string())),
                         })
                         .await;
-                    log::debug!("could not resolve local destination: {err}");
+                    tracing::debug!("could not resolve local destination: {err}");
+                    self.telemetry
+                        .event("job.retrieve.failed", telemetry_base.clone());
                     return Ok(());
                 }
             }
@@ -469,6 +551,8 @@ impl UseCases {
                         )),
                     })
                     .await;
+                self.telemetry
+                    .event("job.retrieve.failed", telemetry_base.clone());
                 return Ok(());
             }
         };
@@ -484,6 +568,8 @@ impl UseCases {
                         event: Some(stream_event::Event::ExitCode(0)),
                     })
                     .await;
+                self.telemetry
+                    .event("job.retrieve.succeeded", telemetry_base.clone());
             }
             Err(err) if err.code() == codes::NOT_FOUND => {
                 let _ = stream
@@ -498,6 +584,8 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
+                self.telemetry
+                    .event("job.retrieve.failed", telemetry_base.clone());
             }
             Err(err) if err.code() == codes::CONFLICT => {
                 let message = format!("{}; use --overwrite to replace it.\n", err.message());
@@ -511,6 +599,8 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                     })
                     .await;
+                self.telemetry
+                    .event("job.retrieve.failed", telemetry_base.clone());
             }
             Err(_) => {
                 let _ = stream
@@ -518,6 +608,8 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                     })
                     .await;
+                self.telemetry
+                    .event("job.retrieve.failed", telemetry_base.clone());
             }
         }
 
@@ -843,9 +935,26 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(codes::NOT_FOUND.to_string())),
                     })
                     .await;
+                self.telemetry.event(
+                    "job.cleanup.failed",
+                    TelemetryEvent {
+                        job_id: Some(input.job_id),
+                        ..TelemetryEvent::default()
+                    },
+                );
                 return Ok(());
             }
         };
+
+        let telemetry_base = TelemetryEvent {
+            project: job.project_name.clone(),
+            cluster: Some(job.name.clone()),
+            job_id: Some(input.job_id),
+            remote_path: Some(job.remote_path.clone()),
+            ..TelemetryEvent::default()
+        };
+        self.telemetry
+            .event("job.cleanup.started", telemetry_base.clone());
 
         if is_unsafe_cleanup_path(&job.remote_path) {
             let message = format!(
@@ -864,6 +973,8 @@ impl UseCases {
                     )),
                 })
                 .await;
+            self.telemetry
+                .event("job.cleanup.failed", telemetry_base.clone());
             return Ok(());
         }
 
@@ -882,6 +993,8 @@ impl UseCases {
                     event: Some(stream_event::Event::ExitCode(1)),
                 })
                 .await;
+            self.telemetry
+                .event("job.cleanup.failed", telemetry_base.clone());
             return Ok(());
         }
 
@@ -928,6 +1041,8 @@ impl UseCases {
                         )),
                     })
                     .await;
+                self.telemetry
+                    .event("job.cleanup.failed", telemetry_base.clone());
                 return Ok(());
             };
 
@@ -942,6 +1057,8 @@ impl UseCases {
                             )),
                         })
                         .await;
+                    self.telemetry
+                        .event("job.cleanup.failed", telemetry_base.clone());
                     return Ok(());
                 }
             };
@@ -967,6 +1084,8 @@ impl UseCases {
                             )),
                         })
                         .await;
+                    self.telemetry
+                        .event("job.cleanup.failed", telemetry_base.clone());
                     return Ok(());
                 }
             }
@@ -998,6 +1117,8 @@ impl UseCases {
                                     )),
                                 })
                                 .await;
+                            self.telemetry
+                                .event("job.cleanup.failed", telemetry_base.clone());
                             return Ok(());
                         }
                         let output = String::from_utf8_lossy(&result.stdout);
@@ -1017,6 +1138,8 @@ impl UseCases {
                                 )),
                             })
                             .await;
+                        self.telemetry
+                            .event("job.cleanup.failed", telemetry_base.clone());
                         return Ok(());
                     }
                 }
@@ -1033,6 +1156,8 @@ impl UseCases {
                             event: Some(stream_event::Event::Error(codes::CONFLICT.to_string())),
                         })
                         .await;
+                    self.telemetry
+                        .event("job.cleanup.failed", telemetry_base.clone());
                     return Ok(());
                 }
                 sleep(CLEANUP_CANCEL_POLL_INTERVAL).await;
@@ -1050,6 +1175,8 @@ impl UseCases {
                         )),
                     })
                     .await;
+                self.telemetry
+                    .event("job.cleanup.failed", telemetry_base.clone());
                 return Ok(());
             }
         }
@@ -1063,6 +1190,8 @@ impl UseCases {
                         event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                     })
                     .await;
+                self.telemetry
+                    .event("job.cleanup.failed", telemetry_base.clone());
                 return Ok(());
             }
         };
@@ -1088,6 +1217,8 @@ impl UseCases {
                     event: Some(stream_event::Event::Error(codes::REMOTE_ERROR.to_string())),
                 })
                 .await;
+            self.telemetry
+                .event("job.cleanup.failed", telemetry_base.clone());
             return Ok(());
         }
 
@@ -1102,6 +1233,8 @@ impl UseCases {
                             )),
                         })
                         .await;
+                    self.telemetry
+                        .event("job.cleanup.failed", telemetry_base.clone());
                     return Ok(());
                 }
             }
@@ -1122,6 +1255,8 @@ impl UseCases {
                 event: Some(stream_event::Event::ExitCode(0)),
             })
             .await;
+        self.telemetry
+            .event("job.cleanup.succeeded", telemetry_base.clone());
         Ok(())
     }
 
@@ -1132,9 +1267,26 @@ impl UseCases {
         mfa: &mut dyn MfaPort,
         mut cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
+        let cluster_name = input.name.clone();
+        let project_name = input.project_name.clone();
+        let submit_span = tracing::info_span!(
+            "job_submit",
+            project = project_name.as_deref(),
+            cluster = %cluster_name,
+            job_name = tracing::field::Empty
+        );
+        let _submit_guard = submit_span.enter();
         let host = match self.clusters.get_by_name(&input.name).await? {
             Some(v) => v,
             None => {
+                self.telemetry.event(
+                    "job.submit.failed",
+                    TelemetryEvent {
+                        cluster: Some(cluster_name.clone()),
+                        project: project_name.clone(),
+                        ..TelemetryEvent::default()
+                    },
+                );
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
@@ -1144,6 +1296,12 @@ impl UseCases {
         let config = self.config_for_host(&host).await.map_err(|err| {
             AppError::with_message(AppErrorKind::Internal, err.code(), err.message())
         })?;
+        let telemetry_base = TelemetryEvent {
+            cluster: Some(cluster_name.clone()),
+            project: project_name.clone(),
+            user: Some(host.username.clone()),
+            ..TelemetryEvent::default()
+        };
 
         let mut sync_root = PathBuf::from(&input.local_path);
         let mut template_values_json = None;
@@ -1188,6 +1346,12 @@ impl UseCases {
                 (resolved, false)
             }
         };
+        let telemetry_context = TelemetryEvent {
+            remote_path: Some(remote_path.clone()),
+            ..telemetry_base.clone()
+        };
+        self.telemetry
+            .event("job.submit.started", telemetry_context.clone());
 
         if !input.force {
             if let Some(job_id) = self
@@ -1198,6 +1362,8 @@ impl UseCases {
                 let detail = format!(
                     "job {job_id} is still running in {remote_path}; use --force to submit anyway"
                 );
+                self.telemetry
+                    .event("job.submit.failed", telemetry_context.clone());
                 return Err(AppError::with_message(
                     AppErrorKind::AlreadyExists,
                     codes::CONFLICT,
@@ -1217,10 +1383,14 @@ impl UseCases {
             .await
             .is_err()
         {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
         }
 
         if *cancel_rx.borrow() {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
         }
 
@@ -1229,6 +1399,8 @@ impl UseCases {
             .ensure_connected_submit(&config, stream, mfa)
             .await
         {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Err(AppError::with_message(
                 AppErrorKind::Internal,
                 err.code(),
@@ -1241,6 +1413,8 @@ impl UseCases {
             .directory_exists(&config, &remote_path)
             .await?;
         if remote_path_exists && !allow_existing_remote_path {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Err(AppError::new(AppErrorKind::AlreadyExists, codes::CONFLICT));
         }
 
@@ -1255,6 +1429,8 @@ impl UseCases {
             .await
             .is_err()
         {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Ok(());
         }
 
@@ -1286,6 +1462,8 @@ impl UseCases {
                     })),
                 })
                 .await;
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Ok(());
         }
 
@@ -1300,9 +1478,13 @@ impl UseCases {
             .await
             .is_err()
         {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Ok(());
         }
         if stream.is_closed() || *cancel_rx.borrow() {
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Ok(());
         }
 
@@ -1328,6 +1510,8 @@ impl UseCases {
                         })),
                     })
                     .await;
+                self.telemetry
+                    .event("job.submit.failed", telemetry_context.clone());
                 return Ok(());
             }
         };
@@ -1353,7 +1537,9 @@ impl UseCases {
                     })),
                 })
                 .await;
-            log::debug!("sbatch failed: {detail}");
+            tracing::debug!("sbatch failed: {detail}");
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Ok(());
         }
 
@@ -1368,6 +1554,8 @@ impl UseCases {
                     })),
                 })
                 .await;
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
             return Ok(());
         };
 
@@ -1383,7 +1571,7 @@ impl UseCases {
         let templates = match self.local_fs.read_to_string(&sbatch_path).await {
             Ok(contents) => sbatch::parse_sbatch_log_templates(&contents),
             Err(err) => {
-                log::warn!(
+                tracing::warn!(
                     "submit log parse failed name={} sbatchscript={} error={}",
                     input.name,
                     sbatch_path.to_string_lossy(),
@@ -1408,6 +1596,7 @@ impl UseCases {
             .filter(|name| !name.trim().is_empty())
             .unwrap_or("job");
         let job_name = job_name.unwrap_or_else(|| default_job_name.to_string());
+        submit_span.record("job_name", &job_name.as_str());
         let stdout_template = stdout.unwrap_or_else(|| sbatch::DEFAULT_STDOUT_TEMPLATE.to_string());
         let stdout_path = sbatch::resolve_log_path(
             &stdout_template,
@@ -1458,6 +1647,13 @@ impl UseCases {
                         })),
                     })
                     .await;
+                let telemetry_success = TelemetryEvent {
+                    job_id: Some(job_id),
+                    job_name: Some(job_name.clone()),
+                    ..telemetry_context.clone()
+                };
+                self.telemetry
+                    .event("job.submit.succeeded", telemetry_success);
             }
             Err(_) => {
                 let _ = stream
@@ -1469,6 +1665,12 @@ impl UseCases {
                         })),
                     })
                     .await;
+                let telemetry_failed = TelemetryEvent {
+                    job_name: Some(job_name.clone()),
+                    ..telemetry_context.clone()
+                };
+                self.telemetry
+                    .event("job.submit.failed", telemetry_failed);
             }
         }
 
@@ -1481,7 +1683,10 @@ impl UseCases {
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()> {
-        self.cluster_upsert(
+        let cluster_name = input.name.clone();
+        let user_name = input.username.clone();
+        let result = self
+            .cluster_upsert(
             ClusterUpsertInput {
                 name: input.name,
                 username: input.username,
@@ -1494,7 +1699,18 @@ impl UseCases {
             stream,
             mfa,
         )
-        .await
+        .await;
+        if result.is_ok() {
+            self.telemetry.event(
+                "cluster.added",
+                TelemetryEvent {
+                    cluster: Some(cluster_name),
+                    user: Some(user_name),
+                    ..TelemetryEvent::default()
+                },
+            );
+        }
+        result
     }
 
     pub async fn set_cluster(
@@ -1523,7 +1739,8 @@ impl UseCases {
             Some(v) => v,
             None => existing.address.clone(),
         };
-        let username = match input.username {
+        let event_user = input.username.clone();
+        let username = match input.username.as_deref() {
             Some(value) => {
                 let trimmed = value.trim();
                 if trimmed.is_empty() {
@@ -1544,20 +1761,33 @@ impl UseCases {
             .or_else(|| existing.default_base_path.clone());
         let port = input.port.unwrap_or(existing.port);
 
-        self.cluster_upsert(
-            ClusterUpsertInput {
-                name: input.name,
-                username,
-                address,
-                port,
-                identity_path,
-                default_base_path,
-                emit_progress: false,
-            },
-            stream,
-            mfa,
-        )
-        .await
+        let cluster_name = input.name.clone();
+        let result = self
+            .cluster_upsert(
+                ClusterUpsertInput {
+                    name: input.name,
+                    username,
+                    address,
+                    port,
+                    identity_path,
+                    default_base_path,
+                    emit_progress: false,
+                },
+                stream,
+                mfa,
+            )
+            .await;
+        if result.is_ok() {
+            self.telemetry.event(
+                "cluster.updated",
+                TelemetryEvent {
+                    cluster: Some(cluster_name),
+                    user: event_user,
+                    ..TelemetryEvent::default()
+                },
+            );
+        }
+        result
     }
 
     pub async fn check_running_jobs(&self, min_age: StdDuration) -> AppResult<()> {
@@ -1582,13 +1812,13 @@ impl UseCases {
         let mut completed_ids: Vec<(i64, Option<String>)> = Vec::new();
         for (name, host_jobs) in jobs_by_host {
             let Some(host) = host_map.get(&name) else {
-                log::warn!("host record missing for running job on '{name}'");
+                tracing::warn!("host record missing for running job on '{name}'");
                 continue;
             };
             let config = match self.config_for_host(host).await {
                 Ok(cfg) => cfg,
                 Err(err) => {
-                    log::warn!("failed to resolve session for {name}: {err}");
+                    tracing::warn!("failed to resolve session for {name}: {err}");
                     continue;
                 }
             };
@@ -1608,7 +1838,7 @@ impl UseCases {
                     .ensure_connected(&config, &stream, &mut mfa_port)
                     .await
                 {
-                    log::warn!("failed to connect to {name} for job checks: {err}");
+                    tracing::warn!("failed to connect to {name} for job checks: {err}");
                     continue;
                 }
             }
@@ -1622,12 +1852,12 @@ impl UseCases {
                             }
                         }
                         Err(e) => {
-                            log::debug!("failed to parse created_at for job {}: {}", job.id, e);
+                            tracing::debug!("failed to parse created_at for job {}: {}", job.id, e);
                         }
                     }
                 }
                 let Some(job_id) = job.scheduler_id else {
-                    log::warn!("job {} has no scheduler id; skipping", job.id);
+                    tracing::warn!("job {} has no scheduler id; skipping", job.id);
                     continue;
                 };
 
@@ -1636,13 +1866,13 @@ impl UseCases {
                     let capture = match self.remote_exec.exec_capture(&config, &command).await {
                         Ok(v) => v,
                         Err(e) => {
-                            log::warn!("sacct check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("sacct check failed on {name} for {job_id}: {e}");
                             continue;
                         }
                     };
                     if capture.exit_code != 0 {
                         let err_text = String::from_utf8_lossy(&capture.stderr);
-                        log::warn!(
+                        tracing::warn!(
                             "sacct returned {} on {name} for {job_id}: {}",
                             capture.exit_code,
                             err_text
@@ -1656,7 +1886,7 @@ impl UseCases {
                             continue;
                         }
                         None => {
-                            log::debug!("sacct returned no terminal state for {name} job {job_id}");
+                            tracing::debug!("sacct returned no terminal state for {name} job {job_id}");
                         }
                     };
 
@@ -1664,12 +1894,12 @@ impl UseCases {
                     let capture = match self.remote_exec.exec_capture(&config, &command).await {
                         Ok(v) => v,
                         Err(e) => {
-                            log::warn!("squeue check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("squeue check failed on {name} for {job_id}: {e}");
                             continue;
                         }
                     };
                     if capture.exit_code != 0 {
-                        log::warn!(
+                        tracing::warn!(
                             "squeue returned {} on {name} for {job_id}: {}",
                             capture.exit_code,
                             String::from_utf8_lossy(&capture.stderr)
@@ -1683,7 +1913,7 @@ impl UseCases {
                             .update_job_scheduler_state(job.id, Some(&state))
                             .await
                         {
-                            log::warn!(
+                            tracing::warn!(
                                 "failed to update scheduler state for {name} job {job_id}: {e}"
                             );
                         }
@@ -1701,7 +1931,7 @@ impl UseCases {
                                             .update_job_scheduler_state(job.id, Some(&state))
                                             .await
                                         {
-                                            log::warn!(
+                                            tracing::warn!(
                                                 "failed to update scheduler state for {name} job {job_id}: {e}"
                                             );
                                         }
@@ -1711,17 +1941,17 @@ impl UseCases {
                                         completed_ids.push((job.id, Some(state)));
                                         continue;
                                     }
-                                    log::debug!(
+                                    tracing::debug!(
                                         "scontrol returned non-terminal state for {name} job {job_id}: {state}"
                                     );
                                     continue;
                                 }
-                                log::debug!(
+                                tracing::debug!(
                                     "scontrol returned no job state for {name} job {job_id}"
                                 );
                             } else {
                                 let err_text = String::from_utf8_lossy(&capture.stderr);
-                                log::warn!(
+                                tracing::warn!(
                                     "scontrol returned {} on {name} for {job_id}: {}",
                                     capture.exit_code,
                                     err_text
@@ -1733,7 +1963,7 @@ impl UseCases {
                             }
                         }
                         Err(e) => {
-                            log::warn!("scontrol check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("scontrol check failed on {name} for {job_id}: {e}");
                         }
                     }
 
@@ -1741,13 +1971,13 @@ impl UseCases {
                     let capture = match self.remote_exec.exec_capture(&config, &command).await {
                         Ok(v) => v,
                         Err(e) => {
-                            log::warn!("squeue check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("squeue check failed on {name} for {job_id}: {e}");
                             continue;
                         }
                     };
                     if capture.exit_code != 0 {
                         let err_text = String::from_utf8_lossy(&capture.stderr);
-                        log::warn!(
+                        tracing::warn!(
                             "squeue returned {} on {name} for {job_id}: {}",
                             capture.exit_code,
                             err_text
@@ -1764,7 +1994,7 @@ impl UseCases {
                             .update_job_scheduler_state(job.id, Some(&state))
                             .await
                         {
-                            log::warn!(
+                            tracing::warn!(
                                 "failed to update scheduler state for {name} job {job_id}: {e}"
                             );
                         }
@@ -1781,7 +2011,7 @@ impl UseCases {
                 .mark_job_completed(id, terminal_state.as_deref())
                 .await
             {
-                log::warn!("failed to mark job {id} completed: {e}");
+                tracing::warn!("failed to mark job {id} completed: {e}");
             }
         }
         Ok(())

@@ -98,7 +98,7 @@ fn verify_server_key(
         Ok(true) => return Ok(true),
         Ok(false) => {}
         Err(err) => {
-            log::warn!("server key validation failed for {host}:{port}: {err}");
+            tracing::warn!("server key validation failed for {host}:{port}: {err}");
             return Err(anyhow!(
                 "server key validation failed for {host}:{port}: {err}"
             ));
@@ -111,7 +111,7 @@ fn verify_server_key(
             Ok(true) => return Ok(true),
             Ok(false) => {}
             Err(err) => {
-                log::warn!("server key validation failed for {host}:{port}: {err}");
+                tracing::warn!("server key validation failed for {host}:{port}: {err}");
                 return Err(anyhow!(
                     "server key validation failed for {host}:{port}: {err}"
                 ));
@@ -124,11 +124,11 @@ fn verify_server_key(
     } else {
         format!("{host}, {ip_host}")
     };
-    log::info!(
+    tracing::info!(
         "server key for {host}:{port} is not present in known_hosts (tried {tried}); learning"
     );
     learn_known_hosts_for(host, port, key, known_hosts_path).map_err(|err| {
-        log::warn!("failed to learn server key for {host}:{port}: {err}");
+        tracing::warn!("failed to learn server key for {host}:{port}: {err}");
         anyhow!("failed to learn server key for {host}:{port}: {err}")
     })?;
     Ok(true)

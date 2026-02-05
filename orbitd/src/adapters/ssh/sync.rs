@@ -73,7 +73,7 @@ where
     executor.ensure_connected(evt_tx, &mut mfa_rx).await?;
     let plan = build_sync_plan(local_dir, remote_dir, options.filters)?;
 
-    log::info!("making sure the remote directory exists");
+    tracing::info!("making sure the remote directory exists");
     executor.ensure_remote_dir(remote_dir).await?;
     for remote_dir in &plan.remote_dirs {
         executor.ensure_remote_dir(remote_dir).await?;

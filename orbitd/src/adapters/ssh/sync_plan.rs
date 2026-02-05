@@ -77,7 +77,7 @@ pub fn build_sync_plan<P: AsRef<Path>>(
         let direntry = match entry {
             Ok(v) => v,
             Err(e) => {
-                log::warn!("encountered error when enumerating local files: {:?}", e);
+                tracing::warn!("encountered error when enumerating local files: {:?}", e);
                 continue;
             }
         };
@@ -89,7 +89,7 @@ pub fn build_sync_plan<P: AsRef<Path>>(
         let rel_path = match local_path.strip_prefix(&local_root) {
             Ok(v) => v.to_path_buf(),
             Err(_) => {
-                log::warn!(
+                tracing::warn!(
                     "failed computing relative path for {:?} from {:?}",
                     local_path,
                     local_root

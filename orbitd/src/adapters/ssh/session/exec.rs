@@ -89,7 +89,7 @@ impl SessionManager {
         let handle = guard.as_ref().ok_or_else(|| anyhow!("SSH handle lost"))?;
         let mut chan = handle.channel_open_session().await?;
         let actual_command = cmd;
-        log::debug!("executing '{}'", &actual_command);
+        tracing::debug!("executing '{}'", &actual_command);
         //r#"bash -lc 'echo "$SHELL"; echo "$PATH"; command -v python3; python3 -V'"#;
         chan.exec(true, actual_command)
             .await

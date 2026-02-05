@@ -90,7 +90,7 @@ impl SessionManager {
         };
 
         if needs_connect {
-            log::info!(
+            tracing::info!(
                 "re-establishing connection with {}@{}",
                 &self.params.username,
                 &self.params.addr
@@ -100,7 +100,7 @@ impl SessionManager {
             let mut handle = russh::client::connect(self.config.clone(), self.params.addr, handler)
                 .await
                 .context("SSH connect failed")?;
-            log::info!(
+            tracing::info!(
                 "established initial connection with {}@{}, proceeding with auth",
                 &self.params.username,
                 &self.params.addr
@@ -149,13 +149,13 @@ impl SessionManager {
                             continue;
                         };
                         if handle.is_closed() {
-                            log::debug!("keepalive handle is closed");
+                            tracing::debug!("keepalive handle is closed");
                             break;
                         }
                         if let Err(e) = handle.send_keepalive(want_reply).await {
-                            log::debug!("error when sending a keepalive: {}", e);
+                            tracing::debug!("error when sending a keepalive: {}", e);
                         } else {
-                            log::debug!("successfully sent a keepalive message");
+                            tracing::debug!("successfully sent a keepalive message");
                         }
                     }
                 });
@@ -163,7 +163,7 @@ impl SessionManager {
                 *self.keepalive_task_handle.lock().await = Some(jh);
             }
         } else {
-            log::info!(
+            tracing::info!(
                 "don't need to re-establish connection to {}@{}",
                 &self.params.username,
                 &self.params.addr
@@ -208,7 +208,7 @@ impl SessionManager {
                     remaining_methods,
                     partial_success,
                 } => {
-                    log::debug!(
+                    tracing::debug!(
                         "authentication failed (partial_success={}, remaining={:?})",
                         partial_success,
                         remaining_methods

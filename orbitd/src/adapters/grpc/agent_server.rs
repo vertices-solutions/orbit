@@ -17,6 +17,7 @@ use proto::{
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
 use tonic::{Request, Response, Status};
+use tracing::Instrument;
 
 use crate::adapters::grpc::mapping::{
     build_sync_filters, cluster_status_to_response, job_record_to_response,
@@ -113,6 +114,24 @@ fn format_remote_addr(addr: Option<SocketAddr>) -> String {
         .unwrap_or_else(|| "unknown".to_string())
 }
 
+const REQUEST_ID_HEADER: &str = "x-orbit-request-id";
+
+fn request_id_from_metadata(metadata: &tonic::metadata::MetadataMap) -> String {
+    metadata
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| format!("{:032x}", rand::random::<u128>()))
+}
+
+fn rpc_span<T>(request: &Request<T>, method: &'static str) -> tracing::Span {
+    let peer = format_remote_addr(request.remote_addr());
+    let request_id = request_id_from_metadata(request.metadata());
+    tracing::info_span!("rpc", method = %method, peer = %peer, request_id = %request_id)
+}
+
 fn parse_add_cluster_host(host: Option<proto::add_cluster_init::Host>) -> Result<Address, Status> {
     let host = match host {
         Some(v) => v,
@@ -184,15 +203,18 @@ impl Agent for GrpcAgent {
     type ResolveHomeDirStream = OutStream;
 
     async fn ping(&self, request: Request<PingRequest>) -> Result<Response<PingReply>, Status> {
+        let span = rpc_span(&request, "Ping");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let req = request.into_inner();
         match self.usecases.ping(&req.message).await {
             Ok(message) => {
-                log::info!("ping remote_addr={remote_addr}");
+                tracing::info!("ping remote_addr={remote_addr}");
                 Ok(Response::new(PingReply { message }))
             }
             Err(err) => {
-                log::warn!(
+                tracing::warn!(
                     "ping rejected remote_addr={remote_addr} message={}",
                     req.message
                 );
@@ -205,6 +227,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<ResolveHomeDirRequest>>,
     ) -> Result<Response<Self::ResolveHomeDirStream>, Status> {
+        let span = rpc_span(&request, "ResolveHomeDir");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -232,16 +257,18 @@ impl Agent for GrpcAgent {
                 Some(trimmed.to_string())
             }
         });
-        log::info!(
+        tracing::info!(
             "resolve_home_dir start remote_addr={remote_addr} session_name={} username={} host={:?} port={port}",
             session_name.as_deref().unwrap_or("<none>"),
             username,
             address
         );
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::resolve_home_dir_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -249,7 +276,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
         let stream_output = GrpcStreamOutput {
@@ -263,14 +292,17 @@ impl Agent for GrpcAgent {
             identity_path,
             session_name,
         };
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .resolve_home_dir(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -280,6 +312,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<LsRequest>>,
     ) -> Result<Response<Self::LsStream>, Status> {
+        let span = rpc_span(&request, "Ls");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -294,16 +329,18 @@ impl Agent for GrpcAgent {
                 return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
             }
         };
-        log::info!(
+        tracing::info!(
             "ls start remote_addr={remote_addr} name={} job_id={:?} requested_path={:?}",
             name,
             job_id,
             path
         );
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::ls_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -311,7 +348,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = LsInput { name, path, job_id };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
@@ -319,11 +358,14 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases.ls(input, &stream_output, &mut mfa_port).await {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -333,6 +375,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<RetrieveJobRequest>>,
     ) -> Result<Response<Self::RetrieveJobStream>, Status> {
+        let span = rpc_span(&request, "RetrieveJob");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -351,14 +396,16 @@ impl Agent for GrpcAgent {
             ),
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
-        log::info!(
+        tracing::info!(
             "retrieve_job start remote_addr={remote_addr} job_id={job_id} path={path} local_path={:?}",
             local_path
         );
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::retrieve_job_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -366,7 +413,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = RetrieveJobInput {
             job_id,
@@ -380,14 +429,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .retrieve_job(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -397,6 +449,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<JobLogsRequest>>,
     ) -> Result<Response<Self::JobLogsStream>, Status> {
+        let span = rpc_span(&request, "JobLogs");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -409,11 +464,13 @@ impl Agent for GrpcAgent {
             Some(proto::job_logs_request::Msg::Init(init)) => (init.job_id, init.stderr),
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
-        log::info!("job_logs start remote_addr={remote_addr} job_id={job_id} stderr={stderr}");
+        tracing::info!("job_logs start remote_addr={remote_addr} job_id={job_id} stderr={stderr}");
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::job_logs_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -421,7 +478,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = JobLogsInput { job_id, stderr };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
@@ -429,14 +488,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .job_logs(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -446,6 +508,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<CancelJobRequest>>,
     ) -> Result<Response<Self::CancelJobStream>, Status> {
+        let span = rpc_span(&request, "CancelJob");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -458,11 +523,13 @@ impl Agent for GrpcAgent {
             Some(proto::cancel_job_request::Msg::Init(init)) => init.job_id,
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
-        log::info!("cancel_job start remote_addr={remote_addr} job_id={job_id}");
+        tracing::info!("cancel_job start remote_addr={remote_addr} job_id={job_id}");
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::cancel_job_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -470,7 +537,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = CancelJobInput { job_id };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
@@ -478,14 +547,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .cancel_job(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -495,6 +567,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<CleanupJobRequest>>,
     ) -> Result<Response<Self::CleanupJobStream>, Status> {
+        let span = rpc_span(&request, "CleanupJob");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -509,13 +584,15 @@ impl Agent for GrpcAgent {
             }
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
-        log::info!(
+        tracing::info!(
             "cleanup_job start remote_addr={remote_addr} job_id={job_id} force={force} full={full}"
         );
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::cleanup_job_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -523,7 +600,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = CleanupJobInput {
             job_id,
@@ -535,14 +614,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .cleanup_job(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -552,6 +634,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<ListClustersRequest>,
     ) -> Result<Response<ListClustersResponse>, Status> {
+        let span = rpc_span(&request, "ListClusters");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let inbound = request.into_inner();
         let check_reachability = inbound.check_reachability.unwrap_or(true);
@@ -565,7 +650,7 @@ impl Agent for GrpcAgent {
             .iter()
             .filter(|cluster| cluster.connected)
             .count();
-        log::info!(
+        tracing::info!(
             "list_clusters remote_addr={remote_addr} count={} connected={connected_count}",
             cluster_responses.len()
         );
@@ -578,6 +663,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<DeleteClusterRequest>,
     ) -> Result<Response<DeleteClusterResponse>, Status> {
+        let span = rpc_span(&request, "DeleteCluster");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let name = request.into_inner().name.trim().to_string();
         let deleted = self
@@ -585,7 +673,7 @@ impl Agent for GrpcAgent {
             .delete_cluster(&name)
             .await
             .map_err(status_from_app_error)?;
-        log::info!("delete_cluster completed remote_addr={remote_addr} name={name}");
+        tracing::info!("delete_cluster completed remote_addr={remote_addr} name={name}");
         Ok(Response::new(DeleteClusterResponse { deleted }))
     }
 
@@ -593,6 +681,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<SubmitRequest>>,
     ) -> Result<Response<Self::SubmitStream>, Status> {
+        let span = rpc_span(&request, "Submit");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -627,10 +718,11 @@ impl Agent for GrpcAgent {
             ),
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
-        log::info!(
+        tracing::info!(
             "submit start remote_addr={remote_addr} name={name} local_path={local_path} requested_remote_path={:?} sbatch={sbatchscript}",
             remote_path
         );
+        let current_span = tracing::Span::current();
 
         let filters = build_sync_filters(filters).map_err(status_from_app_error)?;
 
@@ -638,7 +730,8 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::submit_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -647,7 +740,9 @@ impl Agent for GrpcAgent {
                 }
             }
             let _ = cancel_tx.send(true);
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = SubmitInput {
             local_path,
@@ -666,14 +761,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .submit(input, &stream_output, &mut mfa_port, cancel_rx)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: SubmitOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -683,6 +781,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<AddClusterRequest>>,
     ) -> Result<Response<Self::AddClusterStream>, Status> {
+        let span = rpc_span(&request, "AddCluster");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -708,14 +809,16 @@ impl Agent for GrpcAgent {
         let address = parse_add_cluster_host(host)?;
         let port = parse_port(port)?;
 
-        log::info!(
+        tracing::info!(
             "add_cluster start remote_addr={remote_addr} name={name} username={username} host={:?} port={port}",
             address
         );
+        let current_span = tracing::Span::current();
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::add_cluster_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -723,7 +826,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = AddClusterInput {
             name,
@@ -738,14 +843,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .add_cluster(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -755,6 +863,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<tonic::Streaming<SetClusterRequest>>,
     ) -> Result<Response<Self::SetClusterStream>, Status> {
+        let span = rpc_span(&request, "SetCluster");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let mut inbound = request.into_inner();
         let init = inbound
@@ -776,9 +887,10 @@ impl Agent for GrpcAgent {
                 return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
             }
         };
-        log::info!(
+        tracing::info!(
             "set_cluster start remote_addr={remote_addr} name={name} host={host:?} username={username:?}"
         );
+        let current_span = tracing::Span::current();
 
         let address = match host {
             Some(value) => Some(parse_set_cluster_host(&value)?),
@@ -791,7 +903,8 @@ impl Agent for GrpcAgent {
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             while let Ok(Some(item)) = inbound.message().await {
                 if let Some(proto::set_cluster_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
@@ -799,7 +912,9 @@ impl Agent for GrpcAgent {
                     break;
                 }
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let input = SetClusterInput {
             name,
@@ -814,14 +929,17 @@ impl Agent for GrpcAgent {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
-        tokio::spawn(async move {
+        tokio::spawn(
+            async move {
             if let Err(err) = usecases
                 .set_cluster(input, &stream_output, &mut mfa_port)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
             }
-        });
+        }
+        .instrument(current_span.clone()),
+        );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
@@ -831,6 +949,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<ListJobsRequest>,
     ) -> Result<Response<ListJobsResponse>, Status> {
+        let span = rpc_span(&request, "ListJobs");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let inbound = request.into_inner();
         let name_filter = inbound.name.as_deref();
@@ -842,7 +963,7 @@ impl Agent for GrpcAgent {
             .map_err(status_from_app_error)?;
         let api_jobs: Vec<_> = jobs.iter().map(job_record_to_response).collect();
         let name_label = name_filter.unwrap_or("<all>");
-        log::info!(
+        tracing::info!(
             "list_jobs remote_addr={remote_addr} name={name_label} count={}",
             api_jobs.len()
         );
@@ -853,6 +974,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<UpsertProjectRequest>,
     ) -> Result<Response<UpsertProjectResponse>, Status> {
+        let span = rpc_span(&request, "UpsertProject");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let req = request.into_inner();
         let project = self
@@ -860,7 +984,7 @@ impl Agent for GrpcAgent {
             .upsert_project(&req.name, &req.path)
             .await
             .map_err(status_from_app_error)?;
-        log::info!(
+        tracing::info!(
             "upsert_project remote_addr={remote_addr} name={} path={}",
             project.name,
             project.path
@@ -874,6 +998,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<GetProjectRequest>,
     ) -> Result<Response<GetProjectResponse>, Status> {
+        let span = rpc_span(&request, "GetProject");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let req = request.into_inner();
         let project = self
@@ -881,7 +1008,7 @@ impl Agent for GrpcAgent {
             .get_project_by_name(&req.name)
             .await
             .map_err(status_from_app_error)?;
-        log::info!(
+        tracing::info!(
             "get_project remote_addr={remote_addr} name={} path={}",
             project.name,
             project.path
@@ -895,6 +1022,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<ListProjectsRequest>,
     ) -> Result<Response<ListProjectsResponse>, Status> {
+        let span = rpc_span(&request, "ListProjects");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let _ = request.into_inner();
         let projects = self
@@ -906,7 +1036,7 @@ impl Agent for GrpcAgent {
             .iter()
             .map(project_record_to_response)
             .collect::<Vec<_>>();
-        log::info!(
+        tracing::info!(
             "list_projects remote_addr={remote_addr} count={}",
             projects.len()
         );
@@ -917,6 +1047,9 @@ impl Agent for GrpcAgent {
         &self,
         request: Request<DeleteProjectRequest>,
     ) -> Result<Response<DeleteProjectResponse>, Status> {
+        let span = rpc_span(&request, "DeleteProject");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let name = request.into_inner().name.trim().to_string();
         let deleted = self
@@ -924,7 +1057,7 @@ impl Agent for GrpcAgent {
             .delete_project(&name)
             .await
             .map_err(status_from_app_error)?;
-        log::info!("delete_project remote_addr={remote_addr} name={name} deleted={deleted}");
+        tracing::info!("delete_project remote_addr={remote_addr} name={name} deleted={deleted}");
         Ok(Response::new(DeleteProjectResponse { deleted }))
     }
 }

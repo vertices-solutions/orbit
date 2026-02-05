@@ -31,6 +31,12 @@ fn map_net_error(err: net::NetError) -> AppError {
 
 #[async_trait]
 impl NetworkProbePort for NetworkAdapter {
+    #[tracing::instrument(
+        name = "network",
+        level = "debug",
+        skip(self, address),
+        fields(op = "resolve_host_addr", address = ?address, port = port)
+    )]
     async fn resolve_host_addr(&self, address: &Address, port: u16) -> AppResult<SocketAddr> {
         match address {
             Address::Ip(ip) => Ok(SocketAddr::new(*ip, port)),
@@ -40,6 +46,12 @@ impl NetworkProbePort for NetworkAdapter {
         }
     }
 
+    #[tracing::instrument(
+        name = "network",
+        level = "debug",
+        skip(self, address),
+        fields(op = "check_host_reachable", address = ?address, port = port)
+    )]
     async fn check_host_reachable(&self, address: &Address, port: u16) -> AppResult<bool> {
         reachability::check_host_reachable(address, port)
             .await

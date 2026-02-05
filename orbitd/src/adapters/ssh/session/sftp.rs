@@ -47,9 +47,9 @@ impl SessionManager {
         sftp_session: &SftpSession,
         remote_dir: &str,
     ) -> Result<()> {
-        log::debug!("remote dir: {remote_dir}");
+        tracing::debug!("remote dir: {remote_dir}");
         for cur in build_remote_dir_paths(remote_dir) {
-            log::debug!("cur: {}", &cur);
+            tracing::debug!("cur: {}", &cur);
             match sftp_session.metadata(&cur).await {
                 Ok(meta) => {
                     if !meta.is_dir() {
@@ -60,7 +60,7 @@ impl SessionManager {
                     }
                 }
                 Err(e) => {
-                    log::debug!("got error when retrieving metadata: {}", e);
+                    tracing::debug!("got error when retrieving metadata: {}", e);
                     let attrs = FileAttributes {
                         permissions: Some(0o700),
                         ..Default::default()
@@ -73,13 +73,13 @@ impl SessionManager {
                         Ok(_) => {}
                         Err(e) => {
                             if is_permission_denied(&e) {
-                                log::debug!(
+                                tracing::debug!(
                                     "permission denied when setting metadata for path {}: {}",
                                     &cur,
                                     e
                                 );
                             } else {
-                                log::warn!("error when setting metadata for path {}: {}", &cur, e);
+                                tracing::warn!("error when setting metadata for path {}: {}", &cur, e);
                             }
                         }
                     };
@@ -188,7 +188,7 @@ impl SessionManager {
                             russh_sftp::protocol::StatusCode::NoSuchFile => {
                                 // This is a good case - we just need to transfer file and exit,
                                 // that's it
-                                log::debug!("file {} doesn't exist, uploading", remote_path);
+                                tracing::debug!("file {} doesn't exist, uploading", remote_path);
                                 return upload_single_file(
                                     sftp,
                                     &local_path.to_path_buf(),
@@ -198,7 +198,7 @@ impl SessionManager {
                                 .await;
                             }
                             _ => {
-                                log::warn!("encountered Status error with status {:?}", estatus);
+                                tracing::warn!("encountered Status error with status {:?}", estatus);
                                 anyhow::bail!("encountered Status error with status {:?}", estatus)
                             }
                         }
@@ -212,14 +212,14 @@ impl SessionManager {
         }
         if let Some(rmtime) = rmeta.mtime {
             if rmtime as u64 >= lmtime {
-                log::debug!(
+                tracing::debug!(
                     "remote file {remote_path} is at least as new as local file {local_path:?}, skipping transfer",
                 );
 
                 return Ok(());
             }
         } else {
-            log::debug!("could not get mtime for remote path {remote_path}")
+            tracing::debug!("could not get mtime for remote path {remote_path}")
         }
 
         if rmeta.is_empty() {
@@ -227,7 +227,7 @@ impl SessionManager {
             return upload_single_file(sftp, &local_path.to_path_buf(), remote_path, block_size)
                 .await;
         }
-        log::debug!("Opening remote file for random-access writes");
+        tracing::debug!("Opening remote file for random-access writes");
         // Try to open remote file for random-access writes (create if absent)
         let flags = OpenFlags::WRITE.union(OpenFlags::READ);
         /*
@@ -247,7 +247,7 @@ impl SessionManager {
         {
             Ok(h) => Some(h),
             Err(e) => {
-                log::warn!(
+                tracing::warn!(
                     "remote hash plan unavailable for {}: {} ; falling back to full upload",
                     remote_path,
                     e
@@ -271,7 +271,7 @@ impl SessionManager {
                 };
 
                 if differing {
-                    log::debug!("found differing block at offset {offset}, index {i}");
+                    tracing::debug!("found differing block at offset {offset}, index {i}");
                     // Read local block and write to remote at offset
                     let mut buf = vec![0u8; this_block];
                     let mut f = tokiofs::File::open(local_path).await.context(format!(
@@ -301,11 +301,11 @@ impl SessionManager {
             // Truncate/extend remote file to match local size if needed
             // this is done in case the local file was truncated
             if rblocks.len() as u64 * block_size as u64 != lsize {
-                log::info!("setting length medatata on remote file");
+                tracing::info!("setting length medatata on remote file");
                 // Use SFTP fsetstat(size) when supported; otherwise remote 'truncate'
                 rmeta.size = Some(lsize);
                 if let Err(_e) = rfile.set_metadata(rmeta).await {
-                    log::warn!("setting metadata on remote failed - falling back to truncate");
+                    tracing::warn!("setting metadata on remote failed - falling back to truncate");
                     // fallback via small exec
                     let cmd = format!("truncate -s {} {}", lsize, sh_escape(remote_path));
                     let _ = self.exec_simple(&cmd).await;
@@ -318,7 +318,7 @@ impl SessionManager {
 
         /*
         // Try to set remote mtime to local mtime so next run can skip
-        log::debug!("setting remote mtime equal to local mtime");
+        tracing::debug!("setting remote mtime equal to local mtime");
         let mut attrs = FileAttributes::default();
         attrs.mtime = Some(lmtime as u32);
         let _ = sftp.set_metadata(remote_path, attrs).await;
@@ -414,7 +414,7 @@ async fn upload_single_file(
     block_size: usize,
 ) -> anyhow::Result<()> {
     // File just doesn't exist yet we simply copy it over SFTP
-    log::debug!(
+    tracing::debug!(
         "Uploading file over sftp: {} -> {}",
         local_path.to_string_lossy(),
         remote_path

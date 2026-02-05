@@ -11,6 +11,7 @@ pub mod network;
 pub mod project_store;
 pub mod remote_exec;
 pub mod stream_output;
+pub mod telemetry;
 
 pub use clock::ClockPort;
 pub use cluster_store::ClusterStorePort;
@@ -22,3 +23,5 @@ pub use network::NetworkProbePort;
 pub use project_store::ProjectStorePort;
 pub use remote_exec::{ExecCapture, RemoteExecPort};
 pub use stream_output::{StreamOutputPort, SubmitStreamOutputPort};
+#[allow(unused_imports)]
+pub use telemetry::{NoopTelemetry, TelemetryEvent, TelemetryPort};
