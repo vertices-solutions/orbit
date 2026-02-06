@@ -464,20 +464,24 @@ pub async fn handle_cluster_add(
             .await?;
         loop {
             let default_path = default_base_path_from_home(&home_dir);
-            let base_path = ctx
+            let mut prompt = ctx
                 .interaction
-                .prompt_line_with_default(
+                .prompt_line_with_default_confirmable(
                     "Default base path: ",
                     "Remote base folder for projects.",
                     &default_path,
                 )
                 .await?;
+            let base_path = prompt.input.trim().to_string();
+            prompt.start_validation("Validating default base path...")?;
             match local_validate_default_base_path(&base_path) {
                 Ok(()) => {
+                    prompt.finish_success(&format!("Default base path: {base_path}"))?;
                     resolved.default_base_path = Some(base_path);
                     break;
                 }
                 Err(err) => {
+                    prompt.finish_failure()?;
                     ctx.output
                         .warn(&format!(
                             "Default base path '{}' is invalid: {}",
@@ -994,19 +998,17 @@ async fn resolve_project_init_name(
         .map(sanitize_project_name)
         .filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| "project".to_string());
-    let prompt_value = ctx
+    let mut prompt = ctx
         .interaction
-        .prompt_line_with_default(
+        .prompt_line_with_default_confirmable(
             "Project name: ",
             "Project identifier used by orbit project commands.",
             &default_name,
         )
         .await?;
-    let name = prompt_value.trim().to_string();
+    let name = prompt.input.trim().to_string();
     validate_project_name(&name)?;
-    if ctx.ui_mode.is_interactive() {
-        ctx.output.success(&format!("Project name: {name}")).await?;
-    }
+    prompt.finish_success(&format!("Project name: {name}"))?;
     Ok(name)
 }
 

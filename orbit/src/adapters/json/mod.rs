@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::app::commands::{CommandResult, InitActionStatus, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
-use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
+use crate::app::ports::{InteractionPort, OutputPort, PromptLine, StreamKind, StreamOutputPort};
 use format::{cluster_to_json, job_to_json};
 
 pub struct JsonOutput;
@@ -91,6 +91,23 @@ impl InteractionPort for NonInteractiveInteraction {
         _help: &str,
         _default: &str,
     ) -> AppResult<String> {
+        Err(AppError::invalid_argument(
+            "input required; rerun without --non-interactive",
+        ))
+    }
+
+    async fn prompt_line_confirmable(&self, _prompt: &str, _help: &str) -> AppResult<PromptLine> {
+        Err(AppError::invalid_argument(
+            "input required; rerun without --non-interactive",
+        ))
+    }
+
+    async fn prompt_line_with_default_confirmable(
+        &self,
+        _prompt: &str,
+        _help: &str,
+        _default: &str,
+    ) -> AppResult<PromptLine> {
         Err(AppError::invalid_argument(
             "input required; rerun without --non-interactive",
         ))
