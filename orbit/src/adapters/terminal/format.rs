@@ -10,6 +10,10 @@ pub(super) fn format_clusters_table(
     clusters: &[ListClustersUnitResponse],
     show_reachability: bool,
 ) -> String {
+    if clusters.is_empty() {
+        return "No clusters registered\n".to_string();
+    }
+
     if show_reachability {
         let headers = ["name", "destination", "status", "reachable", "accounting"];
         let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
@@ -432,6 +436,15 @@ mod tests {
         assert!(output.contains("name"));
         assert!(output.contains("destination"));
         assert!(!output.contains("reachable"));
+    }
+
+    #[test]
+    fn format_clusters_table_reports_empty_list() {
+        let output_with_reachability = format_clusters_table(&[], true);
+        let output_without_reachability = format_clusters_table(&[], false);
+
+        assert_eq!(output_with_reachability, "No clusters registered\n");
+        assert_eq!(output_without_reachability, "No clusters registered\n");
     }
 
     #[test]
