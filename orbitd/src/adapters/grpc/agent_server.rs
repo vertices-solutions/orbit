@@ -1057,16 +1057,18 @@ impl Agent for GrpcAgent {
         let remote_addr = format_remote_addr(request.remote_addr());
         let inbound = request.into_inner();
         let name_filter = inbound.name.as_deref();
+        let project_filter = inbound.project_name.as_deref();
 
         let jobs = self
             .usecases
-            .list_jobs(name_filter)
+            .list_jobs(name_filter, project_filter)
             .await
             .map_err(status_from_app_error)?;
         let api_jobs: Vec<_> = jobs.iter().map(job_record_to_response).collect();
         let name_label = name_filter.unwrap_or("<all>");
+        let project_label = project_filter.unwrap_or("<all>");
         tracing::info!(
-            "list_jobs remote_addr={remote_addr} name={name_label} count={}",
+            "list_jobs remote_addr={remote_addr} name={name_label} project={project_label} count={}",
             api_jobs.len()
         );
         Ok(Response::new(ListJobsResponse { jobs: api_jobs }))

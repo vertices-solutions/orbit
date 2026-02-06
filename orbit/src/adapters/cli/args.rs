@@ -116,6 +116,8 @@ pub struct JobCleanupArgs {
 pub struct ListJobsArgs {
     #[arg(long)]
     pub cluster: Option<String>,
+    #[arg(long)]
+    pub project: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -535,6 +537,30 @@ mod tests {
                 _ => panic!("expected cluster list command"),
             },
             _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn job_list_project_defaults_to_none() {
+        let args = Cli::parse_from(["orbit", "job", "list"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::List(list) => assert!(list.project.is_none()),
+                _ => panic!("expected job list command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_list_parses_project_flag() {
+        let args = Cli::parse_from(["orbit", "job", "list", "--project", "demo"]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::List(list) => assert_eq!(list.project.as_deref(), Some("demo")),
+                _ => panic!("expected job list command"),
+            },
+            _ => panic!("expected job command"),
         }
     }
 

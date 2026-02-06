@@ -67,6 +67,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             }
             JobCmd::List(args) => JobCommand::List(ListJobsCommand {
                 cluster: args.cluster,
+                project: args.project,
             }),
             JobCmd::Get(args) => JobCommand::Get(JobGetCommand {
                 job_id: args.job_id,

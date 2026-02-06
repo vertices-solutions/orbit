@@ -220,6 +220,7 @@ message ListClustersUnitResponse {
 
 message ListJobsRequest {
   optional string name = 1;
+  optional string project_name = 2;
 }
 
 message ListClustersResponse {

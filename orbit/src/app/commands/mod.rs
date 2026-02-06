@@ -52,6 +52,7 @@ pub struct SubmitJobCommand {
 #[derive(Debug, Clone)]
 pub struct ListJobsCommand {
     pub cluster: Option<String>,
+    pub project: Option<String>,
 }
 
 #[derive(Debug, Clone)]

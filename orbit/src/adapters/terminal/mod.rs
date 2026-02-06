@@ -15,18 +15,10 @@ use crate::app::commands::{
 };
 use crate::app::errors::{AppError, AppResult, format_server_error};
 use crate::app::ports::{
-    InteractionPort,
-    OutputPort,
-    PromptFeedbackPort,
-    PromptLine,
-    StreamKind,
-    StreamOutputPort,
+    InteractionPort, OutputPort, PromptFeedbackPort, PromptLine, StreamKind, StreamOutputPort,
 };
 use console::{
-    Spinner,
-    SpinnerTarget,
-    print_with_green_check_stderr,
-    print_with_green_check_stdout,
+    Spinner, SpinnerTarget, print_with_green_check_stderr, print_with_green_check_stdout,
 };
 use enum_picker::pick_enum_value;
 use format::{

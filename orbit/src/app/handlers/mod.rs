@@ -29,12 +29,12 @@ pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<Comma
 }
 
 pub async fn handle_job_list(ctx: &AppContext, cmd: ListJobsCommand) -> AppResult<CommandResult> {
-    let jobs = ctx.orbitd.list_jobs(cmd.cluster).await?;
+    let jobs = ctx.orbitd.list_jobs(cmd.cluster, cmd.project).await?;
     Ok(CommandResult::JobList { jobs })
 }
 
 pub async fn handle_job_get(ctx: &AppContext, cmd: JobGetCommand) -> AppResult<CommandResult> {
-    let jobs = ctx.orbitd.list_jobs(cmd.cluster.clone()).await?;
+    let jobs = ctx.orbitd.list_jobs(cmd.cluster.clone(), None).await?;
     let matches: Vec<&ListJobsUnitResponse> =
         jobs.iter().filter(|job| job.job_id == cmd.job_id).collect();
     match matches.as_slice() {

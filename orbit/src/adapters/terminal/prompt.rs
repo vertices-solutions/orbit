@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use super::console::{Spinner, SpinnerTarget, print_with_green_check_stdout};
 use anyhow::bail;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -8,7 +9,6 @@ use crossterm::execute;
 use crossterm::style::{Color, Print, ResetColor, SetForegroundColor};
 use crossterm::terminal::{self, ClearType};
 use std::io::{IsTerminal, Write};
-use super::console::{Spinner, SpinnerTarget, print_with_green_check_stdout};
 
 const HINT_COLOR: Color = Color::DarkGrey;
 
@@ -109,7 +109,11 @@ impl PromptFeedback {
             execute!(stdout, cursor::MoveUp(1))?;
             self.moved = true;
         }
-        execute!(stdout, cursor::MoveToColumn(0), terminal::Clear(ClearType::CurrentLine))?;
+        execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )?;
         stdout.flush()?;
         Ok(())
     }
@@ -120,7 +124,11 @@ impl PromptFeedback {
             execute!(stdout, cursor::MoveUp(1))?;
             self.moved = true;
         }
-        execute!(stdout, cursor::MoveToColumn(0), terminal::Clear(ClearType::CurrentLine))?;
+        execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )?;
         stdout.flush()?;
         Ok(())
     }

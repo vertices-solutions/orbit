@@ -97,9 +97,13 @@ impl OrbitdPort for GrpcOrbitdPort {
     async fn list_jobs(
         &self,
         cluster: Option<String>,
+        project: Option<String>,
     ) -> AppResult<Vec<proto::ListJobsUnitResponse>> {
         let mut client = self.connect().await?;
-        let list_jobs_request = ListJobsRequest { name: cluster };
+        let list_jobs_request = ListJobsRequest {
+            name: cluster,
+            project_name: project,
+        };
         let response =
             match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await {
                 Ok(Ok(res)) => res.into_inner(),
