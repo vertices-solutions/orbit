@@ -16,8 +16,8 @@ Key rules:
 - Project root: nearest ancestor directory containing `Orbitfile`.
 - Project name: value of `[project].name` in the Orbitfile.
 - Name format: `^[A-Za-z0-9_-]+$` (letters, numbers, `_`, `-`).
-- `project submit <name>` loads the registered project and uses its Orbitfile.
-- `job submit <path>` auto-discovers Orbitfile from the submit path when present.
+- `project submit <name> --to <cluster>` loads the registered project and uses its Orbitfile.
+- `job submit <path> --to <cluster>` auto-discovers Orbitfile from the submit path when present.
 
 ## Orbitfile Format
 

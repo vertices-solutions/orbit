@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
+use super::console::{Spinner, SpinnerTarget, print_with_green_check_stdout};
 use anyhow::bail;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -42,8 +43,95 @@ pub(super) fn prompt_line_with_default(
     Ok(prompt_line_with_default_result(prompt, hint, default)?.input)
 }
 
+pub(super) fn prompt_line_confirmable(
+    prompt: &str,
+    hint: &str,
+) -> anyhow::Result<(String, PromptFeedback)> {
+    prompt_line_with_default_confirmable(prompt, hint, None)
+}
+
+pub(super) fn prompt_line_with_default_confirmable(
+    prompt: &str,
+    hint: &str,
+    default: Option<&str>,
+) -> anyhow::Result<(String, PromptFeedback)> {
+    let result = prompt_line_with_default_result(prompt, hint, default)?;
+    Ok((result.input, PromptFeedback::new()))
+}
+
 struct PromptLineResult {
     input: String,
+}
+
+pub(super) struct PromptFeedback {
+    spinner: Option<Spinner>,
+    moved: bool,
+}
+
+impl PromptFeedback {
+    fn new() -> Self {
+        Self {
+            spinner: None,
+            moved: false,
+        }
+    }
+
+    pub(super) fn start_validation(&mut self, message: &str) -> anyhow::Result<()> {
+        self.position_on_prompt_line()?;
+        self.spinner = Spinner::start(message, SpinnerTarget::Stdout);
+        Ok(())
+    }
+
+    pub(super) fn finish_success(&mut self, message: &str) -> anyhow::Result<()> {
+        self.stop_spinner();
+        self.position_on_prompt_line()?;
+        print_with_green_check_stdout(message)?;
+        Ok(())
+    }
+
+    pub(super) fn finish_failure(&mut self) -> anyhow::Result<()> {
+        if !self.moved && self.spinner.is_none() {
+            return Ok(());
+        }
+        self.stop_spinner();
+        self.clear_current_line()
+    }
+
+    fn stop_spinner(&mut self) {
+        if let Some(mut spinner) = self.spinner.take() {
+            spinner.stop();
+        }
+    }
+
+    fn position_on_prompt_line(&mut self) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        if !self.moved {
+            execute!(stdout, cursor::MoveUp(1))?;
+            self.moved = true;
+        }
+        execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )?;
+        stdout.flush()?;
+        Ok(())
+    }
+
+    fn clear_current_line(&mut self) -> anyhow::Result<()> {
+        let mut stdout = std::io::stdout();
+        if !self.moved {
+            execute!(stdout, cursor::MoveUp(1))?;
+            self.moved = true;
+        }
+        execute!(
+            stdout,
+            cursor::MoveToColumn(0),
+            terminal::Clear(ClearType::CurrentLine)
+        )?;
+        stdout.flush()?;
+        Ok(())
+    }
 }
 
 fn prompt_line_with_default_result(

@@ -10,6 +10,10 @@ pub(super) fn format_clusters_table(
     clusters: &[ListClustersUnitResponse],
     show_reachability: bool,
 ) -> String {
+    if clusters.is_empty() {
+        return "No clusters registered\n".to_string();
+    }
+
     if show_reachability {
         let headers = ["name", "destination", "status", "reachable", "accounting"];
         let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
@@ -177,12 +181,13 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
         "job id",
         "cluster id",
+        "project",
         "status",
         "created",
         "finished",
         "scheduler id",
     ];
-    let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
+    let mut rows: Vec<(String, String, String, String, String, String, String)> = Vec::new();
 
     for item in jobs.iter() {
         let job_id = item.job_id.to_string();
@@ -190,11 +195,16 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
             .scheduler_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "-".to_string());
+        let project = item
+            .project_name
+            .clone()
+            .unwrap_or_else(|| "none".to_string());
         let completed_str = job_status(item);
         let finished_at = item.finished_at.clone().unwrap_or_else(|| "-".to_string());
         rows.push((
             job_id,
             item.name.clone(),
+            project,
             completed_str.to_string(),
             item.created_at.clone(),
             finished_at,
@@ -202,13 +212,14 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
         ));
     }
 
-    let mut widths: [usize; 6] = [
+    let mut widths: [usize; 7] = [
         str_width(headers[0]),
         str_width(headers[1]),
         str_width(headers[2]),
         str_width(headers[3]),
         str_width(headers[4]),
         str_width(headers[5]),
+        str_width(headers[6]),
     ];
     for row in rows.iter() {
         widths[0] = widths[0].max(str_width(&row.0));
@@ -221,36 +232,40 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}\n",
+        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}  {:<w6$}\n",
         headers[0],
         headers[1],
         headers[2],
         headers[3],
         headers[4],
         headers[5],
+        headers[6],
         w0 = widths[0],
         w1 = widths[1],
         w2 = widths[2],
         w3 = widths[3],
         w4 = widths[4],
         w5 = widths[5],
+        w6 = widths[6],
     ));
 
     for row in rows {
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}  {:<w6$}\n",
             row.0,
             row.1,
             row.2,
             row.3,
             row.4,
             row.5,
+            row.6,
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
             w3 = widths[3],
             w4 = widths[4],
             w5 = widths[5],
+            w6 = widths[6],
         ));
     }
 
@@ -263,12 +278,14 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
         .map(|id| id.to_string())
         .unwrap_or_else(|| "-".to_string());
     let completed_str = job_status(item);
+    let project = item.project_name.as_deref().unwrap_or("none");
     format!(
-        "job_id: {}\nlocal_path: {}\nremote_path: {}\nname: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\nscheduler_id: {}\n",
+        "job_id: {}\nlocal_path: {}\nremote_path: {}\nname: {}\nproject: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\nscheduler_id: {}\n",
         item.job_id,
         item.local_path.as_str(),
         item.remote_path.as_str(),
         item.name,
+        project,
         completed_str,
         item.terminal_state.as_deref().unwrap_or("-"),
         item.created_at,
@@ -422,11 +439,22 @@ mod tests {
     }
 
     #[test]
+    fn format_clusters_table_reports_empty_list() {
+        let output_with_reachability = format_clusters_table(&[], true);
+        let output_without_reachability = format_clusters_table(&[], false);
+
+        assert_eq!(output_with_reachability, "No clusters registered\n");
+        assert_eq!(output_without_reachability, "No clusters registered\n");
+    }
+
+    #[test]
     fn format_jobs_table_includes_headers_and_rows() {
         let job = sample_job(true, Some("COMPLETED"), None);
         let output = format_jobs_table(&[job]);
         assert!(output.contains("job id"));
+        assert!(output.contains("project"));
         assert!(output.contains("cluster-a"));
+        assert!(output.contains("none"));
         assert!(output.contains("completed"));
     }
 }

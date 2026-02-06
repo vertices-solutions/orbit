@@ -97,9 +97,13 @@ impl OrbitdPort for GrpcOrbitdPort {
     async fn list_jobs(
         &self,
         cluster: Option<String>,
+        project: Option<String>,
     ) -> AppResult<Vec<proto::ListJobsUnitResponse>> {
         let mut client = self.connect().await?;
-        let list_jobs_request = ListJobsRequest { name: cluster };
+        let list_jobs_request = ListJobsRequest {
+            name: cluster,
+            project_name: project,
+        };
         let response =
             match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await {
                 Ok(Ok(res)) => res.into_inner(),
@@ -170,20 +174,12 @@ impl OrbitdPort for GrpcOrbitdPort {
         package_git: bool,
     ) -> AppResult<proto::ProjectRecord> {
         let mut client = self.connect().await?;
-        let request = BuildProjectRequest {
-            path,
-            package_git,
+        let request = BuildProjectRequest { path, package_git };
+        let response = match timeout(Duration::from_secs(10), client.build_project(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
-        let response =
-            match timeout(Duration::from_secs(10), client.build_project(request)).await {
-                Ok(Ok(res)) => res.into_inner(),
-                Ok(Err(status)) => return Err(app_error_from_status(status)),
-                Err(e) => {
-                    return Err(AppError::network_error(format!(
-                        "operation timed out: {e}"
-                    )))
-                }
-            };
         response
             .project
             .ok_or_else(|| AppError::remote_error("missing project in response"))

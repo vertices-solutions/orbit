@@ -79,7 +79,11 @@ impl SessionManager {
                                     e
                                 );
                             } else {
-                                tracing::warn!("error when setting metadata for path {}: {}", &cur, e);
+                                tracing::warn!(
+                                    "error when setting metadata for path {}: {}",
+                                    &cur,
+                                    e
+                                );
                             }
                         }
                     };
@@ -198,7 +202,10 @@ impl SessionManager {
                                 .await;
                             }
                             _ => {
-                                tracing::warn!("encountered Status error with status {:?}", estatus);
+                                tracing::warn!(
+                                    "encountered Status error with status {:?}",
+                                    estatus
+                                );
                                 anyhow::bail!("encountered Status error with status {:?}", estatus)
                             }
                         }

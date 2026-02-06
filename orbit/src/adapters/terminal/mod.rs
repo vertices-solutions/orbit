@@ -8,19 +8,18 @@ mod mfa;
 mod prompt;
 mod sbatch_picker;
 
-use std::io::{IsTerminal, Write};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
-use std::time::Duration;
+use std::io::Write;
 
 use crate::app::commands::{
     CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
 };
 use crate::app::errors::{AppError, AppResult, format_server_error};
-use crate::app::ports::{InteractionPort, OutputPort, StreamKind, StreamOutputPort};
-use console::{print_with_green_check_stderr, print_with_green_check_stdout};
+use crate::app::ports::{
+    InteractionPort, OutputPort, PromptFeedbackPort, PromptLine, StreamKind, StreamOutputPort,
+};
+use console::{
+    Spinner, SpinnerTarget, print_with_green_check_stderr, print_with_green_check_stdout,
+};
 use enum_picker::pick_enum_value;
 use format::{
     format_cluster_details, format_clusters_table, format_job_details, format_jobs_table,
@@ -168,6 +167,30 @@ impl TerminalInteraction {
     }
 }
 
+struct TerminalPromptFeedback {
+    inner: prompt::PromptFeedback,
+}
+
+impl PromptFeedbackPort for TerminalPromptFeedback {
+    fn start_validation(&mut self, message: &str) -> AppResult<()> {
+        self.inner
+            .start_validation(message)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    fn finish_success(&mut self, message: &str) -> AppResult<()> {
+        self.inner
+            .finish_success(message)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    fn finish_failure(&mut self) -> AppResult<()> {
+        self.inner
+            .finish_failure()
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+}
+
 #[tonic::async_trait]
 impl InteractionPort for TerminalInteraction {
     async fn confirm(&self, prompt: &str, help: &str) -> AppResult<bool> {
@@ -185,6 +208,33 @@ impl InteractionPort for TerminalInteraction {
         default: &str,
     ) -> AppResult<String> {
         prompt::prompt_line_with_default(prompt, help, Some(default))
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    async fn prompt_line_confirmable(&self, prompt: &str, help: &str) -> AppResult<PromptLine> {
+        prompt::prompt_line_confirmable(prompt, help)
+            .map(|(input, feedback)| {
+                PromptLine::new(
+                    input,
+                    Some(Box::new(TerminalPromptFeedback { inner: feedback })),
+                )
+            })
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    async fn prompt_line_with_default_confirmable(
+        &self,
+        prompt: &str,
+        help: &str,
+        default: &str,
+    ) -> AppResult<PromptLine> {
+        prompt::prompt_line_with_default_confirmable(prompt, help, Some(default))
+            .map(|(input, feedback)| {
+                PromptLine::new(
+                    input,
+                    Some(Box::new(TerminalPromptFeedback { inner: feedback })),
+                )
+            })
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
@@ -257,7 +307,7 @@ impl TerminalStreamOutput {
         if self.transfer_spinner.is_some() {
             return;
         }
-        self.transfer_spinner = Spinner::start("Transferring files...");
+        self.transfer_spinner = Spinner::start("Transferring files...", SpinnerTarget::Stderr);
     }
 
     fn stop_transfer_spinner(&mut self) {
@@ -418,55 +468,5 @@ impl StreamOutputPort for TerminalStreamOutput {
 
     fn take_submit_capture(&mut self) -> SubmitCapture {
         std::mem::take(&mut self.submit)
-    }
-}
-
-struct Spinner {
-    stop: Arc<AtomicBool>,
-    handle: Option<std::thread::JoinHandle<()>>,
-}
-
-impl Spinner {
-    fn start(message: &str) -> Option<Self> {
-        if !std::io::stderr().is_terminal() {
-            return None;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_signal = Arc::clone(&stop);
-        let message = message.to_string();
-        let handle = std::thread::spawn(move || {
-            let mut stderr = std::io::stderr();
-            let frames = ['⠾', '⠷', '⠯', '⠟', '⠻', '⠽'];
-            let mut idx = 0usize;
-            while !stop_signal.load(Ordering::Relaxed) {
-                let frame = frames[idx % frames.len()];
-                let line = format!("\r{} {}", frame, message);
-                let _ = stderr.write_all(line.as_bytes());
-                let _ = stderr.flush();
-                std::thread::sleep(Duration::from_millis(120));
-                idx = idx.wrapping_add(1);
-            }
-            let clear_width = message.len() + 2;
-            let clear = format!("\r{}{}\r", " ".repeat(clear_width), " ");
-            let _ = stderr.write_all(clear.as_bytes());
-            let _ = stderr.flush();
-        });
-        Some(Self {
-            stop,
-            handle: Some(handle),
-        })
-    }
-
-    fn stop(&mut self) {
-        self.stop.store(true, Ordering::Relaxed);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-impl Drop for Spinner {
-    fn drop(&mut self) {
-        self.stop();
     }
 }

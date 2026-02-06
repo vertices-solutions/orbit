@@ -4,10 +4,10 @@ Templated hashing job that generates random data on the remote host and hashes i
 Template values select the hashing method and number of files.
 
 Workflow:
-- orbit job submit <cluster> tests/06_templated_hashes
-- orbit job submit <cluster> tests/06_templated_hashes --field hash_method=sha1 --field file_count=5
-- orbit job submit <cluster> tests/06_templated_hashes --preset sha256_20
-- orbit job submit <cluster> tests/06_templated_hashes --preset md5_100
+- orbit job submit --to <cluster> tests/06_templated_hashes
+- orbit job submit --to <cluster> tests/06_templated_hashes --field hash_method=sha1 --field file_count=5
+- orbit job submit --to <cluster> tests/06_templated_hashes --preset sha256_20
+- orbit job submit --to <cluster> tests/06_templated_hashes --preset md5_100
 - orbit job ls <job_id> results
 - orbit job retrieve <job_id> results --output ./out/06_templated_hashes
 

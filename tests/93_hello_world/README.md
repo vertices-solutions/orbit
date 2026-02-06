@@ -10,7 +10,7 @@ git clone github.com/hpcd-dev/hello-world
 cd hello-world
 
 # submit job to your cluster
-hpc job submit <cluster> .
+hpc job submit --to <cluster> .
 
 # view job logs (stdout)
 hpc job logs <job_id>

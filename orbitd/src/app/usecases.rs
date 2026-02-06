@@ -13,11 +13,11 @@ use proto::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use walkdir::WalkDir;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration as TokioDuration, sleep};
+use walkdir::WalkDir;
 
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
@@ -26,7 +26,8 @@ use crate::app::ports::{
     TelemetryEvent, TelemetryPort,
 };
 use crate::app::services::{
-    managers, os, project_building, random, remote_path, sbatch, shell, slurm, submit_paths, templates,
+    managers, os, project_building, random, remote_path, sbatch, shell, slurm, submit_paths,
+    templates,
 };
 use crate::app::types::{
     Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, NewProjectBuild, ProjectRecord,
@@ -138,35 +139,39 @@ impl UseCases {
         Ok(out)
     }
 
-    pub async fn list_jobs(&self, name_filter: Option<&str>) -> AppResult<Vec<JobRecord>> {
+    pub async fn list_jobs(
+        &self,
+        name_filter: Option<&str>,
+        project_filter: Option<&str>,
+    ) -> AppResult<Vec<JobRecord>> {
         let cluster_name = name_filter.map(str::to_string);
-        if let Some(name) = name_filter {
+        let project_name = normalize_project_filter(project_filter)?;
+
+        let mut jobs = if let Some(name) = name_filter {
             let Some(host) = self.clusters.get_by_name(name).await? else {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
                 ));
             };
-            let jobs = self.jobs.list_jobs_for_host(host.id).await?;
-            self.telemetry.event(
-                "jobs.listed",
-                TelemetryEvent {
-                    cluster: cluster_name,
-                    ..TelemetryEvent::default()
-                },
-            );
-            Ok(jobs)
+            self.jobs.list_jobs_for_host(host.id).await?
         } else {
-            let jobs = self.jobs.list_all_jobs().await?;
-            self.telemetry.event(
-                "jobs.listed",
-                TelemetryEvent {
-                    cluster: cluster_name,
-                    ..TelemetryEvent::default()
-                },
-            );
-            Ok(jobs)
+            self.jobs.list_all_jobs().await?
+        };
+
+        if let Some(filter) = project_name.as_deref() {
+            jobs.retain(|job| job.project_name.as_deref() == Some(filter));
         }
+
+        self.telemetry.event(
+            "jobs.listed",
+            TelemetryEvent {
+                cluster: cluster_name,
+                project: project_name,
+                ..TelemetryEvent::default()
+            },
+        );
+        Ok(jobs)
     }
 
     pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
@@ -199,7 +204,8 @@ impl UseCases {
 
     pub async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>> {
         let projects = self.projects.list_projects().await?;
-        self.telemetry.event("projects.listed", TelemetryEvent::default());
+        self.telemetry
+            .event("projects.listed", TelemetryEvent::default());
         Ok(projects)
     }
 
@@ -260,9 +266,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         }
 
         for hash in tarball_hashes {
-            let tarball_path = self
-                .tarballs_dir
-                .join(format!("{hash}.tar.zst"));
+            let tarball_path = self.tarballs_dir.join(format!("{hash}.tar.zst"));
             match std::fs::remove_file(&tarball_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -270,7 +274,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     return Err(local_error(format!(
                         "failed to delete tarball {}: {err}",
                         tarball_path.display()
-                    )))
+                    )));
                 }
             }
         }
@@ -294,11 +298,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(deleted > 0)
     }
 
-    pub async fn build_project(
-        &self,
-        path: &str,
-        package_git: bool,
-    ) -> AppResult<ProjectRecord> {
+    pub async fn build_project(&self, path: &str, package_git: bool) -> AppResult<ProjectRecord> {
         let resolved = resolve_project_path(self.local_fs.as_ref(), path).await?;
         let project_root = discover_orbitfile_root(&resolved)?
             .ok_or_else(|| invalid_argument("project build requires an Orbitfile"))?;
@@ -343,15 +343,12 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             )));
         }
 
-        let (version_tag, project_ref) =
-            self.next_project_version_tag(&project_name).await?;
+        let (version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
 
         let mut hasher = Sha256::new();
         hasher.update(format!("{project_name}:{version_tag}"));
         let tarball_hash = format!("{:x}", hasher.finalize());
-        let tarball_path = self
-            .tarballs_dir
-            .join(format!("{tarball_hash}.tar.zst"));
+        let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
 
         let template_config_json = templates::load_template_config_json(&orbitfile_path)?;
 
@@ -1535,9 +1532,10 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         let mut _template_guard = None;
         let mut _tarball_guard: Option<TempDir> = None;
         if let Some(project_tag) = input.project_tag.as_deref() {
-            let project_name = input.project_name.clone().ok_or_else(|| {
-                invalid_argument("project tag provided without project name")
-            })?;
+            let project_name = input
+                .project_name
+                .clone()
+                .ok_or_else(|| invalid_argument("project tag provided without project name"))?;
             let project = if project_tag == "latest" {
                 self.get_latest_project_build(&project_name).await?
             } else {
@@ -1552,9 +1550,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 .tarball_hash
                 .clone()
                 .ok_or_else(|| invalid_argument("project tarball is missing; run project build"))?;
-            let tarball_path = self
-                .tarballs_dir
-                .join(format!("{tarball_hash}.tar.zst"));
+            let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
             if !tarball_path.is_file() {
                 return Err(AppError::with_message(
                     AppErrorKind::InvalidArgument,
@@ -1935,8 +1931,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     job_name: Some(job_name.clone()),
                     ..telemetry_context.clone()
                 };
-                self.telemetry
-                    .event("job.submit.failed", telemetry_failed);
+                self.telemetry.event("job.submit.failed", telemetry_failed);
             }
         }
 
@@ -1953,19 +1948,19 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         let user_name = input.username.clone();
         let result = self
             .cluster_upsert(
-            ClusterUpsertInput {
-                name: input.name,
-                username: input.username,
-                address: input.address,
-                port: input.port,
-                identity_path: input.identity_path,
-                default_base_path: input.default_base_path,
-                emit_progress: true,
-            },
-            stream,
-            mfa,
-        )
-        .await;
+                ClusterUpsertInput {
+                    name: input.name,
+                    username: input.username,
+                    address: input.address,
+                    port: input.port,
+                    identity_path: input.identity_path,
+                    default_base_path: input.default_base_path,
+                    emit_progress: true,
+                },
+                stream,
+                mfa,
+            )
+            .await;
         if result.is_ok() {
             self.telemetry.event(
                 "cluster.added",
@@ -2152,7 +2147,9 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                             continue;
                         }
                         None => {
-                            tracing::debug!("sacct returned no terminal state for {name} job {job_id}");
+                            tracing::debug!(
+                                "sacct returned no terminal state for {name} job {job_id}"
+                            );
                         }
                     };
 
@@ -2795,17 +2792,18 @@ fn is_invalid_job_id(text: &str) -> bool {
 }
 
 fn invalid_argument(message: impl Into<String>) -> AppError {
-    AppError::with_message(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT, message)
+    AppError::with_message(
+        AppErrorKind::InvalidArgument,
+        codes::INVALID_ARGUMENT,
+        message,
+    )
 }
 
 fn local_error(message: impl Into<String>) -> AppError {
     AppError::with_message(AppErrorKind::Internal, codes::LOCAL_ERROR, message)
 }
 
-async fn resolve_project_path(
-    fs: &dyn LocalFilesystemPort,
-    raw: &str,
-) -> AppResult<PathBuf> {
+async fn resolve_project_path(fs: &dyn LocalFilesystemPort, raw: &str) -> AppResult<PathBuf> {
     let input = PathBuf::from(raw);
     let path = if input.is_absolute() {
         input
@@ -2932,9 +2930,7 @@ fn validate_project_name(name: &str) -> AppResult<()> {
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
     if !valid {
-        return Err(invalid_argument(
-            "project name must match ^[A-Za-z0-9_-]+$",
-        ));
+        return Err(invalid_argument("project name must match ^[A-Za-z0-9_-]+$"));
     }
     Ok(())
 }
@@ -2946,9 +2942,7 @@ fn resolve_orbitfile_sbatch_script(
 ) -> AppResult<String> {
     let trimmed = sbatch_script.trim();
     if trimmed.is_empty() {
-        return Err(invalid_argument(
-            "[submit].sbatch_script cannot be empty",
-        ));
+        return Err(invalid_argument("[submit].sbatch_script cannot be empty"));
     }
     let submit_root_canonical = std::fs::canonicalize(submit_root).map_err(|err| {
         local_error(format!(
@@ -2995,8 +2989,7 @@ fn resolve_orbitfile_sbatch_script(
 fn collect_sbatch_scripts(root: &Path) -> AppResult<Vec<String>> {
     let mut scripts = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
-        let entry =
-            entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
+        let entry = entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
         if entry.file_type().is_symlink() || !entry.file_type().is_file() {
             continue;
         }
@@ -3062,10 +3055,7 @@ impl UseCases {
         }
     }
 
-    async fn next_project_version_tag(
-        &self,
-        project_name: &str,
-    ) -> AppResult<(String, String)> {
+    async fn next_project_version_tag(&self, project_name: &str) -> AppResult<(String, String)> {
         let now = self.clock.now_utc();
         let date = format!(
             "{:04}{:02}{:02}",
@@ -3109,10 +3099,248 @@ fn is_unsafe_cleanup_path(remote_path: &str) -> bool {
     normalized.as_os_str().is_empty() || normalized == Path::new(std::path::MAIN_SEPARATOR_STR)
 }
 
+fn normalize_project_filter(project_filter: Option<&str>) -> AppResult<Option<String>> {
+    match project_filter {
+        Some(value) => {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Err(invalid_argument("project name filter cannot be empty"));
+            }
+            Ok(Some(trimmed.to_string()))
+        }
+        None => Ok(None),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
+    use std::sync::Arc;
+
+    use crate::app::ports::ExecCapture;
+    use crate::app::types::{Distro, SlurmVersion};
+
+    #[derive(Default)]
+    struct NoopRemoteExec;
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for NoopRemoteExec {
+        async fn exec_capture(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+        ) -> AppResult<ExecCapture> {
+            panic!("exec_capture should not be called in list_jobs tests");
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in list_jobs tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected should not be called in list_jobs tests");
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in list_jobs tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            panic!("needs_connect should not be called in list_jobs tests");
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in list_jobs tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in list_jobs tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("remove_session should not be called in list_jobs tests");
+        }
+    }
+
+    #[derive(Default)]
+    struct NoopFileSync;
+
+    #[async_trait::async_trait]
+    impl FileSyncPort for NoopFileSync {
+        async fn sync_dir(
+            &self,
+            _config: &SshConfig,
+            _local_dir: &Path,
+            _remote_dir: &str,
+            _options: SyncOptions,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("sync_dir should not be called in list_jobs tests");
+        }
+
+        async fn retrieve_path(
+            &self,
+            _config: &SshConfig,
+            _remote_path: &str,
+            _local_path: &Path,
+            _overwrite: bool,
+        ) -> AppResult<()> {
+            panic!("retrieve_path should not be called in list_jobs tests");
+        }
+    }
+
+    fn sample_host(name: &str) -> NewHost {
+        NewHost {
+            name: name.to_string(),
+            username: "alice".to_string(),
+            address: Address::Hostname(format!("{name}.example.com")),
+            port: 22,
+            identity_path: None,
+            slurm: SlurmVersion {
+                major: 23,
+                minor: 11,
+                patch: 0,
+            },
+            distro: Distro {
+                name: "ubuntu".to_string(),
+                version: "22.04".to_string(),
+            },
+            kernel_version: "6.8.0".to_string(),
+            accounting_available: true,
+            default_base_path: Some("/home/alice/runs".to_string()),
+        }
+    }
+
+    fn sample_job(host_id: i64, local_path: &str, project_name: Option<&str>) -> NewJob {
+        NewJob {
+            scheduler_id: None,
+            host_id,
+            local_path: local_path.to_string(),
+            remote_path: format!("/remote/{local_path}"),
+            stdout_path: format!("/remote/{local_path}/slurm.out"),
+            stderr_path: None,
+            project_name: project_name.map(str::to_string),
+            default_retrieve_path: None,
+            template_values: None,
+        }
+    }
+
+    async fn build_usecases_for_list_jobs_tests() -> UseCases {
+        let store = crate::adapters::db::HostStore::open_memory()
+            .await
+            .expect("in-memory host store");
+        let db = Arc::new(crate::adapters::db::SqliteStoreAdapter::new(store));
+        let clusters: Arc<dyn ClusterStorePort> = db.clone();
+        let jobs: Arc<dyn JobStorePort> = db.clone();
+        let projects: Arc<dyn ProjectStorePort> = db;
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(NoopRemoteExec);
+        let file_sync: Arc<dyn FileSyncPort> = Arc::new(NoopFileSync);
+        let local_fs: Arc<dyn LocalFilesystemPort> = Arc::new(crate::adapters::fs::LocalFilesystem);
+        let network: Arc<dyn NetworkProbePort> = Arc::new(crate::adapters::network::NetworkAdapter);
+        let clock: Arc<dyn ClockPort> = Arc::new(crate::adapters::time::SystemClock);
+        let telemetry: Arc<dyn TelemetryPort> = Arc::new(crate::app::ports::NoopTelemetry);
+        UseCases::new(
+            clusters,
+            jobs,
+            projects,
+            remote_exec,
+            file_sync,
+            local_fs,
+            network,
+            clock,
+            telemetry,
+            std::env::temp_dir(),
+        )
+    }
+
+    async fn seed_jobs_for_project_filtering(usecases: &UseCases) {
+        let host_a_id = usecases
+            .clusters
+            .upsert_host(&sample_host("cluster-a"))
+            .await
+            .expect("insert cluster-a");
+        let host_b_id = usecases
+            .clusters
+            .upsert_host(&sample_host("cluster-b"))
+            .await
+            .expect("insert cluster-b");
+
+        usecases
+            .jobs
+            .insert_job(&sample_job(host_a_id, "run-a-demo", Some("demo-project")))
+            .await
+            .expect("insert cluster-a demo job");
+        usecases
+            .jobs
+            .insert_job(&sample_job(host_a_id, "run-a-other", Some("other-project")))
+            .await
+            .expect("insert cluster-a other job");
+        usecases
+            .jobs
+            .insert_job(&sample_job(host_b_id, "run-b-demo", Some("demo-project")))
+            .await
+            .expect("insert cluster-b demo job");
+        usecases
+            .jobs
+            .insert_job(&sample_job(host_b_id, "run-b-none", None))
+            .await
+            .expect("insert cluster-b no-project job");
+    }
+
+    #[tokio::test]
+    async fn list_jobs_filters_by_project_without_cluster_filter() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        seed_jobs_for_project_filtering(&usecases).await;
+
+        let jobs = usecases
+            .list_jobs(None, Some("demo-project"))
+            .await
+            .expect("list jobs");
+        assert_eq!(jobs.len(), 2);
+        assert!(
+            jobs.iter()
+                .all(|job| job.project_name.as_deref() == Some("demo-project"))
+        );
+        let mut cluster_names: Vec<&str> = jobs.iter().map(|job| job.name.as_str()).collect();
+        cluster_names.sort_unstable();
+        assert_eq!(cluster_names, vec!["cluster-a", "cluster-b"]);
+    }
+
+    #[tokio::test]
+    async fn list_jobs_filters_by_project_with_cluster_filter() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        seed_jobs_for_project_filtering(&usecases).await;
+
+        let jobs = usecases
+            .list_jobs(Some("cluster-a"), Some("demo-project"))
+            .await
+            .expect("list jobs");
+        assert_eq!(jobs.len(), 1);
+        assert_eq!(jobs[0].name, "cluster-a");
+        assert_eq!(jobs[0].project_name.as_deref(), Some("demo-project"));
+    }
 
     #[test]
     fn retrieve_local_target_strips_prefix_for_relative_file() {
@@ -3194,6 +3422,21 @@ mod tests {
     fn normalize_default_base_path_rejects_relative() {
         // Disallows relative default base paths to avoid ambiguous storage roots.
         let err = normalize_default_base_path(Some("relative/path".to_string())).unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn normalize_project_filter_accepts_none_and_trims() {
+        assert_eq!(normalize_project_filter(None).unwrap(), None);
+        assert_eq!(
+            normalize_project_filter(Some("  demo-project  ")).unwrap(),
+            Some("demo-project".to_string())
+        );
+    }
+
+    #[test]
+    fn normalize_project_filter_rejects_empty_value() {
+        let err = normalize_project_filter(Some("   ")).unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
     }
 }

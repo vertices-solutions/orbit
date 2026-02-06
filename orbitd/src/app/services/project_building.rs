@@ -43,12 +43,11 @@ pub fn create_tarball(
 
     let mut entries: Vec<(PathBuf, bool)> = Vec::new();
     for entry in WalkDir::new(source_root).follow_links(false) {
-        let entry =
-            entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
+        let entry = entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
         let path = entry.path();
-        let rel = path.strip_prefix(source_root).map_err(|_| {
-            local_error("failed to compute tarball relative path".to_string())
-        })?;
+        let rel = path
+            .strip_prefix(source_root)
+            .map_err(|_| local_error("failed to compute tarball relative path".to_string()))?;
         if rel.as_os_str().is_empty() {
             continue;
         }
@@ -150,9 +149,7 @@ pub fn resolve_extracted_root(dest_dir: &Path, expected_name: Option<&str>) -> A
 
     match dirs.len() {
         1 => Ok(dirs.remove(0)),
-        0 => Err(invalid_argument(
-            "tarball did not contain a root directory",
-        )),
+        0 => Err(invalid_argument("tarball did not contain a root directory")),
         _ => Err(invalid_argument(
             "tarball contained multiple root directories",
         )),
@@ -160,7 +157,11 @@ pub fn resolve_extracted_root(dest_dir: &Path, expected_name: Option<&str>) -> A
 }
 
 fn invalid_argument(message: impl Into<String>) -> AppError {
-    AppError::with_message(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT, message)
+    AppError::with_message(
+        AppErrorKind::InvalidArgument,
+        codes::INVALID_ARGUMENT,
+        message,
+    )
 }
 
 fn local_error(message: impl Into<String>) -> AppError {
@@ -182,11 +183,7 @@ mod tests {
             .expect("entries")
             .map(|entry| {
                 let entry = entry.expect("entry");
-                entry
-                    .path()
-                    .expect("path")
-                    .to_string_lossy()
-                    .into_owned()
+                entry.path().expect("path").to_string_lossy().into_owned()
             })
             .collect()
     }
@@ -257,8 +254,7 @@ mod tests {
         let dest = tempdir().expect("dest");
         let root = dest.path().join("project");
         fs::create_dir_all(&root).expect("root dir");
-        let resolved =
-            resolve_extracted_root(dest.path(), Some("missing")).expect("resolve");
+        let resolved = resolve_extracted_root(dest.path(), Some("missing")).expect("resolve");
         assert_eq!(resolved, root);
     }
 
@@ -306,10 +302,7 @@ mod tests {
             "project/zeta/readme.md",
         ];
         for item in expected {
-            assert!(
-                contains_path(&entries, item),
-                "missing entry: {item}"
-            );
+            assert!(contains_path(&entries, item), "missing entry: {item}");
         }
     }
 
@@ -334,8 +327,7 @@ mod tests {
 
         let data = fs::read_to_string(extracted.join("alpha/beta/gamma/data.txt")).expect("read");
         assert_eq!(data, "payload");
-        let config =
-            fs::read_to_string(extracted.join("alpha/beta/config.json")).expect("read");
+        let config = fs::read_to_string(extracted.join("alpha/beta/config.json")).expect("read");
         assert_eq!(config, "{\"ok\":true}");
         let notes = fs::read_to_string(extracted.join("alpha/notes.txt")).expect("read");
         assert_eq!(notes, "notes");

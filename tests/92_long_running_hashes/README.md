@@ -4,7 +4,7 @@ Long-running hashing job that syncs ~100 MiB of random data in 10 files.
 
 Workflow:
 - bash prepare.sh
-- orbit job submit <cluster> tests/92_long_running_hashes
+- orbit job submit --to <cluster> tests/92_long_running_hashes
 - orbit job ls <job_id> results
 - orbit job retrieve <job_id> results --output ./out/92_long_running_hashes
 

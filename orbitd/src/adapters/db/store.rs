@@ -1173,12 +1173,21 @@ fn row_to_project(row: sqlx::sqlite::SqliteRow) -> ProjectRecord {
         Some((base, tag)) => (base.to_string(), Some(tag.to_string())),
         None => (raw_name, None),
     };
-    let sbatch_scripts =
-        deserialize_string_list(row.try_get::<Option<String>, _>("sbatch_scripts").ok().flatten());
-    let sync_include =
-        deserialize_string_list(row.try_get::<Option<String>, _>("sync_include").ok().flatten());
-    let sync_exclude =
-        deserialize_string_list(row.try_get::<Option<String>, _>("sync_exclude").ok().flatten());
+    let sbatch_scripts = deserialize_string_list(
+        row.try_get::<Option<String>, _>("sbatch_scripts")
+            .ok()
+            .flatten(),
+    );
+    let sync_include = deserialize_string_list(
+        row.try_get::<Option<String>, _>("sync_include")
+            .ok()
+            .flatten(),
+    );
+    let sync_exclude = deserialize_string_list(
+        row.try_get::<Option<String>, _>("sync_exclude")
+            .ok()
+            .flatten(),
+    );
     ProjectRecord {
         name,
         path: row.try_get("path").unwrap(),
@@ -1827,9 +1836,7 @@ mod tests {
             sync_include: Vec::new(),
             sync_exclude: Vec::new(),
         };
-        db.upsert_project_build(&build_a)
-            .await
-            .expect("build a");
+        db.upsert_project_build(&build_a).await.expect("build a");
 
         let build_b = NewProjectBuild {
             name: "proj-a:20250101.002".to_string(),
@@ -1843,9 +1850,7 @@ mod tests {
             sync_include: Vec::new(),
             sync_exclude: Vec::new(),
         };
-        db.upsert_project_build(&build_b)
-            .await
-            .expect("build b");
+        db.upsert_project_build(&build_b).await.expect("build b");
 
         let deleted = db
             .delete_projects_by_base_name("proj-a")

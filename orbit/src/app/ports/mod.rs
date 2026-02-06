@@ -14,6 +14,44 @@ pub enum StreamKind {
     Submit,
 }
 
+pub trait PromptFeedbackPort: Send {
+    fn start_validation(&mut self, message: &str) -> AppResult<()>;
+    fn finish_success(&mut self, message: &str) -> AppResult<()>;
+    fn finish_failure(&mut self) -> AppResult<()>;
+}
+
+pub struct PromptLine {
+    pub input: String,
+    feedback: Option<Box<dyn PromptFeedbackPort>>,
+}
+
+impl PromptLine {
+    pub fn new(input: String, feedback: Option<Box<dyn PromptFeedbackPort>>) -> Self {
+        Self { input, feedback }
+    }
+
+    pub fn start_validation(&mut self, message: &str) -> AppResult<()> {
+        if let Some(feedback) = self.feedback.as_mut() {
+            feedback.start_validation(message)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish_success(&mut self, message: &str) -> AppResult<()> {
+        if let Some(feedback) = self.feedback.as_mut() {
+            feedback.finish_success(message)?;
+        }
+        Ok(())
+    }
+
+    pub fn finish_failure(&mut self) -> AppResult<()> {
+        if let Some(feedback) = self.feedback.as_mut() {
+            feedback.finish_failure()?;
+        }
+        Ok(())
+    }
+}
+
 #[tonic::async_trait]
 pub trait OrbitdPort: Send + Sync {
     async fn ping(&self) -> AppResult<()>;
@@ -22,7 +60,11 @@ pub trait OrbitdPort: Send + Sync {
         filter: &str,
         check_reachability: bool,
     ) -> AppResult<Vec<ListClustersUnitResponse>>;
-    async fn list_jobs(&self, cluster: Option<String>) -> AppResult<Vec<ListJobsUnitResponse>>;
+    async fn list_jobs(
+        &self,
+        cluster: Option<String>,
+        project: Option<String>,
+    ) -> AppResult<Vec<ListJobsUnitResponse>>;
     async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord>;
     async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;
     async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>>;
@@ -171,6 +213,13 @@ pub trait InteractionPort: Send + Sync {
         help: &str,
         default: &str,
     ) -> AppResult<String>;
+    async fn prompt_line_confirmable(&self, prompt: &str, help: &str) -> AppResult<PromptLine>;
+    async fn prompt_line_with_default_confirmable(
+        &self,
+        prompt: &str,
+        help: &str,
+        default: &str,
+    ) -> AppResult<PromptLine>;
     async fn select_sbatch(&self, options: &[String]) -> AppResult<Option<String>>;
     async fn select_enum(
         &self,
