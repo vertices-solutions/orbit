@@ -271,15 +271,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::resolve_home_dir_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::resolve_home_dir_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
@@ -296,14 +296,14 @@ impl Agent for GrpcAgent {
         };
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .resolve_home_dir(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .resolve_home_dir(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -343,15 +343,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::ls_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::ls_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = LsInput { name, path, job_id };
@@ -362,11 +362,11 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases.ls(input, &stream_output, &mut mfa_port).await {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases.ls(input, &stream_output, &mut mfa_port).await {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -408,15 +408,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::retrieve_job_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::retrieve_job_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = RetrieveJobInput {
@@ -433,14 +433,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .retrieve_job(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .retrieve_job(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -473,15 +473,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::job_logs_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::job_logs_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = JobLogsInput { job_id, stderr };
@@ -492,14 +492,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .job_logs(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .job_logs(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -532,15 +532,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::cancel_job_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::cancel_job_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = CancelJobInput { job_id };
@@ -551,14 +551,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .cancel_job(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .cancel_job(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -595,15 +595,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::cleanup_job_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::cleanup_job_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = CleanupJobInput {
@@ -618,14 +618,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .cleanup_job(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .cleanup_job(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -734,16 +734,16 @@ impl Agent for GrpcAgent {
 
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::submit_job_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::submit_job_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
+                let _ = cancel_tx.send(true);
             }
-            let _ = cancel_tx.send(true);
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = SubmitJobInput {
@@ -765,14 +765,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .submit_job(input, &stream_output, &mut mfa_port, cancel_rx)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .submit_job(input, &stream_output, &mut mfa_port, cancel_rx)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: SubmitOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -834,16 +834,16 @@ impl Agent for GrpcAgent {
 
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::submit_project_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::submit_project_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
+                let _ = cancel_tx.send(true);
             }
-            let _ = cancel_tx.send(true);
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = SubmitProjectInput {
@@ -865,14 +865,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .submit_project(input, &stream_output, &mut mfa_port, cancel_rx)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .submit_project(input, &stream_output, &mut mfa_port, cancel_rx)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: SubmitOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -921,15 +921,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::add_cluster_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::add_cluster_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = AddClusterInput {
@@ -947,14 +947,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .add_cluster(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .add_cluster(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
@@ -1007,15 +1007,15 @@ impl Agent for GrpcAgent {
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
-            while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::set_cluster_request::Msg::Mfa(ans)) = item.msg
-                    && mfa_tx.send(ans).await.is_err()
-                {
-                    break;
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::set_cluster_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
                 }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let input = SetClusterInput {
@@ -1033,14 +1033,14 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
-            if let Err(err) = usecases
-                .set_cluster(input, &stream_output, &mut mfa_port)
-                .await
-            {
-                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                if let Err(err) = usecases
+                    .set_cluster(input, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                }
             }
-        }
-        .instrument(current_span.clone()),
+            .instrument(current_span.clone()),
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));

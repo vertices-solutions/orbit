@@ -119,8 +119,8 @@ run "$ORBIT_BIN" cluster add "$DESTINATION" \
 
 pause
 explain "Submit the example project."
-run "$ORBIT_BIN" job submit "$CLUSTER_NAME" "$PROJECT_PATH" \
-  "$SBATCH_SCRIPT"
+run "$ORBIT_BIN" job submit --to "$CLUSTER_NAME" "$PROJECT_PATH" \
+  --sbatchscript "$SBATCH_SCRIPT"
 
 pause
 explain "List jobs for the cluster."

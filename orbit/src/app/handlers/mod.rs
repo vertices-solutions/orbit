@@ -13,12 +13,12 @@ use crate::app::errors::{
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
-    AddClusterResolver, PathResolver, SbatchSelector, build_default_orbitfile_contents,
-    check_registered_project, default_base_path_from_home, discover_project_from_submit_root,
-    load_project_from_root, local_validate_default_base_path, merge_submit_filters,
-    resolve_orbitfile_sbatch_script, resolve_template_values, sanitize_project_name,
-    template_config_from_json, upsert_orbitfile_project_name, validate_project_name,
-    ProjectRuleSet,
+    AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector,
+    build_default_orbitfile_contents, check_registered_project, default_base_path_from_home,
+    discover_project_from_submit_root, load_project_from_root, local_validate_default_base_path,
+    merge_submit_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
+    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
+    validate_project_name,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -75,12 +75,12 @@ pub async fn handle_job_submit(
     let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
-        .find(|cluster| cluster.name == cmd.name)
+        .find(|cluster| cluster.name == cmd.cluster)
         .cloned()
         .ok_or_else(|| {
             AppError::cluster_not_found(format!(
                 "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.name
+                cmd.cluster
             ))
         })?;
 
@@ -166,7 +166,7 @@ pub async fn handle_job_submit(
     let capture = ctx
         .orbitd
         .submit_job(
-            cmd.name.clone(),
+            cmd.cluster.clone(),
             resolved_local_path_display.clone(),
             cmd.remote_path,
             cmd.new_directory,
@@ -186,7 +186,7 @@ pub async fn handle_job_submit(
     }
 
     Ok(CommandResult::JobSubmit {
-        cluster: cmd.name,
+        cluster: cmd.cluster,
         local_path: resolved_local_path_display,
         sbatchscript,
         capture,
@@ -761,33 +761,33 @@ pub async fn handle_project_submit(
         exclude: project.sync_exclude.clone(),
     };
     let filters = merge_submit_filters(cmd.filters.clone(), &rules);
-    let template_values_json =
-        if let Some(template_json) = project.template_config_json.as_deref() {
-            let template = template_config_from_json(template_json)?;
-            let values = resolve_template_values(
-                &template,
-                cmd.template_preset.as_deref(),
-                &cmd.template_fields,
-                cmd.fill_defaults,
-                &project_root,
-                ctx.fs.as_ref(),
-                ctx.interaction.as_ref(),
-                ctx.output.as_ref(),
-                ctx.ui_mode,
-                false,
-            )
-            .await?;
-            Some(serde_json::to_string(&values).map_err(|err| {
-                AppError::internal_error(format!("failed to serialize templates: {err}"))
-            })?)
-        } else {
-            if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
-                return Err(AppError::invalid_argument(
-                    "template values provided but Orbitfile has no [template] section",
-                ));
-            }
-            None
-        };
+    let template_values_json = if let Some(template_json) = project.template_config_json.as_deref()
+    {
+        let template = template_config_from_json(template_json)?;
+        let values = resolve_template_values(
+            &template,
+            cmd.template_preset.as_deref(),
+            &cmd.template_fields,
+            cmd.fill_defaults,
+            &project_root,
+            ctx.fs.as_ref(),
+            ctx.interaction.as_ref(),
+            ctx.output.as_ref(),
+            ctx.ui_mode,
+            false,
+        )
+        .await?;
+        Some(serde_json::to_string(&values).map_err(|err| {
+            AppError::internal_error(format!("failed to serialize templates: {err}"))
+        })?)
+    } else {
+        if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
+            return Err(AppError::invalid_argument(
+                "template values provided but Orbitfile has no [template] section",
+            ));
+        }
+        None
+    };
 
     ctx.output
         .success(&format!("Selected sbatch script: {sbatchscript}"))
@@ -831,7 +831,9 @@ pub async fn handle_project_list(
 ) -> AppResult<CommandResult> {
     let projects = ctx.orbitd.list_projects().await?;
     let summarized = summarize_projects(projects);
-    Ok(CommandResult::ProjectList { projects: summarized })
+    Ok(CommandResult::ProjectList {
+        projects: summarized,
+    })
 }
 
 pub async fn handle_project_check(
@@ -1083,10 +1085,7 @@ fn summarize_projects(projects: Vec<proto::ProjectRecord>) -> Vec<ProjectListIte
         entry.tags.sort();
         entry.tags.dedup();
         let (path, updated_at) = match entry.latest_updated {
-            Some(updated) => (
-                entry.latest_path.unwrap_or(entry.fallback_path),
-                updated,
-            ),
+            Some(updated) => (entry.latest_path.unwrap_or(entry.fallback_path), updated),
             None => (entry.fallback_path, entry.fallback_updated),
         };
         output.push(ProjectListItem {
@@ -1103,8 +1102,12 @@ fn summarize_projects(projects: Vec<proto::ProjectRecord>) -> Vec<ProjectListIte
 
 fn is_version_tag(tag: &str) -> bool {
     let mut parts = tag.splitn(2, '.');
-    let Some(date) = parts.next() else { return false; };
-    let Some(suffix) = parts.next() else { return false; };
+    let Some(date) = parts.next() else {
+        return false;
+    };
+    let Some(suffix) = parts.next() else {
+        return false;
+    };
     if date.len() != 8 || !date.chars().all(|ch| ch.is_ascii_digit()) {
         return false;
     }

@@ -201,7 +201,10 @@ pub struct ProjectSubmitArgs {
     /// Built project name:tag (e.g., my-project:20260112.001 or my-project:latest).
     pub project: String,
     /// Cluster name.
+    #[arg(long = "to", value_name = "CLUSTER")]
     pub cluster: String,
+    /// Path to the sbatch script to submit.
+    #[arg(long, value_name = "PATH")]
     pub sbatchscript: Option<String>,
     /// Apply a template preset before prompting for missing fields.
     #[arg(long)]
@@ -306,8 +309,12 @@ pub struct DeleteClusterArgs {
 
 #[derive(Args, Debug)]
 pub struct SubmitArgs {
-    pub name: String,
     pub local_path: String,
+    /// Cluster name.
+    #[arg(long = "to", value_name = "CLUSTER")]
+    pub cluster: String,
+    /// Path to the sbatch script to submit.
+    #[arg(long, value_name = "PATH")]
     pub sbatchscript: Option<String>,
     /// Apply a template preset before prompting for missing fields.
     #[arg(long)]
@@ -529,5 +536,107 @@ mod tests {
             },
             _ => panic!("expected cluster command"),
         }
+    }
+
+    #[test]
+    fn job_submit_parses_cluster_from_to_flag() {
+        let args = Cli::parse_from(["orbit", "job", "submit", "--to", "winery", "."]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Submit(submit) => {
+                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(submit.local_path, ".");
+                }
+                _ => panic!("expected job submit command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_submit_parses_sbatchscript_flag() {
+        let args = Cli::parse_from([
+            "orbit",
+            "job",
+            "submit",
+            "--to",
+            "winery",
+            "--sbatchscript",
+            "scripts/submit.sbatch",
+            ".",
+        ]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Submit(submit) => {
+                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(
+                        submit.sbatchscript.as_deref(),
+                        Some("scripts/submit.sbatch")
+                    );
+                    assert_eq!(submit.local_path, ".");
+                }
+                _ => panic!("expected job submit command"),
+            },
+            _ => panic!("expected job command"),
+        }
+    }
+
+    #[test]
+    fn job_submit_requires_to_flag() {
+        let args = Cli::try_parse_from(["orbit", "job", "submit", "winery", "."]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn project_submit_parses_cluster_from_to_flag() {
+        let args = Cli::parse_from([
+            "orbit",
+            "project",
+            "submit",
+            "demo:latest",
+            "--to",
+            "winery",
+        ]);
+        match args.cmd {
+            Cmd::Project(project) => match project.cmd {
+                ProjectCmd::Submit(submit) => {
+                    assert_eq!(submit.project, "demo:latest");
+                    assert_eq!(submit.cluster, "winery");
+                }
+                _ => panic!("expected project submit command"),
+            },
+            _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn project_submit_parses_sbatchscript_flag() {
+        let args = Cli::parse_from([
+            "orbit",
+            "project",
+            "submit",
+            "demo:latest",
+            "--to",
+            "winery",
+            "--sbatchscript",
+            "submit.sbatch",
+        ]);
+        match args.cmd {
+            Cmd::Project(project) => match project.cmd {
+                ProjectCmd::Submit(submit) => {
+                    assert_eq!(submit.project, "demo:latest");
+                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(submit.sbatchscript.as_deref(), Some("submit.sbatch"));
+                }
+                _ => panic!("expected project submit command"),
+            },
+            _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn project_submit_requires_to_flag() {
+        let args = Cli::try_parse_from(["orbit", "project", "submit", "demo:latest"]);
+        assert!(args.is_err());
     }
 }

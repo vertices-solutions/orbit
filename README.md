@@ -84,7 +84,7 @@ orbit cluster list
 
 # submit your analysis to your cluster!
 # cd /my/super/project
-orbit job submit <cluster name> .
+orbit job submit --to <cluster name> .
 
 # check the status of your job(s)
 orbit job list

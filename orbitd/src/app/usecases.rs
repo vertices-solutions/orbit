@@ -13,11 +13,11 @@ use proto::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use tempfile::TempDir;
-use walkdir::WalkDir;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration as TokioDuration, sleep};
+use walkdir::WalkDir;
 
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
@@ -26,7 +26,8 @@ use crate::app::ports::{
     TelemetryEvent, TelemetryPort,
 };
 use crate::app::services::{
-    managers, os, project_building, random, remote_path, sbatch, shell, slurm, submit_paths, templates,
+    managers, os, project_building, random, remote_path, sbatch, shell, slurm, submit_paths,
+    templates,
 };
 use crate::app::types::{
     Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, NewProjectBuild, ProjectRecord,
@@ -199,7 +200,8 @@ impl UseCases {
 
     pub async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>> {
         let projects = self.projects.list_projects().await?;
-        self.telemetry.event("projects.listed", TelemetryEvent::default());
+        self.telemetry
+            .event("projects.listed", TelemetryEvent::default());
         Ok(projects)
     }
 
@@ -260,9 +262,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         }
 
         for hash in tarball_hashes {
-            let tarball_path = self
-                .tarballs_dir
-                .join(format!("{hash}.tar.zst"));
+            let tarball_path = self.tarballs_dir.join(format!("{hash}.tar.zst"));
             match std::fs::remove_file(&tarball_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -270,7 +270,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     return Err(local_error(format!(
                         "failed to delete tarball {}: {err}",
                         tarball_path.display()
-                    )))
+                    )));
                 }
             }
         }
@@ -294,11 +294,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(deleted > 0)
     }
 
-    pub async fn build_project(
-        &self,
-        path: &str,
-        package_git: bool,
-    ) -> AppResult<ProjectRecord> {
+    pub async fn build_project(&self, path: &str, package_git: bool) -> AppResult<ProjectRecord> {
         let resolved = resolve_project_path(self.local_fs.as_ref(), path).await?;
         let project_root = discover_orbitfile_root(&resolved)?
             .ok_or_else(|| invalid_argument("project build requires an Orbitfile"))?;
@@ -343,15 +339,12 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             )));
         }
 
-        let (version_tag, project_ref) =
-            self.next_project_version_tag(&project_name).await?;
+        let (version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
 
         let mut hasher = Sha256::new();
         hasher.update(format!("{project_name}:{version_tag}"));
         let tarball_hash = format!("{:x}", hasher.finalize());
-        let tarball_path = self
-            .tarballs_dir
-            .join(format!("{tarball_hash}.tar.zst"));
+        let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
 
         let template_config_json = templates::load_template_config_json(&orbitfile_path)?;
 
@@ -1535,9 +1528,10 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         let mut _template_guard = None;
         let mut _tarball_guard: Option<TempDir> = None;
         if let Some(project_tag) = input.project_tag.as_deref() {
-            let project_name = input.project_name.clone().ok_or_else(|| {
-                invalid_argument("project tag provided without project name")
-            })?;
+            let project_name = input
+                .project_name
+                .clone()
+                .ok_or_else(|| invalid_argument("project tag provided without project name"))?;
             let project = if project_tag == "latest" {
                 self.get_latest_project_build(&project_name).await?
             } else {
@@ -1552,9 +1546,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 .tarball_hash
                 .clone()
                 .ok_or_else(|| invalid_argument("project tarball is missing; run project build"))?;
-            let tarball_path = self
-                .tarballs_dir
-                .join(format!("{tarball_hash}.tar.zst"));
+            let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
             if !tarball_path.is_file() {
                 return Err(AppError::with_message(
                     AppErrorKind::InvalidArgument,
@@ -1935,8 +1927,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     job_name: Some(job_name.clone()),
                     ..telemetry_context.clone()
                 };
-                self.telemetry
-                    .event("job.submit.failed", telemetry_failed);
+                self.telemetry.event("job.submit.failed", telemetry_failed);
             }
         }
 
@@ -1953,19 +1944,19 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         let user_name = input.username.clone();
         let result = self
             .cluster_upsert(
-            ClusterUpsertInput {
-                name: input.name,
-                username: input.username,
-                address: input.address,
-                port: input.port,
-                identity_path: input.identity_path,
-                default_base_path: input.default_base_path,
-                emit_progress: true,
-            },
-            stream,
-            mfa,
-        )
-        .await;
+                ClusterUpsertInput {
+                    name: input.name,
+                    username: input.username,
+                    address: input.address,
+                    port: input.port,
+                    identity_path: input.identity_path,
+                    default_base_path: input.default_base_path,
+                    emit_progress: true,
+                },
+                stream,
+                mfa,
+            )
+            .await;
         if result.is_ok() {
             self.telemetry.event(
                 "cluster.added",
@@ -2152,7 +2143,9 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                             continue;
                         }
                         None => {
-                            tracing::debug!("sacct returned no terminal state for {name} job {job_id}");
+                            tracing::debug!(
+                                "sacct returned no terminal state for {name} job {job_id}"
+                            );
                         }
                     };
 
@@ -2795,17 +2788,18 @@ fn is_invalid_job_id(text: &str) -> bool {
 }
 
 fn invalid_argument(message: impl Into<String>) -> AppError {
-    AppError::with_message(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT, message)
+    AppError::with_message(
+        AppErrorKind::InvalidArgument,
+        codes::INVALID_ARGUMENT,
+        message,
+    )
 }
 
 fn local_error(message: impl Into<String>) -> AppError {
     AppError::with_message(AppErrorKind::Internal, codes::LOCAL_ERROR, message)
 }
 
-async fn resolve_project_path(
-    fs: &dyn LocalFilesystemPort,
-    raw: &str,
-) -> AppResult<PathBuf> {
+async fn resolve_project_path(fs: &dyn LocalFilesystemPort, raw: &str) -> AppResult<PathBuf> {
     let input = PathBuf::from(raw);
     let path = if input.is_absolute() {
         input
@@ -2932,9 +2926,7 @@ fn validate_project_name(name: &str) -> AppResult<()> {
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
     if !valid {
-        return Err(invalid_argument(
-            "project name must match ^[A-Za-z0-9_-]+$",
-        ));
+        return Err(invalid_argument("project name must match ^[A-Za-z0-9_-]+$"));
     }
     Ok(())
 }
@@ -2946,9 +2938,7 @@ fn resolve_orbitfile_sbatch_script(
 ) -> AppResult<String> {
     let trimmed = sbatch_script.trim();
     if trimmed.is_empty() {
-        return Err(invalid_argument(
-            "[submit].sbatch_script cannot be empty",
-        ));
+        return Err(invalid_argument("[submit].sbatch_script cannot be empty"));
     }
     let submit_root_canonical = std::fs::canonicalize(submit_root).map_err(|err| {
         local_error(format!(
@@ -2995,8 +2985,7 @@ fn resolve_orbitfile_sbatch_script(
 fn collect_sbatch_scripts(root: &Path) -> AppResult<Vec<String>> {
     let mut scripts = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
-        let entry =
-            entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
+        let entry = entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
         if entry.file_type().is_symlink() || !entry.file_type().is_file() {
             continue;
         }
@@ -3062,10 +3051,7 @@ impl UseCases {
         }
     }
 
-    async fn next_project_version_tag(
-        &self,
-        project_name: &str,
-    ) -> AppResult<(String, String)> {
+    async fn next_project_version_tag(&self, project_name: &str) -> AppResult<(String, String)> {
         let now = self.clock.now_utc();
         let date = format!(
             "{:04}{:02}{:02}",

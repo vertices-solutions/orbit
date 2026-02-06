@@ -37,7 +37,7 @@ pub enum JobCommand {
 
 #[derive(Debug, Clone)]
 pub struct SubmitJobCommand {
-    pub name: String,
+    pub cluster: String,
     pub local_path: String,
     pub sbatchscript: Option<String>,
     pub remote_path: Option<String>,

@@ -1,8 +1,8 @@
 # Test Projects
 
-Lightweight projects for manual end-to-end testing on low-powered devices. Most projects are small
+Lightweight projects for end-to-end testing on low-powered devices. Most projects are small
 (typically seconds of runtime) and focus on exercising multiple CLI/daemon features.
-The automated suite takes less than 3 minutes; 91_queued_state and 92_long_running_hashes are manual-only.
+The automated suite takes less than 3 minutes; 9* folders are for manual testing.
 Projects overview:
 - 01_smoke: basic submit, stdout/stderr logs, job ls, retrieve results.
 - 02_python_stats: sbatch script in subdir, data sync, output files, JSON/text results.
@@ -15,7 +15,7 @@ Projects overview:
 - 06_templated_hashes: templated hashing job with remote data generation (manual-only).
 
 Common workflow (replace <cluster> and <job_id>):
-- orbit job submit <cluster> tests/01_smoke
+- orbit job submit --to <cluster> tests/01_smoke
 - orbit job list
 - orbit job get <job_id>
 - orbit job logs <job_id>

@@ -53,7 +53,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             JobCmd::Submit(args) => {
                 let filters = submit_filters_from_matches(matches);
                 JobCommand::Submit(SubmitJobCommand {
-                    name: args.name,
+                    cluster: args.cluster,
                     local_path: args.local_path,
                     sbatchscript: args.sbatchscript,
                     remote_path: args.remote_path,

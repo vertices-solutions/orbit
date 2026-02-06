@@ -170,20 +170,12 @@ impl OrbitdPort for GrpcOrbitdPort {
         package_git: bool,
     ) -> AppResult<proto::ProjectRecord> {
         let mut client = self.connect().await?;
-        let request = BuildProjectRequest {
-            path,
-            package_git,
+        let request = BuildProjectRequest { path, package_git };
+        let response = match timeout(Duration::from_secs(10), client.build_project(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
-        let response =
-            match timeout(Duration::from_secs(10), client.build_project(request)).await {
-                Ok(Ok(res)) => res.into_inner(),
-                Ok(Err(status)) => return Err(app_error_from_status(status)),
-                Err(e) => {
-                    return Err(AppError::network_error(format!(
-                        "operation timed out: {e}"
-                    )))
-                }
-            };
         response
             .project
             .ok_or_else(|| AppError::remote_error("missing project in response"))

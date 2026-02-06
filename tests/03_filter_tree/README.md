@@ -8,7 +8,7 @@ Features covered:
 - job ls/retrieve for filtered outputs
 
 Suggested commands:
-- orbit job submit <cluster> tests/03_filter_tree \
+- orbit job submit --to <cluster> tests/03_filter_tree \
     --include 'cache/keep.txt' \
     --exclude 'cache/*' \
     --exclude '*.tmp' \

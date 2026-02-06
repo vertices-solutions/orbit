@@ -490,6 +490,7 @@ def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, extra_args=N
     cmd = orbit_cmd + [
         "job",
         "submit",
+        "--to",
         cluster,
         str(project_path),
     ]
@@ -573,7 +574,7 @@ def main():
             {
                 "id": "02_python_stats",
                 "path": repo_root / "tests/02_python_stats",
-                "submit_args": ["scripts/submit.sbatch"],
+                "submit_args": ["--sbatchscript", "scripts/submit.sbatch"],
                 "retrieve": ["results"],
                 "validate": validate_python_stats,
             },
@@ -799,7 +800,13 @@ def main():
         if checked.get("checked") != 1:
             raise RuntimeError("project lifecycle: project check did not report checked=1")
 
-        project_submit_cmd = orbit_cmd + ["project", "submit", project_ref, args.cluster]
+        project_submit_cmd = orbit_cmd + [
+            "project",
+            "submit",
+            project_ref,
+            "--to",
+            args.cluster,
+        ]
         project_submit = run_cmd(project_submit_cmd)
         project_submit_output = (project_submit.stdout or "") + (project_submit.stderr or "")
         project_job_id = parse_job_id(project_submit_output)

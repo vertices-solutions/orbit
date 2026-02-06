@@ -9,7 +9,7 @@ Features covered:
 - job ls and retrieve for result files
 
 Suggested commands:
-- orbit job submit <cluster> tests/01_smoke
+- orbit job submit --to <cluster> tests/01_smoke
 - orbit job logs <job_id>
 - orbit job logs <job_id> --err
 - orbit job ls <job_id> results

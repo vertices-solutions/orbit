@@ -297,9 +297,8 @@ pub fn template_config_from_json(raw: &str) -> AppResult<TemplateConfig> {
             "template config JSON cannot be empty",
         ));
     }
-    serde_json::from_str::<TemplateConfig>(trimmed).map_err(|err| {
-        AppError::invalid_argument(format!("invalid template config JSON: {err}"))
-    })
+    serde_json::from_str::<TemplateConfig>(trimmed)
+        .map_err(|err| AppError::invalid_argument(format!("invalid template config JSON: {err}")))
 }
 
 pub fn merge_submit_filters(
@@ -851,7 +850,10 @@ mod tests {
         table.insert("key".to_string(), toml::Value::Boolean(false));
         table.insert("nested".to_string(), toml::Value::Integer(9));
         let value = toml::Value::Table(table);
-        assert_eq!(toml_value_to_json(&value).unwrap(), json!({"key": false, "nested": 9}));
+        assert_eq!(
+            toml_value_to_json(&value).unwrap(),
+            json!({"key": false, "nested": 9})
+        );
     }
 
     #[test]
@@ -859,9 +861,12 @@ mod tests {
         let values = normalize_enum_values("mode", TemplateFieldType::String, Vec::new()).unwrap();
         assert!(values.is_empty());
 
-        let err =
-            normalize_enum_values("mode", TemplateFieldType::String, vec!["fast".into()]).unwrap_err();
-        assert!(err.message.contains("has enum values but is not type 'enum'"));
+        let err = normalize_enum_values("mode", TemplateFieldType::String, vec!["fast".into()])
+            .unwrap_err();
+        assert!(
+            err.message
+                .contains("has enum values but is not type 'enum'")
+        );
 
         let err =
             normalize_enum_values("mode", TemplateFieldType::Enum, vec!["".into()]).unwrap_err();

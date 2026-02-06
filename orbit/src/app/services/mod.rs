@@ -370,10 +370,7 @@ impl<'a> SbatchSelector<'a> {
         }
     }
 
-    pub async fn select_from_candidates(
-        &self,
-        candidates: &[String],
-    ) -> AppResult<String> {
+    pub async fn select_from_candidates(&self, candidates: &[String]) -> AppResult<String> {
         match candidates.len() {
             0 => Err(AppError::invalid_argument(
                 "no .sbatch files found in project metadata; provide the script path explicitly",
