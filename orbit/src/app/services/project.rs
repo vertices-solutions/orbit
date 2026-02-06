@@ -33,14 +33,15 @@ pub struct OrbitfileProjectConfig {
     pub template: Option<TemplateConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemplateConfig {
     pub fields: BTreeMap<String, TemplateField>,
     pub files: Vec<String>,
     pub presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TemplateFieldType {
     String,
     Integer,
@@ -51,7 +52,7 @@ pub enum TemplateFieldType {
     Enum,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemplateField {
     pub field_type: TemplateFieldType,
     pub default: Option<JsonValue>,
@@ -289,6 +290,18 @@ pub fn load_project_from_root(
     })
 }
 
+pub fn template_config_from_json(raw: &str) -> AppResult<TemplateConfig> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(AppError::invalid_argument(
+            "template config JSON cannot be empty",
+        ));
+    }
+    serde_json::from_str::<TemplateConfig>(trimmed).map_err(|err| {
+        AppError::invalid_argument(format!("invalid template config JSON: {err}"))
+    })
+}
+
 pub fn merge_submit_filters(
     cli_filters: Vec<SubmitPathFilterRule>,
     rules: &ProjectRuleSet,
@@ -363,6 +376,7 @@ pub fn check_registered_project(
     name: &str,
     path: &Path,
 ) -> ProjectCheckStatus {
+    let base_name = name.split_once(':').map(|(base, _)| base).unwrap_or(name);
     if !fs.is_dir(path).unwrap_or(false) {
         return CheckedProjectStatus {
             name: name.to_string(),
@@ -401,13 +415,13 @@ pub fn check_registered_project(
         }
     };
 
-    if config.name != name {
+    if config.name != base_name {
         return CheckedProjectStatus {
             name: name.to_string(),
             ok: false,
             reason: Some(format!(
                 "Project {} has invalid Orbitfile: [project].name '{}' does not match registry name '{}'",
-                name, config.name, name
+                name, config.name, base_name
             )),
         };
     }
@@ -722,6 +736,7 @@ fn toml_type_name(value: &toml::Value) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn validate_project_name_accepts_expected_pattern() {
@@ -803,5 +818,223 @@ mod tests {
         assert_eq!(mode.enum_values, vec!["fast", "accurate"]);
         assert_eq!(template.files, vec!["configs/run.yaml"]);
         assert!(template.presets.contains_key("fast"));
+    }
+
+    #[test]
+    fn toml_value_to_json_converts_supported_types() {
+        let value = toml::Value::String("hello".to_string());
+        assert_eq!(toml_value_to_json(&value).unwrap(), json!("hello"));
+
+        let value = toml::Value::Integer(42);
+        assert_eq!(toml_value_to_json(&value).unwrap(), json!(42));
+
+        let value = toml::Value::Float(1.5);
+        assert_eq!(toml_value_to_json(&value).unwrap(), json!(1.5));
+
+        let value = toml::Value::Boolean(true);
+        assert_eq!(toml_value_to_json(&value).unwrap(), json!(true));
+
+        let value = toml::from_str::<toml::Value>("dt = 2024-01-02T03:04:05Z").unwrap();
+        let dt = value.get("dt").unwrap();
+        assert_eq!(
+            toml_value_to_json(dt).unwrap(),
+            json!("2024-01-02T03:04:05Z")
+        );
+
+        let value = toml::Value::Array(vec![
+            toml::Value::Integer(1),
+            toml::Value::String("a".to_string()),
+        ]);
+        assert_eq!(toml_value_to_json(&value).unwrap(), json!([1, "a"]));
+
+        let mut table = toml::value::Table::new();
+        table.insert("key".to_string(), toml::Value::Boolean(false));
+        table.insert("nested".to_string(), toml::Value::Integer(9));
+        let value = toml::Value::Table(table);
+        assert_eq!(toml_value_to_json(&value).unwrap(), json!({"key": false, "nested": 9}));
+    }
+
+    #[test]
+    fn normalize_enum_values_validates_types_and_values() {
+        let values = normalize_enum_values("mode", TemplateFieldType::String, Vec::new()).unwrap();
+        assert!(values.is_empty());
+
+        let err =
+            normalize_enum_values("mode", TemplateFieldType::String, vec!["fast".into()]).unwrap_err();
+        assert!(err.message.contains("has enum values but is not type 'enum'"));
+
+        let err =
+            normalize_enum_values("mode", TemplateFieldType::Enum, vec!["".into()]).unwrap_err();
+        assert!(err.message.contains("has an empty enum value"));
+
+        let err = normalize_enum_values(
+            "mode",
+            TemplateFieldType::Enum,
+            vec!["fast".into(), "fast".into()],
+        )
+        .unwrap_err();
+        assert!(err.message.contains("has duplicate enum value"));
+
+        let values = normalize_enum_values(
+            "mode",
+            TemplateFieldType::Enum,
+            vec![" fast ".into(), "slow".into()],
+        )
+        .unwrap();
+        assert_eq!(values, vec!["fast", "slow"]);
+    }
+
+    #[test]
+    fn parse_template_field_type_accepts_known_values() {
+        assert_eq!(
+            parse_template_field_type(" string ").unwrap(),
+            TemplateFieldType::String
+        );
+        assert_eq!(
+            parse_template_field_type("integer").unwrap(),
+            TemplateFieldType::Integer
+        );
+        assert!(parse_template_field_type("unknown").is_err());
+    }
+
+    #[test]
+    fn validate_template_field_name_rejects_invalid_identifiers() {
+        assert!(validate_template_field_name("name").is_ok());
+        assert!(validate_template_field_name("_name").is_ok());
+        assert!(validate_template_field_name("9name").is_err());
+        assert!(validate_template_field_name("bad-name").is_err());
+    }
+
+    #[test]
+    fn parse_template_value_from_toml_handles_field_types() {
+        let string_field = TemplateField {
+            field_type: TemplateFieldType::String,
+            default: None,
+            description: None,
+            enum_values: Vec::new(),
+        };
+        let value = toml::Value::String("alpha".to_string());
+        assert_eq!(
+            parse_template_value_from_toml(&string_field, &value).unwrap(),
+            json!("alpha")
+        );
+
+        let int_field = TemplateField {
+            field_type: TemplateFieldType::Integer,
+            default: None,
+            description: None,
+            enum_values: Vec::new(),
+        };
+        let value = toml::Value::Float(10.0);
+        assert_eq!(
+            parse_template_value_from_toml(&int_field, &value).unwrap(),
+            json!(10)
+        );
+
+        let float_field = TemplateField {
+            field_type: TemplateFieldType::Float,
+            default: None,
+            description: None,
+            enum_values: Vec::new(),
+        };
+        let value = toml::Value::Integer(7);
+        assert_eq!(
+            parse_template_value_from_toml(&float_field, &value).unwrap(),
+            json!(7)
+        );
+
+        let enum_field = TemplateField {
+            field_type: TemplateFieldType::Enum,
+            default: None,
+            description: None,
+            enum_values: vec!["fast".to_string(), "slow".to_string()],
+        };
+        let value = toml::Value::String("fast".to_string());
+        assert_eq!(
+            parse_template_value_from_toml(&enum_field, &value).unwrap(),
+            json!("fast")
+        );
+        let value = toml::Value::String("invalid".to_string());
+        assert!(parse_template_value_from_toml(&enum_field, &value).is_err());
+
+        let json_field = TemplateField {
+            field_type: TemplateFieldType::Json,
+            default: None,
+            description: None,
+            enum_values: Vec::new(),
+        };
+        let mut table = toml::value::Table::new();
+        table.insert("mode".to_string(), toml::Value::String("fast".to_string()));
+        let value = toml::Value::Table(table);
+        assert_eq!(
+            parse_template_value_from_toml(&json_field, &value).unwrap(),
+            json!({"mode": "fast"})
+        );
+    }
+
+    #[test]
+    fn parse_template_config_rejects_invalid_inputs() {
+        let raw = toml::from_str::<RawOrbitfile>(
+            r#"
+            [project]
+            name = "demo"
+
+            [template]
+
+            [template.fields.count]
+            type = "integer"
+            default = "oops"
+            "#,
+        )
+        .expect("orbitfile");
+        assert!(parse_template_config(raw.template).is_err());
+
+        let raw = toml::from_str::<RawOrbitfile>(
+            r#"
+            [project]
+            name = "demo"
+
+            [template]
+
+            [template.fields."1bad"]
+            type = "string"
+            "#,
+        )
+        .expect("orbitfile");
+        assert!(parse_template_config(raw.template).is_err());
+
+        let raw = toml::from_str::<RawOrbitfile>(
+            r#"
+            [project]
+            name = "demo"
+
+            [template]
+
+            [template.fields.mode]
+            type = "string"
+
+            [template.files]
+            paths = ["a.txt", "a.txt"]
+            "#,
+        )
+        .expect("orbitfile");
+        assert!(parse_template_config(raw.template).is_err());
+
+        let raw = toml::from_str::<RawOrbitfile>(
+            r#"
+            [project]
+            name = "demo"
+
+            [template]
+
+            [template.fields.mode]
+            type = "string"
+
+            [template.presets.fast]
+            unknown = "value"
+            "#,
+        )
+        .expect("orbitfile");
+        assert!(parse_template_config(raw.template).is_err());
     }
 }

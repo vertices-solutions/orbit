@@ -37,6 +37,15 @@ pub struct ProjectInitAction {
 }
 
 #[derive(Debug, Clone)]
+pub struct ProjectListItem {
+    pub name: String,
+    pub path: String,
+    pub latest_tag: Option<String>,
+    pub tags: Vec<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone)]
 pub enum CommandResult {
     Message {
         message: String,
@@ -111,8 +120,11 @@ pub enum CommandResult {
         git_initialized: bool,
         actions: Vec<ProjectInitAction>,
     },
+    ProjectBuild {
+        project: proto::ProjectRecord,
+    },
     ProjectList {
-        projects: Vec<proto::ProjectRecord>,
+        projects: Vec<ProjectListItem>,
     },
     ProjectCheck {
         checked: usize,

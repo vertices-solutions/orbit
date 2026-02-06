@@ -43,6 +43,11 @@ fn log_config_report(report: &config::ConfigReport) {
         report.job_check_interval_secs.source.as_str()
     );
     tracing::info!(
+        "config tarballs_dir: {} (source={})",
+        report.tarballs_dir.value.display(),
+        report.tarballs_dir.source.as_str()
+    );
+    tracing::info!(
         "config port: {} (source={})",
         report.port.value,
         report.port.source.as_str()
@@ -66,11 +71,13 @@ async fn main() -> anyhow::Result<()> {
             job_check_interval_secs: opts.job_check_interval_secs,
             port: opts.port,
             verbose: verbose_override,
+            tarballs_dir: None,
         },
     )?;
     logging::init(config.verbose);
     log_config_report(&report);
     config::ensure_database_dir(&config.database_path)?;
+    config::ensure_tarballs_dir(&config.tarballs_dir)?;
     let db = adapters::db::HostStore::open(&config.database_path).await?;
     let server_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, config.port));
 
@@ -92,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
         network,
         clock,
         telemetry,
+        config.tarballs_dir.clone(),
     );
     let checker = usecases.clone();
     let interval = Duration::from_secs(config.job_check_interval_secs);

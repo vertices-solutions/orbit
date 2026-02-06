@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use proto::{ListClustersUnitResponse, ListJobsUnitResponse, ProjectRecord};
+use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
 
 use crate::adapters::presentation::{cluster_host_string, job_status};
+use crate::app::commands::ProjectListItem;
 
 pub(super) fn format_clusters_table(
     clusters: &[ListClustersUnitResponse],
@@ -276,47 +277,57 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
     )
 }
 
-pub(super) fn format_projects_table(projects: &[ProjectRecord]) -> String {
-    let headers = ["name", "path", "updated"];
-    let mut rows: Vec<(String, String, String)> = Vec::new();
+pub(super) fn format_projects_table(projects: &[ProjectListItem]) -> String {
+    let headers = ["name", "latest tag", "path", "updated"];
+    let mut rows: Vec<(String, String, String, String)> = Vec::new();
     for project in projects {
         rows.push((
             project.name.clone(),
+            project
+                .latest_tag
+                .clone()
+                .unwrap_or_else(|| "-".to_string()),
             project.path.clone(),
             project.updated_at.clone(),
         ));
     }
 
-    let mut widths: [usize; 3] = [
+    let mut widths: [usize; 4] = [
         str_width(headers[0]),
         str_width(headers[1]),
         str_width(headers[2]),
+        str_width(headers[3]),
     ];
     for row in &rows {
         widths[0] = widths[0].max(str_width(&row.0));
         widths[1] = widths[1].max(str_width(&row.1));
         widths[2] = widths[2].max(str_width(&row.2));
+        widths[3] = widths[3].max(str_width(&row.3));
     }
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<w0$}  {:<w1$}  {:<w2$}\n",
+        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
         headers[0],
         headers[1],
         headers[2],
+        headers[3],
         w0 = widths[0],
         w1 = widths[1],
         w2 = widths[2],
+        w3 = widths[3],
     ));
     for row in rows {
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
             row.0,
             row.1,
             row.2,
+            row.3,
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
+            w3 = widths[3],
         ));
     }
     output

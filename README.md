@@ -176,7 +176,7 @@ cargo run -p orbit -- --help
 ```
 ### Project Structure
 
-Project structure is described in detail in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Project structure is described in detail in [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md).
 
 ### Release policy
 Releases are handled by @lubitelpospat. Before a tag is released, code is tested by unit-tests and end-to-end; 

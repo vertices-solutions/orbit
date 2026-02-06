@@ -10,7 +10,8 @@ use thiserror::Error;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::app::types::{
-    Address, Distro, HostRecord, JobRecord, NewHost, NewJob, ProjectRecord, SlurmVersion,
+    Address, Distro, HostRecord, JobRecord, NewHost, NewJob, NewProjectBuild, ProjectRecord,
+    SlurmVersion,
 };
 
 #[cfg(feature = "serde")]
@@ -20,6 +21,8 @@ use serde::{Deserialize, Serialize};
 pub enum HostStoreError {
     #[error("sqlx error: {0}")]
     Sqlx(#[from] sqlx::Error),
+    #[error("serialization error: {0}")]
+    Serde(#[from] serde_json::Error),
     #[error("invalid address (both hostname and ip are missing)")]
     InvalidAddress,
     #[error("empty name")]
@@ -72,7 +75,6 @@ impl HostStore {
     /// Open (or create) a file-backed SQLite DB.
     pub async fn open<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path_ref = path.as_ref();
-        let is_new_db = !path_ref.exists();
         let url = format!("sqlite://{}", path_ref.to_string_lossy());
         let opts = SqliteConnectOptions::from_str(&url)?
             .create_if_missing(true)
@@ -83,9 +85,7 @@ impl HostStore {
             .connect_with(opts)
             .await?;
         let store = Self { pool };
-        if is_new_db {
-            store.bootstrap().await?;
-        }
+        store.bootstrap().await?;
         Ok(store)
     }
 
@@ -231,6 +231,52 @@ impl HostStore {
         )
         .execute(&self.pool)
         .await?;
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(projects)")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+        if !columns.iter().any(|name| name == "tarball_hash") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN tarball_hash TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "tool_version") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN tool_version TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "template_config_json") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN template_config_json TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "submit_sbatch_script") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN submit_sbatch_script TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "sbatch_scripts") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN sbatch_scripts TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "default_retrieve_path") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN default_retrieve_path TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "sync_include") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN sync_include TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns.iter().any(|name| name == "sync_exclude") {
+            sqlx::query("ALTER TABLE projects ADD COLUMN sync_exclude TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
         Ok(())
     }
     /// Insert a new host. Returns the new row id.
@@ -464,7 +510,10 @@ impl HostStore {
                 UPDATE projects
                    SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                  WHERE name = ?1
-                 RETURNING name, path, created_at, updated_at
+                 RETURNING name, path, created_at, updated_at,
+                           tarball_hash, tool_version, template_config_json,
+                           submit_sbatch_script, sbatch_scripts,
+                           default_retrieve_path, sync_include, sync_exclude
                 "#,
             )
             .bind(trimmed_name)
@@ -477,7 +526,10 @@ impl HostStore {
             r#"
             INSERT INTO projects(name, path)
             VALUES (?1, ?2)
-            RETURNING name, path, created_at, updated_at
+            RETURNING name, path, created_at, updated_at,
+                      tarball_hash, tool_version, template_config_json,
+                      submit_sbatch_script, sbatch_scripts,
+                      default_retrieve_path, sync_include, sync_exclude
             "#,
         )
         .bind(trimmed_name)
@@ -487,10 +539,80 @@ impl HostStore {
         Ok(row_to_project(row))
     }
 
+    pub async fn upsert_project_build(&self, build: &NewProjectBuild) -> Result<ProjectRecord> {
+        let trimmed_name = build.name.trim();
+        let trimmed_path = build.path.trim();
+        if trimmed_name.is_empty() {
+            return Err(HostStoreError::EmptyProjectName);
+        }
+        if trimmed_path.is_empty() {
+            return Err(HostStoreError::EmptyProjectPath);
+        }
+        if build.tarball_hash.trim().is_empty() {
+            return Err(HostStoreError::EmptyProjectPath);
+        }
+        if build.tool_version.trim().is_empty() {
+            return Err(HostStoreError::EmptyProjectPath);
+        }
+
+        let sbatch_scripts = serialize_string_list(&build.sbatch_scripts)?;
+        let sync_include = serialize_string_list(&build.sync_include)?;
+        let sync_exclude = serialize_string_list(&build.sync_exclude)?;
+
+        let row = sqlx::query(
+            r#"
+            INSERT INTO projects(
+              name,
+              path,
+              tarball_hash,
+              tool_version,
+              template_config_json,
+              submit_sbatch_script,
+              sbatch_scripts,
+              default_retrieve_path,
+              sync_include,
+              sync_exclude
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(name) DO UPDATE SET
+              path = excluded.path,
+              tarball_hash = excluded.tarball_hash,
+              tool_version = excluded.tool_version,
+              template_config_json = excluded.template_config_json,
+              submit_sbatch_script = excluded.submit_sbatch_script,
+              sbatch_scripts = excluded.sbatch_scripts,
+              default_retrieve_path = excluded.default_retrieve_path,
+              sync_include = excluded.sync_include,
+              sync_exclude = excluded.sync_exclude,
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            RETURNING name, path, created_at, updated_at,
+                      tarball_hash, tool_version, template_config_json,
+                      submit_sbatch_script, sbatch_scripts,
+                      default_retrieve_path, sync_include, sync_exclude
+            "#,
+        )
+        .bind(trimmed_name)
+        .bind(trimmed_path)
+        .bind(build.tarball_hash.trim())
+        .bind(build.tool_version.trim())
+        .bind(build.template_config_json.as_deref())
+        .bind(build.submit_sbatch_script.as_deref())
+        .bind(sbatch_scripts.as_deref())
+        .bind(build.default_retrieve_path.as_deref())
+        .bind(sync_include.as_deref())
+        .bind(sync_exclude.as_deref())
+        .fetch_one(&self.pool)
+        .await?;
+
+        Ok(row_to_project(row))
+    }
+
     pub async fn get_project_by_name(&self, name: &str) -> Result<Option<ProjectRecord>> {
         let row = sqlx::query(
             r#"
-            SELECT name, path, created_at, updated_at
+            SELECT name, path, created_at, updated_at,
+                   tarball_hash, tool_version, template_config_json,
+                   submit_sbatch_script, sbatch_scripts,
+                   default_retrieve_path, sync_include, sync_exclude
               FROM projects
              WHERE name = ?1
             "#,
@@ -501,11 +623,42 @@ impl HostStore {
         Ok(row.map(row_to_project))
     }
 
+    pub async fn get_latest_project_build(
+        &self,
+        project_name: &str,
+    ) -> Result<Option<ProjectRecord>> {
+        let escaped = escape_like(project_name);
+        let pattern = format!("{escaped}:%");
+        let latest_name = format!("{project_name}:latest");
+        let row = sqlx::query(
+            r#"
+            SELECT name, path, created_at, updated_at,
+                   tarball_hash, tool_version, template_config_json,
+                   submit_sbatch_script, sbatch_scripts,
+                   default_retrieve_path, sync_include, sync_exclude
+              FROM projects
+             WHERE name LIKE ?1 ESCAPE '\'
+               AND name != ?2
+             ORDER BY updated_at DESC
+             LIMIT 1
+            "#,
+        )
+        .bind(pattern)
+        .bind(latest_name)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(row_to_project))
+    }
+
     pub async fn list_projects(&self) -> Result<Vec<ProjectRecord>> {
         let rows = sqlx::query(
             r#"
-            SELECT name, path, created_at, updated_at
+            SELECT name, path, created_at, updated_at,
+                   tarball_hash, tool_version, template_config_json,
+                   submit_sbatch_script, sbatch_scripts,
+                   default_retrieve_path, sync_include, sync_exclude
               FROM projects
+             WHERE name NOT LIKE '%:latest'
              ORDER BY name ASC
             "#,
         )
@@ -525,6 +678,65 @@ impl HostStore {
         .execute(&self.pool)
         .await?;
         Ok(result.rows_affected() as usize)
+    }
+
+    pub async fn delete_projects_by_base_name(&self, name: &str) -> Result<usize> {
+        let escaped = escape_like(name);
+        let pattern = format!("{escaped}:%");
+        let result = sqlx::query(
+            r#"
+            DELETE FROM projects
+             WHERE name = ?1
+                OR name LIKE ?2 ESCAPE '\'
+            "#,
+        )
+        .bind(name)
+        .bind(pattern)
+        .execute(&self.pool)
+        .await?;
+        Ok(result.rows_affected() as usize)
+    }
+
+    pub async fn max_build_number_for_date(
+        &self,
+        project_name: &str,
+        date_prefix: &str,
+    ) -> Result<Option<u16>> {
+        let escaped = escape_like(project_name);
+        let pattern = format!("{escaped}:{date_prefix}.%");
+        let rows = sqlx::query(
+            r#"
+            SELECT name
+              FROM projects
+             WHERE name LIKE ?1 ESCAPE '\'
+            "#,
+        )
+        .bind(pattern)
+        .fetch_all(&self.pool)
+        .await?;
+
+        let mut max: Option<u16> = None;
+        for row in rows {
+            let name: String = row.try_get("name")?;
+            let tag = match name.split_once(':') {
+                Some((_proj, tag)) => tag,
+                None => continue,
+            };
+            let Some((date, suffix)) = tag.split_once('.') else {
+                continue;
+            };
+            if date != date_prefix {
+                continue;
+            }
+            if suffix.len() != 3 || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+                continue;
+            }
+            if let Ok(value) = suffix.parse::<u16>() {
+                max = Some(max.map_or(value, |current| current.max(value)));
+            }
+        }
+
+        Ok(max)
     }
 
     // --- internals ---
@@ -881,6 +1093,13 @@ fn now_rfc3339() -> String {
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".into())
 }
 
+fn escape_like(input: &str) -> String {
+    input
+        .replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
     let hostname: Option<String> = row.try_get("hostname").ok().flatten();
     let ip_str: Option<String> = row.try_get("ip").ok().flatten();
@@ -935,12 +1154,45 @@ fn row_to_partition(row: sqlx::sqlite::SqliteRow) -> PartitionRecord {
     }
 }
 
+fn serialize_string_list(values: &[String]) -> Result<Option<String>> {
+    if values.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(serde_json::to_string(values)?))
+    }
+}
+
+fn deserialize_string_list(raw: Option<String>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(&value).ok())
+        .unwrap_or_default()
+}
+
 fn row_to_project(row: sqlx::sqlite::SqliteRow) -> ProjectRecord {
+    let raw_name: String = row.try_get("name").unwrap();
+    let (name, version_tag) = match raw_name.split_once(':') {
+        Some((base, tag)) => (base.to_string(), Some(tag.to_string())),
+        None => (raw_name, None),
+    };
+    let sbatch_scripts =
+        deserialize_string_list(row.try_get::<Option<String>, _>("sbatch_scripts").ok().flatten());
+    let sync_include =
+        deserialize_string_list(row.try_get::<Option<String>, _>("sync_include").ok().flatten());
+    let sync_exclude =
+        deserialize_string_list(row.try_get::<Option<String>, _>("sync_exclude").ok().flatten());
     ProjectRecord {
-        name: row.try_get("name").unwrap(),
+        name,
         path: row.try_get("path").unwrap(),
         created_at: row.try_get("created_at").unwrap(),
         updated_at: row.try_get("updated_at").unwrap(),
+        version_tag,
+        tarball_hash: row.try_get("tarball_hash").ok().flatten(),
+        tool_version: row.try_get("tool_version").ok().flatten(),
+        template_config_json: row.try_get("template_config_json").ok().flatten(),
+        submit_sbatch_script: row.try_get("submit_sbatch_script").ok().flatten(),
+        sbatch_scripts,
+        default_retrieve_path: row.try_get("default_retrieve_path").ok().flatten(),
+        sync_include,
+        sync_exclude,
     }
 }
 
@@ -1553,5 +1805,55 @@ mod tests {
             .await
             .expect("query should succeed");
         assert!(project.is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_projects_by_base_name_removes_all_tags() {
+        let db = HostStore::open_memory().await.unwrap();
+
+        db.upsert_project("proj-a", "/tmp/proj-a")
+            .await
+            .expect("project created");
+
+        let build_a = NewProjectBuild {
+            name: "proj-a:20250101.001".to_string(),
+            path: "/tmp/proj-a".to_string(),
+            tarball_hash: "hash-a".to_string(),
+            tool_version: "1.0.0".to_string(),
+            template_config_json: None,
+            submit_sbatch_script: None,
+            sbatch_scripts: Vec::new(),
+            default_retrieve_path: None,
+            sync_include: Vec::new(),
+            sync_exclude: Vec::new(),
+        };
+        db.upsert_project_build(&build_a)
+            .await
+            .expect("build a");
+
+        let build_b = NewProjectBuild {
+            name: "proj-a:20250101.002".to_string(),
+            path: "/tmp/proj-a".to_string(),
+            tarball_hash: "hash-b".to_string(),
+            tool_version: "1.0.0".to_string(),
+            template_config_json: None,
+            submit_sbatch_script: None,
+            sbatch_scripts: Vec::new(),
+            default_retrieve_path: None,
+            sync_include: Vec::new(),
+            sync_exclude: Vec::new(),
+        };
+        db.upsert_project_build(&build_b)
+            .await
+            .expect("build b");
+
+        let deleted = db
+            .delete_projects_by_base_name("proj-a")
+            .await
+            .expect("delete all");
+        assert_eq!(deleted, 3);
+
+        let remaining = db.list_projects().await.expect("list projects");
+        assert!(remaining.is_empty());
     }
 }

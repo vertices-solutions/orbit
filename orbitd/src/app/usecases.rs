@@ -10,6 +10,10 @@ use proto::{
     StreamEvent, SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event, submit_result,
     submit_status, submit_stream_event,
 };
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+use walkdir::WalkDir;
 use time::format_description::well_known::Rfc3339;
 use time::{Duration as TimeDuration, OffsetDateTime};
 use tokio::sync::{mpsc, watch};
@@ -22,15 +26,16 @@ use crate::app::ports::{
     TelemetryEvent, TelemetryPort,
 };
 use crate::app::services::{
-    managers, os, random, remote_path, sbatch, shell, slurm, submit_paths, templates,
+    managers, os, project_building, random, remote_path, sbatch, shell, slurm, submit_paths, templates,
 };
 use crate::app::types::{
-    Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, ProjectRecord, SshConfig,
-    SyncOptions,
+    Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, NewProjectBuild, ProjectRecord,
+    SshConfig, SyncOptions,
 };
 
 const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
 const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
+const ORBITFILE_NAME: &str = "Orbitfile";
 
 #[derive(Clone)]
 pub struct UseCases {
@@ -43,6 +48,7 @@ pub struct UseCases {
     pub(crate) network: std::sync::Arc<dyn NetworkProbePort>,
     pub(crate) clock: std::sync::Arc<dyn ClockPort>,
     pub(crate) telemetry: std::sync::Arc<dyn TelemetryPort>,
+    pub(crate) tarballs_dir: PathBuf,
 }
 
 impl UseCases {
@@ -56,6 +62,7 @@ impl UseCases {
         network: std::sync::Arc<dyn NetworkProbePort>,
         clock: std::sync::Arc<dyn ClockPort>,
         telemetry: std::sync::Arc<dyn TelemetryPort>,
+        tarballs_dir: PathBuf,
     ) -> Self {
         Self {
             clusters,
@@ -67,6 +74,7 @@ impl UseCases {
             network,
             clock,
             telemetry,
+            tarballs_dir,
         }
     }
 
@@ -174,7 +182,13 @@ impl UseCases {
     }
 
     pub async fn get_project_by_name(&self, name: &str) -> AppResult<ProjectRecord> {
-        match self.projects.get_project_by_name(name).await? {
+        let trimmed = name.trim();
+        if let Some((project_name, tag)) = split_project_ref(trimmed) {
+            if tag == "latest" {
+                return self.get_latest_project_build(project_name).await;
+            }
+        }
+        match self.projects.get_project_by_name(trimmed).await? {
             Some(project) => Ok(project),
             None => Err(AppError::new(
                 AppErrorKind::InvalidArgument,
@@ -197,7 +211,77 @@ impl UseCases {
                 codes::INVALID_ARGUMENT,
             ));
         }
-        let deleted = self.projects.delete_project_by_name(trimmed).await?;
+        let (base_name, delete_name, delete_all) =
+            if let Some((project_name, tag)) = split_project_ref(trimmed) {
+                let base = project_name.to_string();
+                if tag == "latest" {
+                    let latest = self.get_latest_project_build(project_name).await?;
+                    let version_tag = latest.version_tag.clone().ok_or_else(|| {
+                        invalid_argument("latest project build is missing version tag")
+                    })?;
+                    (base, format!("{}:{}", latest.name, version_tag), false)
+                } else {
+                    (base, trimmed.to_string(), false)
+                }
+            } else {
+                (trimmed.to_string(), String::new(), true)
+            };
+        let running_jobs = self.jobs.list_running_jobs().await?;
+        if running_jobs
+            .iter()
+            .any(|job| job.project_name.as_deref() == Some(base_name.as_str()))
+        {
+            return Err(AppError::with_message(
+                AppErrorKind::Conflict,
+                codes::CONFLICT,
+                format!(
+                    "deleting project '{trimmed}' is prohibited because it has running jobs; \
+find jobs for '{base_name}' and cancel them with `job cancel`"
+                ),
+            ));
+        }
+
+        let mut tarball_hashes: Vec<String> = Vec::new();
+        if delete_all {
+            let projects = self.projects.list_projects().await?;
+            for project in projects {
+                if project.name == base_name {
+                    if let Some(hash) = project.tarball_hash.clone() {
+                        tarball_hashes.push(hash);
+                    }
+                }
+            }
+        } else if !delete_name.is_empty() {
+            if let Some(project) = self.projects.get_project_by_name(&delete_name).await? {
+                if let Some(hash) = project.tarball_hash {
+                    tarball_hashes.push(hash);
+                }
+            }
+        }
+
+        for hash in tarball_hashes {
+            let tarball_path = self
+                .tarballs_dir
+                .join(format!("{hash}.tar.zst"));
+            match std::fs::remove_file(&tarball_path) {
+                Ok(()) => {}
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(local_error(format!(
+                        "failed to delete tarball {}: {err}",
+                        tarball_path.display()
+                    )))
+                }
+            }
+        }
+
+        let deleted = if delete_all {
+            self.projects
+                .delete_projects_by_base_name(&base_name)
+                .await?
+        } else {
+            self.projects.delete_project_by_name(&delete_name).await?
+        };
         if deleted > 0 {
             self.telemetry.event(
                 "project.deleted",
@@ -208,6 +292,96 @@ impl UseCases {
             );
         }
         Ok(deleted > 0)
+    }
+
+    pub async fn build_project(
+        &self,
+        path: &str,
+        package_git: bool,
+    ) -> AppResult<ProjectRecord> {
+        let resolved = resolve_project_path(self.local_fs.as_ref(), path).await?;
+        let project_root = discover_orbitfile_root(&resolved)?
+            .ok_or_else(|| invalid_argument("project build requires an Orbitfile"))?;
+        let orbitfile_path = project_root.join(ORBITFILE_NAME);
+        let orbitfile_metadata = load_orbitfile_metadata(&orbitfile_path)?;
+        let OrbitfileMetadata {
+            name: project_name,
+            default_retrieve_path,
+            submit_sbatch_script: raw_submit_sbatch_script,
+            sync_include,
+            sync_exclude,
+        } = orbitfile_metadata;
+        validate_project_name(&project_name)?;
+
+        let tarballs_dir = std::fs::canonicalize(&self.tarballs_dir).map_err(|err| {
+            local_error(format!(
+                "failed to resolve tarballs directory {}: {err}",
+                self.tarballs_dir.display()
+            ))
+        })?;
+        if tarballs_dir.starts_with(&project_root) {
+            return Err(invalid_argument(format!(
+                "tarballs_dir '{}' cannot be inside project root '{}'",
+                tarballs_dir.display(),
+                project_root.display()
+            )));
+        }
+
+        let submit_sbatch_script = match raw_submit_sbatch_script.as_deref() {
+            Some(value) => Some(resolve_orbitfile_sbatch_script(
+                &project_root,
+                &project_root,
+                value,
+            )?),
+            None => None,
+        };
+        let sbatch_scripts = collect_sbatch_scripts(&project_root)?;
+        if submit_sbatch_script.is_none() && sbatch_scripts.is_empty() {
+            return Err(invalid_argument(format!(
+                "no .sbatch files found under '{}'; set [submit].sbatch_script or add a .sbatch file",
+                project_root.display()
+            )));
+        }
+
+        let (version_tag, project_ref) =
+            self.next_project_version_tag(&project_name).await?;
+
+        let mut hasher = Sha256::new();
+        hasher.update(format!("{project_name}:{version_tag}"));
+        let tarball_hash = format!("{:x}", hasher.finalize());
+        let tarball_path = self
+            .tarballs_dir
+            .join(format!("{tarball_hash}.tar.zst"));
+
+        let template_config_json = templates::load_template_config_json(&orbitfile_path)?;
+
+        let root_name = project_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| invalid_argument("project path has no directory name"))?;
+        project_building::create_tarball(&project_root, root_name, &tarball_path, package_git)?;
+
+        let build = NewProjectBuild {
+            name: project_ref,
+            path: project_root.display().to_string(),
+            tarball_hash,
+            tool_version: env!("CARGO_PKG_VERSION").to_string(),
+            template_config_json,
+            submit_sbatch_script,
+            sbatch_scripts,
+            default_retrieve_path,
+            sync_include,
+            sync_exclude,
+        };
+        let project = self.projects.upsert_project_build(&build).await?;
+        self.telemetry.event(
+            "project.built",
+            TelemetryEvent {
+                project: Some(project_name),
+                ..TelemetryEvent::default()
+            },
+        );
+        Ok(project)
     }
 
     pub async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
@@ -1260,13 +1434,62 @@ impl UseCases {
         Ok(())
     }
 
-    pub async fn submit(
+    pub async fn submit_job(
+        &self,
+        input: SubmitJobInput,
+        stream: &dyn SubmitStreamOutputPort,
+        mfa: &mut dyn MfaPort,
+        cancel_rx: watch::Receiver<bool>,
+    ) -> AppResult<()> {
+        let submit_input = SubmitInput {
+            local_path: input.local_path,
+            remote_path: input.remote_path,
+            name: input.name,
+            sbatchscript: input.sbatchscript,
+            filters: input.filters,
+            new_directory: input.new_directory,
+            force: input.force,
+            project_name: input.project_name,
+            project_tag: None,
+            default_retrieve_path: input.default_retrieve_path,
+            template_values_json: input.template_values_json,
+        };
+        self.submit_inner(submit_input, stream, mfa, cancel_rx)
+            .await
+    }
+
+    pub async fn submit_project(
+        &self,
+        input: SubmitProjectInput,
+        stream: &dyn SubmitStreamOutputPort,
+        mfa: &mut dyn MfaPort,
+        cancel_rx: watch::Receiver<bool>,
+    ) -> AppResult<()> {
+        let submit_input = SubmitInput {
+            local_path: String::new(),
+            remote_path: input.remote_path,
+            name: input.name,
+            sbatchscript: input.sbatchscript,
+            filters: input.filters,
+            new_directory: input.new_directory,
+            force: input.force,
+            project_name: Some(input.project_name),
+            project_tag: Some(input.project_tag),
+            default_retrieve_path: input.default_retrieve_path,
+            template_values_json: input.template_values_json,
+        };
+        self.submit_inner(submit_input, stream, mfa, cancel_rx)
+            .await
+    }
+
+    async fn submit_inner(
         &self,
         input: SubmitInput,
         stream: &dyn SubmitStreamOutputPort,
         mfa: &mut dyn MfaPort,
         mut cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
+        let mut input = input;
         let cluster_name = input.name.clone();
         let project_name = input.project_name.clone();
         let submit_span = tracing::info_span!(
@@ -1303,9 +1526,52 @@ impl UseCases {
             ..TelemetryEvent::default()
         };
 
+        if input.project_tag.is_none() && input.local_path.trim().is_empty() {
+            return Err(invalid_argument("local path is required"));
+        }
+
         let mut sync_root = PathBuf::from(&input.local_path);
         let mut template_values_json = None;
         let mut _template_guard = None;
+        let mut _tarball_guard: Option<TempDir> = None;
+        if let Some(project_tag) = input.project_tag.as_deref() {
+            let project_name = input.project_name.clone().ok_or_else(|| {
+                invalid_argument("project tag provided without project name")
+            })?;
+            let project = if project_tag == "latest" {
+                self.get_latest_project_build(&project_name).await?
+            } else {
+                let project_ref = format!("{project_name}:{project_tag}");
+                self.projects
+                    .get_project_by_name(&project_ref)
+                    .await?
+                    .ok_or_else(|| AppError::new(AppErrorKind::InvalidArgument, codes::NOT_FOUND))?
+            };
+            input.local_path = project.path.clone();
+            let tarball_hash = project
+                .tarball_hash
+                .clone()
+                .ok_or_else(|| invalid_argument("project tarball is missing; run project build"))?;
+            let tarball_path = self
+                .tarballs_dir
+                .join(format!("{tarball_hash}.tar.zst"));
+            if !tarball_path.is_file() {
+                return Err(AppError::with_message(
+                    AppErrorKind::InvalidArgument,
+                    codes::NOT_FOUND,
+                    format!("project tarball not found at {}", tarball_path.display()),
+                ));
+            }
+            let temp_dir = TempDir::new()
+                .map_err(|err| local_error(format!("failed to create temp dir: {err}")))?;
+            project_building::unpack_tarball(&tarball_path, temp_dir.path())?;
+            let expected_root = Path::new(&project.path)
+                .file_name()
+                .and_then(|name| name.to_str());
+            sync_root = project_building::resolve_extracted_root(temp_dir.path(), expected_root)?;
+            _tarball_guard = Some(temp_dir);
+        }
+
         if let Some(prepared) = templates::prepare_template_submission(
             &sync_root,
             input.template_values_json.as_deref(),
@@ -2288,7 +2554,7 @@ pub struct CleanupJobInput {
 }
 
 #[derive(Clone, Debug)]
-pub struct SubmitInput {
+pub struct SubmitJobInput {
     pub local_path: String,
     pub remote_path: Option<String>,
     pub name: String,
@@ -2297,6 +2563,35 @@ pub struct SubmitInput {
     pub new_directory: bool,
     pub force: bool,
     pub project_name: Option<String>,
+    pub default_retrieve_path: Option<String>,
+    pub template_values_json: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SubmitProjectInput {
+    pub project_name: String,
+    pub project_tag: String,
+    pub remote_path: Option<String>,
+    pub name: String,
+    pub sbatchscript: String,
+    pub filters: Vec<crate::app::types::SyncFilterRule>,
+    pub new_directory: bool,
+    pub force: bool,
+    pub default_retrieve_path: Option<String>,
+    pub template_values_json: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+struct SubmitInput {
+    pub local_path: String,
+    pub remote_path: Option<String>,
+    pub name: String,
+    pub sbatchscript: String,
+    pub filters: Vec<crate::app::types::SyncFilterRule>,
+    pub new_directory: bool,
+    pub force: bool,
+    pub project_name: Option<String>,
+    pub project_tag: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub template_values_json: Option<String>,
 }
@@ -2499,6 +2794,306 @@ fn is_invalid_job_id(text: &str) -> bool {
     text.to_ascii_lowercase().contains("invalid job id")
 }
 
+fn invalid_argument(message: impl Into<String>) -> AppError {
+    AppError::with_message(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT, message)
+}
+
+fn local_error(message: impl Into<String>) -> AppError {
+    AppError::with_message(AppErrorKind::Internal, codes::LOCAL_ERROR, message)
+}
+
+async fn resolve_project_path(
+    fs: &dyn LocalFilesystemPort,
+    raw: &str,
+) -> AppResult<PathBuf> {
+    let input = PathBuf::from(raw);
+    let path = if input.is_absolute() {
+        input
+    } else {
+        fs.current_dir().await?.join(input)
+    };
+    std::fs::canonicalize(&path)
+        .map_err(|err| local_error(format!("failed to resolve project path: {err}")))
+}
+
+fn discover_orbitfile_root(start: &Path) -> AppResult<Option<PathBuf>> {
+    let mut cursor = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| invalid_argument("project path has no parent directory"))?
+    };
+
+    loop {
+        let orbitfile = cursor.join(ORBITFILE_NAME);
+        if orbitfile.is_file() {
+            return Ok(Some(cursor));
+        }
+        if !cursor.pop() {
+            break;
+        }
+    }
+    Ok(None)
+}
+
+#[derive(Deserialize)]
+struct RawOrbitfile {
+    #[serde(default)]
+    project: Option<RawProject>,
+    #[serde(default)]
+    retrieve: Option<RawRetrieve>,
+    #[serde(default)]
+    submit: Option<RawSubmit>,
+    #[serde(default)]
+    sync: Option<RawSync>,
+}
+
+#[derive(Deserialize)]
+struct RawProject {
+    name: String,
+}
+
+#[derive(Deserialize)]
+struct RawRetrieve {
+    #[serde(default)]
+    default_path: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawSubmit {
+    #[serde(default)]
+    sbatch_script: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawSync {
+    #[serde(default)]
+    include: Vec<String>,
+    #[serde(default)]
+    exclude: Vec<String>,
+}
+
+struct OrbitfileMetadata {
+    name: String,
+    default_retrieve_path: Option<String>,
+    submit_sbatch_script: Option<String>,
+    sync_include: Vec<String>,
+    sync_exclude: Vec<String>,
+}
+
+fn load_orbitfile_metadata(orbitfile_path: &Path) -> AppResult<OrbitfileMetadata> {
+    let content = std::fs::read_to_string(orbitfile_path).map_err(|err| {
+        local_error(format!(
+            "failed to read Orbitfile {}: {err}",
+            orbitfile_path.display()
+        ))
+    })?;
+    let raw = toml::from_str::<RawOrbitfile>(&content).map_err(|err| {
+        invalid_argument(format!(
+            "invalid Orbitfile {}: {err}",
+            orbitfile_path.display()
+        ))
+    })?;
+    let project = raw
+        .project
+        .ok_or_else(|| invalid_argument("Orbitfile is missing [project]"))?;
+    let name = project.name.trim().to_string();
+    if name.is_empty() {
+        return Err(invalid_argument("Orbitfile is missing [project].name"));
+    }
+
+    let default_retrieve_path = trim_optional(raw.retrieve.and_then(|v| v.default_path));
+    let submit_sbatch_script = trim_optional(raw.submit.and_then(|v| v.sbatch_script));
+
+    let mut sync_include = Vec::new();
+    let mut sync_exclude = Vec::new();
+    if let Some(sync) = raw.sync {
+        sync_include = normalize_patterns(sync.include, "sync.include")?;
+        sync_exclude = normalize_patterns(sync.exclude, "sync.exclude")?;
+    }
+
+    Ok(OrbitfileMetadata {
+        name,
+        default_retrieve_path,
+        submit_sbatch_script,
+        sync_include,
+        sync_exclude,
+    })
+}
+
+fn validate_project_name(name: &str) -> AppResult<()> {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_argument("project name cannot be empty"));
+    }
+    let valid = trimmed
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+    if !valid {
+        return Err(invalid_argument(
+            "project name must match ^[A-Za-z0-9_-]+$",
+        ));
+    }
+    Ok(())
+}
+
+fn resolve_orbitfile_sbatch_script(
+    project_root: &Path,
+    submit_root: &Path,
+    sbatch_script: &str,
+) -> AppResult<String> {
+    let trimmed = sbatch_script.trim();
+    if trimmed.is_empty() {
+        return Err(invalid_argument(
+            "[submit].sbatch_script cannot be empty",
+        ));
+    }
+    let submit_root_canonical = std::fs::canonicalize(submit_root).map_err(|err| {
+        local_error(format!(
+            "failed to resolve submit root '{}': {err}",
+            submit_root.display()
+        ))
+    })?;
+    let candidate = PathBuf::from(trimmed);
+    let candidate = if candidate.is_absolute() {
+        candidate
+    } else {
+        project_root.join(candidate)
+    };
+    let script_canonical = std::fs::canonicalize(&candidate).map_err(|err| {
+        invalid_argument(format!(
+            "invalid [submit].sbatch_script '{}': {err}",
+            trimmed
+        ))
+    })?;
+    if !script_canonical.starts_with(&submit_root_canonical) {
+        return Err(invalid_argument(format!(
+            "invalid [submit].sbatch_script '{}': path must resolve inside submit root '{}'",
+            trimmed,
+            submit_root.display()
+        )));
+    }
+    if !script_canonical.is_file() {
+        return Err(invalid_argument(format!(
+            "invalid [submit].sbatch_script '{}': target is not a file",
+            trimmed
+        )));
+    }
+    let rel = script_canonical
+        .strip_prefix(&submit_root_canonical)
+        .map_err(|_| invalid_argument("failed to relativize sbatch script path"))?;
+    if rel.as_os_str().is_empty() {
+        return Err(invalid_argument(
+            "invalid [submit].sbatch_script: relative path is empty",
+        ));
+    }
+    Ok(rel.to_string_lossy().replace('\\', "/"))
+}
+
+fn collect_sbatch_scripts(root: &Path) -> AppResult<Vec<String>> {
+    let mut scripts = Vec::new();
+    for entry in WalkDir::new(root).follow_links(false) {
+        let entry =
+            entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
+        if entry.file_type().is_symlink() || !entry.file_type().is_file() {
+            continue;
+        }
+        let path = entry.path();
+        if path.extension().map(|ext| ext == "sbatch").unwrap_or(false) {
+            let rel = path.strip_prefix(root).map_err(|_| {
+                local_error("failed to compute sbatch script relative path".to_string())
+            })?;
+            if !rel.as_os_str().is_empty() {
+                scripts.push(rel.to_string_lossy().into_owned());
+            }
+        }
+    }
+    scripts.sort();
+    Ok(scripts)
+}
+
+fn trim_optional(value: Option<String>) -> Option<String> {
+    value.and_then(|item| {
+        let trimmed = item.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    })
+}
+
+fn normalize_patterns(values: Vec<String>, field: &str) -> AppResult<Vec<String>> {
+    let mut out = Vec::with_capacity(values.len());
+    for value in values {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(invalid_argument(format!(
+                "Orbitfile {field} contains an empty pattern"
+            )));
+        }
+        out.push(trimmed.to_string());
+    }
+    Ok(out)
+}
+
+fn split_project_ref(value: &str) -> Option<(&str, &str)> {
+    let trimmed = value.trim();
+    let (name, tag) = trimmed.split_once(':')?;
+    let name = name.trim();
+    let tag = tag.trim();
+    if name.is_empty() || tag.is_empty() {
+        None
+    } else {
+        Some((name, tag))
+    }
+}
+
+impl UseCases {
+    async fn get_latest_project_build(&self, project_name: &str) -> AppResult<ProjectRecord> {
+        match self.projects.get_latest_project_build(project_name).await? {
+            Some(project) => Ok(project),
+            None => Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::NOT_FOUND,
+            )),
+        }
+    }
+
+    async fn next_project_version_tag(
+        &self,
+        project_name: &str,
+    ) -> AppResult<(String, String)> {
+        let now = self.clock.now_utc();
+        let date = format!(
+            "{:04}{:02}{:02}",
+            now.year(),
+            u8::from(now.month()),
+            now.day()
+        );
+        let max = self
+            .projects
+            .max_build_number_for_date(project_name, &date)
+            .await?;
+        let next = match max {
+            Some(value) => {
+                if value >= 999 {
+                    return Err(invalid_argument(format!(
+                        "build number exhausted for {project_name} on {date}"
+                    )));
+                }
+                value + 1
+            }
+            None => 0,
+        };
+        let version_tag = format!("{date}.{next:03}");
+        let project_ref = format!("{project_name}:{version_tag}");
+        Ok((version_tag, project_ref))
+    }
+}
+
 fn is_unsafe_cleanup_path(remote_path: &str) -> bool {
     let trimmed = remote_path.trim();
     if trimmed.is_empty()
@@ -2521,6 +3116,7 @@ mod tests {
 
     #[test]
     fn retrieve_local_target_strips_prefix_for_relative_file() {
+        // Ensures relative file paths drop remote prefixes and keep only the final filename.
         let base = Path::new("local");
         let target = resolve_retrieve_local_target(
             "results/result.txt",
@@ -2534,6 +3130,7 @@ mod tests {
 
     #[test]
     fn retrieve_local_target_strips_prefix_for_relative_dir() {
+        // Ensures relative directory paths map to the local base plus the final directory name.
         let base = Path::new("local");
         let target = resolve_retrieve_local_target(
             "results/nested/out",
@@ -2547,6 +3144,7 @@ mod tests {
 
     #[test]
     fn retrieve_local_target_uses_basename_for_absolute_path() {
+        // Ensures absolute paths use the basename under the local base.
         let base = Path::new("local");
         let target = resolve_retrieve_local_target(
             "/remote/results/output.log",
@@ -2560,6 +3158,7 @@ mod tests {
 
     #[test]
     fn resolve_default_base_path_expands_home() {
+        // Verifies tilde expansion for "~" and "~/runs" into the provided home directory.
         let home = "/home/alice";
         let resolved = resolve_default_base_path(Some("~".to_string()), home).unwrap();
         assert_eq!(resolved, Some(home.to_string()));
@@ -2574,6 +3173,7 @@ mod tests {
 
     #[test]
     fn resolve_default_base_path_defaults_to_home_runs() {
+        // Checks that missing input defaults to "<home>/runs".
         let home = "/home/alice";
         let expected = PathBuf::from(home)
             .join("runs")
@@ -2585,12 +3185,14 @@ mod tests {
 
     #[test]
     fn resolve_default_base_path_rejects_tilde_prefix() {
+        // Rejects non-standard tilde prefixes like "~other".
         let err = resolve_default_base_path(Some("~other".to_string()), "/home").unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
     }
 
     #[test]
     fn normalize_default_base_path_rejects_relative() {
+        // Disallows relative default base paths to avoid ambiguous storage roots.
         let err = normalize_default_base_path(Some("relative/path".to_string())).unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
     }

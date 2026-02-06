@@ -5,9 +5,10 @@ This workspace has three crates:
 - `orbitd` handles the core functionality (SSH/SFTP, job lifecycle, and persistence).
 
 Projects are a first-class concept in the CLI + daemon contract:
-- The CLI discovers and parses `Orbitfile` (nearest ancestor from submit root).
+- Projects are built into deterministic tarballs and registered in a local project registry (SQLite).
+- Project submit always uses tarballs + build metadata (no dependency on local paths).
 - The daemon stores project metadata on jobs (`project_name`, `default_retrieve_path`).
-- A local project registry is persisted in SQLite and exposed over gRPC.
+- The project registry is exposed over gRPC.
 
 # Terminology
 - Hexagonal architecture: a style where the application core depends only on ports
@@ -57,10 +58,11 @@ by adapters.
     mode; used in `handle_cluster_add` (`app/handlers`).
   - `PathResolver`: canonicalizes local paths and maps filesystem errors to `AppError`;
     used in `handle_job_submit` before submit.
-  - `SbatchSelector`: discovers `.sbatch` scripts under the submit root and prompts when
-    multiple candidates exist; used in `handle_job_submit`.
-  - `project` service module: Orbitfile discovery/parsing, project name validation, submit filter merge,
-    Orbitfile sbatch resolution, and local project check helpers.
+- `SbatchSelector`: discovers `.sbatch` scripts under the submit root and prompts when
+  multiple candidates exist; used in `handle_job_submit`. It can also select from
+  stored project metadata during `project submit`.
+- `project` service module: Orbitfile discovery/parsing, project name validation, submit filter merge,
+  Orbitfile sbatch resolution, template config JSON parsing, and local project check helpers.
   - `local_validate_default_base_path`: validates base path rules for clusters; used in
     `handle_cluster_add` during default base path checks.
   - `default_base_path_from_home`: derives the default base path from a home directory;
@@ -72,8 +74,8 @@ by adapters.
 ## Ports and adapters
 Ports live in `app/ports`, adapters in `adapters/`:
 - `OrbitdPort` -> `adapters/grpc` (`GrpcOrbitdPort`), the tonic gRPC client. `OrbitdPort` is transport-independent.
-  - Includes unary project registry RPCs (`UpsertProject`, `GetProject`, `ListProjects`, `DeleteProject`) and
-    extended submit metadata fields (`project_name`, `default_retrieve_path`).
+  - Includes unary project registry RPCs (`UpsertProject`, `GetProject`, `ListProjects`, `DeleteProject`, `BuildProject`) and
+    extended project metadata fields (tarball hash, tool version, template config, sbatch defaults, sync rules).
 - `OutputPort` -> `adapters/terminal` (human output) and `adapters/json` (JSON).
 - `StreamOutputPort` -> `TerminalStreamOutput` / `JsonStreamOutput`.
 - `InteractionPort` -> `TerminalInteraction` (prompts/MFA) and
@@ -107,11 +109,13 @@ Ports live in `app/ports`, adapters in `adapters/`:
 - `SbatchSelector` finds `.sbatch` scripts under the submit root and prompts when
   multiple candidates exist (or errors in non-interactive mode).
 - Orbitfile submit behavior:
-  - sbatch precedence is CLI explicit > Orbitfile `[submit].sbatch_script` > auto-detection.
-  - sync filter precedence is CLI rules first, then Orbitfile `[sync]` include/exclude.
-- `project init` creates/updates Orbitfile and upserts the registry entry.
+  - sbatch precedence is CLI explicit > project metadata default > stored `.sbatch` candidates (with selection in interactive mode).
+  - sync filter precedence is CLI rules first, then stored `[sync]` include/exclude.
+- `project init` creates/updates Orbitfile only (no registry write).
+- `project build` packages a tarball, validates sbatch availability, and writes build metadata to the registry.
+- `project submit` is tarball-only and does not require local paths; it uses stored build metadata.
 - `project check` validates registry path, Orbitfile parse/fields, and configured sbatch script path.
-- `project delete` removes a project from the local registry and requires explicit confirmation (`--yes` to skip prompt).
+- `project delete` removes a project from the local registry and deletes associated tarballs (with confirmation unless `--yes`).
 - `validate_cluster_live` performs a reachability check and a lightweight `ls` RPC
   to confirm connectivity before submit.
 
@@ -144,7 +148,7 @@ should be established and defined as port.
   - `MfaPort`
 - `app/services/` provides pure helpers used by use-cases:
   - `remote_path`, `submit_paths`, `sbatch`, `slurm`
-  - `shell`, `random`, `os`, `managers`
+  - `shell`, `random`, `os`, `managers`, `packaging`, `templates`
 - `app/types.rs` holds domain records/DTOs like `HostRecord`, `JobRecord`,
   `NewHost`, `NewJob`, `ProjectRecord`, `SshConfig`, and sync filter types.
 - `app/errors.rs` provides `AppError` + stable error codes, which are mapped to
@@ -177,9 +181,27 @@ Outbound adapters:
 ## Data handling and persistence
 - Cluster/job/project records live in SQLite (`HostRecord`, `JobRecord`, `ProjectRecord`),
   accessed only through store ports.
+- `projects` rows persist build metadata:
+  - `name` + `version_tag` (split from `name`)
+  - `tarball_hash` + tool version
+  - `template_config_json`
+  - `[submit].sbatch_script` (resolved at build time) and discovered `.sbatch` candidates
+  - `[sync]` include/exclude and `[retrieve].default_path`
 - `jobs` rows persist submit-time project metadata (`project_name`, `default_retrieve_path`)
   so retrieve defaults are stable even if Orbitfile changes later.
 - `retrieve_job` resolves missing request path from stored `default_retrieve_path`; if absent,
   it returns an invalid-argument error.
 - Remote execution and sync behavior are isolated behind `RemoteExecPort` and
   `FileSyncPort`, allowing the use-cases to be tested without SSH/SFTP.
+
+## Project build and submit flow
+- Build (`project build`):
+  - Resolves project root (nearest `Orbitfile`), parses metadata, validates project name.
+  - Ensures at least one sbatch script is resolvable (Orbitfile default or discovered `.sbatch` files).
+  - Creates a deterministic tarball (`.tar.zst`) stored under `tarballs_dir` and registers metadata in SQLite.
+  - Rejects builds when `tarballs_dir` is inside the project root (self-archive guard).
+- Submit (`project submit`):
+  - Resolves the project record by name:tag (or `latest`).
+  - Unpacks the tarball into a temp dir, applies template rendering and staging on the server.
+  - Submits from the temporary staging root; tarball temp dir is cleaned after submission.
+  - The CLI does not rely on the local project path for submit decisions.

@@ -73,7 +73,7 @@ pub trait OrbitdPort: Send + Sync {
         interaction: &dyn InteractionPort,
     ) -> AppResult<(PathBuf, StreamCapture)>;
 
-    async fn submit(
+    async fn submit_job(
         &self,
         name: String,
         local_path: String,
@@ -88,6 +88,28 @@ pub trait OrbitdPort: Send + Sync {
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<SubmitCapture>;
+
+    async fn submit_project(
+        &self,
+        project_name: String,
+        project_tag: String,
+        name: String,
+        remote_path: Option<String>,
+        new_directory: bool,
+        force: bool,
+        sbatchscript: String,
+        filters: Vec<proto::SubmitPathFilterRule>,
+        default_retrieve_path: Option<String>,
+        template_values_json: Option<String>,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<SubmitCapture>;
+
+    async fn build_project(
+        &self,
+        path: String,
+        package_git: bool,
+    ) -> AppResult<proto::ProjectRecord>;
 
     async fn add_cluster(
         &self,

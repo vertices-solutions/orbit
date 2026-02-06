@@ -8,7 +8,8 @@ use proto::SubmitPathFilterRule;
 mod results;
 
 pub use results::{
-    CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
+    CommandResult, InitActionStatus, ProjectInitAction, ProjectListItem, StreamCapture,
+    SubmitCapture,
 };
 
 #[derive(Debug, Clone)]
@@ -148,6 +149,7 @@ pub struct DeleteClusterCommand {
 #[derive(Debug, Clone)]
 pub enum ProjectCommand {
     Init(ProjectInitCommand),
+    Build(ProjectBuildCommand),
     Submit(ProjectSubmitCommand),
     List(ProjectListCommand),
     Check(ProjectCheckCommand),
@@ -158,6 +160,12 @@ pub enum ProjectCommand {
 pub struct ProjectInitCommand {
     pub path: PathBuf,
     pub name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProjectBuildCommand {
+    pub path: PathBuf,
+    pub package_git: bool,
 }
 
 #[derive(Debug, Clone)]
