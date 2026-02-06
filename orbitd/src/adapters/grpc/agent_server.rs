@@ -7,12 +7,13 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use proto::agent_server::Agent;
 use proto::{
-    AddClusterRequest, CancelJobRequest, CleanupJobRequest, DeleteClusterRequest,
-    DeleteClusterResponse, DeleteProjectRequest, DeleteProjectResponse, GetProjectRequest,
-    GetProjectResponse, JobLogsRequest, ListClustersRequest, ListClustersResponse, ListJobsRequest,
-    ListJobsResponse, ListProjectsRequest, ListProjectsResponse, LsRequest, MfaAnswer, PingReply,
-    PingRequest, ResolveHomeDirRequest, RetrieveJobRequest, SetClusterRequest, StreamEvent,
-    SubmitRequest, SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
+    AddClusterRequest, BuildProjectRequest, BuildProjectResponse, CancelJobRequest,
+    CleanupJobRequest, DeleteClusterRequest, DeleteClusterResponse, DeleteProjectRequest,
+    DeleteProjectResponse, GetProjectRequest, GetProjectResponse, JobLogsRequest,
+    ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse,
+    ListProjectsRequest, ListProjectsResponse, LsRequest, MfaAnswer, PingReply, PingRequest,
+    ResolveHomeDirRequest, RetrieveJobRequest, SetClusterRequest, StreamEvent, SubmitJobRequest,
+    SubmitProjectRequest, SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -28,7 +29,7 @@ use crate::app::ports::{MfaPort, StreamOutputPort, SubmitStreamOutputPort};
 use crate::app::types::Address;
 use crate::app::usecases::{
     AddClusterInput, CancelJobInput, CleanupJobInput, JobLogsInput, LsInput, ResolveHomeDirInput,
-    RetrieveJobInput, SetClusterInput, SubmitInput, UseCases,
+    RetrieveJobInput, SetClusterInput, SubmitJobInput, SubmitProjectInput, UseCases,
 };
 
 pub type OutStream =
@@ -197,7 +198,8 @@ impl Agent for GrpcAgent {
     type JobLogsStream = OutStream;
     type CancelJobStream = OutStream;
     type CleanupJobStream = OutStream;
-    type SubmitStream = SubmitOutStream;
+    type SubmitJobStream = SubmitOutStream;
+    type SubmitProjectStream = SubmitOutStream;
     type AddClusterStream = OutStream;
     type SetClusterStream = OutStream;
     type ResolveHomeDirStream = OutStream;
@@ -677,11 +679,11 @@ impl Agent for GrpcAgent {
         Ok(Response::new(DeleteClusterResponse { deleted }))
     }
 
-    async fn submit(
+    async fn submit_job(
         &self,
-        request: Request<tonic::Streaming<SubmitRequest>>,
-    ) -> Result<Response<Self::SubmitStream>, Status> {
-        let span = rpc_span(&request, "Submit");
+        request: Request<tonic::Streaming<SubmitJobRequest>>,
+    ) -> Result<Response<Self::SubmitJobStream>, Status> {
+        let span = rpc_span(&request, "SubmitJob");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
@@ -704,7 +706,7 @@ impl Agent for GrpcAgent {
             default_retrieve_path,
             template_values_json,
         ) = match init.msg {
-            Some(proto::submit_request::Msg::Init(init)) => (
+            Some(proto::submit_job_request::Msg::Init(init)) => (
                 init.local_path,
                 init.remote_path,
                 init.name,
@@ -719,7 +721,7 @@ impl Agent for GrpcAgent {
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
         tracing::info!(
-            "submit start remote_addr={remote_addr} name={name} local_path={local_path} requested_remote_path={:?} sbatch={sbatchscript}",
+            "submit_job start remote_addr={remote_addr} name={name} local_path={local_path} requested_remote_path={:?} sbatch={sbatchscript}",
             remote_path
         );
         let current_span = tracing::Span::current();
@@ -733,7 +735,7 @@ impl Agent for GrpcAgent {
         tokio::spawn(
             async move {
             while let Ok(Some(item)) = inbound.message().await {
-                if let Some(proto::submit_request::Msg::Mfa(ans)) = item.msg
+                if let Some(proto::submit_job_request::Msg::Mfa(ans)) = item.msg
                     && mfa_tx.send(ans).await.is_err()
                 {
                     break;
@@ -744,7 +746,7 @@ impl Agent for GrpcAgent {
         .instrument(current_span.clone()),
         );
 
-        let input = SubmitInput {
+        let input = SubmitJobInput {
             local_path,
             remote_path,
             name,
@@ -764,7 +766,107 @@ impl Agent for GrpcAgent {
         tokio::spawn(
             async move {
             if let Err(err) = usecases
-                .submit(input, &stream_output, &mut mfa_port, cancel_rx)
+                .submit_job(input, &stream_output, &mut mfa_port, cancel_rx)
+                .await
+            {
+                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+            }
+        }
+        .instrument(current_span.clone()),
+        );
+
+        let out: SubmitOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
+        Ok(Response::new(out))
+    }
+
+    async fn submit_project(
+        &self,
+        request: Request<tonic::Streaming<SubmitProjectRequest>>,
+    ) -> Result<Response<Self::SubmitProjectStream>, Status> {
+        let span = rpc_span(&request, "SubmitProject");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let mut inbound = request.into_inner();
+        let init = inbound
+            .message()
+            .await
+            .map_err(|_| Status::unknown(codes::INTERNAL_ERROR))?
+            .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
+
+        let (
+            project_name,
+            project_tag,
+            name,
+            sbatchscript,
+            filters,
+            new_directory,
+            force,
+            remote_path,
+            default_retrieve_path,
+            template_values_json,
+        ) = match init.msg {
+            Some(proto::submit_project_request::Msg::Init(init)) => (
+                init.project_name,
+                init.project_tag,
+                init.name,
+                init.sbatchscript,
+                init.filters,
+                init.new_directory,
+                init.force,
+                init.remote_path,
+                init.default_retrieve_path,
+                init.template_values_json,
+            ),
+            _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
+        };
+        tracing::info!(
+            "submit_project start remote_addr={remote_addr} name={name} project={project_name}:{project_tag} requested_remote_path={:?} sbatch={sbatchscript}",
+            remote_path
+        );
+        let current_span = tracing::Span::current();
+
+        let filters = build_sync_filters(filters).map_err(status_from_app_error)?;
+
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, Status>>(64);
+        let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
+        let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
+
+        tokio::spawn(
+            async move {
+            while let Ok(Some(item)) = inbound.message().await {
+                if let Some(proto::submit_project_request::Msg::Mfa(ans)) = item.msg
+                    && mfa_tx.send(ans).await.is_err()
+                {
+                    break;
+                }
+            }
+            let _ = cancel_tx.send(true);
+        }
+        .instrument(current_span.clone()),
+        );
+
+        let input = SubmitProjectInput {
+            project_name,
+            project_tag,
+            remote_path,
+            name,
+            sbatchscript,
+            filters,
+            new_directory,
+            force,
+            default_retrieve_path,
+            template_values_json,
+        };
+        let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
+        let stream_output = GrpcSubmitStreamOutput {
+            sender: evt_tx.clone(),
+        };
+        let usecases = self.usecases.clone();
+        tokio::spawn(
+            async move {
+            if let Err(err) = usecases
+                .submit_project(input, &stream_output, &mut mfa_port, cancel_rx)
                 .await
             {
                 let _ = evt_tx.send(Err(status_from_app_error(err))).await;
@@ -1059,6 +1161,30 @@ impl Agent for GrpcAgent {
             .map_err(status_from_app_error)?;
         tracing::info!("delete_project remote_addr={remote_addr} name={name} deleted={deleted}");
         Ok(Response::new(DeleteProjectResponse { deleted }))
+    }
+
+    async fn build_project(
+        &self,
+        request: Request<BuildProjectRequest>,
+    ) -> Result<Response<BuildProjectResponse>, Status> {
+        let span = rpc_span(&request, "BuildProject");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let req = request.into_inner();
+        let project = self
+            .usecases
+            .build_project(&req.path, req.package_git)
+            .await
+            .map_err(status_from_app_error)?;
+        tracing::info!(
+            "build_project remote_addr={remote_addr} name={} path={}",
+            project.name,
+            project.path
+        );
+        Ok(Response::new(BuildProjectResponse {
+            project: Some(project_record_to_response(&project)),
+        }))
     }
 }
 

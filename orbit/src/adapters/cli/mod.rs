@@ -132,6 +132,10 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 path: args.path,
                 name: args.name,
             }),
+            ProjectCmd::Build(args) => ProjectCommand::Build(ProjectBuildCommand {
+                path: args.path,
+                package_git: args.package_git,
+            }),
             ProjectCmd::Submit(args) => {
                 let filters = submit_filters_from_matches(matches);
                 ProjectCommand::Submit(ProjectSubmitCommand {

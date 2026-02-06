@@ -40,6 +40,7 @@ impl Dispatcher {
             },
             Command::Project(cmd) => match cmd {
                 ProjectCommand::Init(cmd) => handlers::handle_project_init(&self.ctx, cmd).await,
+                ProjectCommand::Build(cmd) => handlers::handle_project_build(&self.ctx, cmd).await,
                 ProjectCommand::Submit(cmd) => {
                     handlers::handle_project_submit(&self.ctx, cmd).await
                 }

@@ -16,6 +16,9 @@ pub trait TelemetryPort: Send + Sync {
 }
 
 #[derive(Clone, Default)]
+
+
+// Dummy telemetry port for tests.
 pub struct NoopTelemetry;
 
 impl TelemetryPort for NoopTelemetry {

@@ -110,6 +110,15 @@ impl OutputPort for TerminalOutput {
                 render_project_init_actions(actions)?;
                 println!("Project '{}' initialized", name);
             }
+            CommandResult::ProjectBuild { project } => {
+                let name = if let Some(tag) = project.version_tag.as_deref() {
+                    format!("{}:{}", project.name, tag)
+                } else {
+                    project.name.clone()
+                };
+                print_with_green_check_stdout(&format!("built {name} successfully"))
+                    .map_err(|err| AppError::local_error(err.to_string()))?;
+            }
             CommandResult::ProjectList { projects } => {
                 if projects.is_empty() {
                     println!("No projects registered.");

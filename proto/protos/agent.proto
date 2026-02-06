@@ -132,7 +132,7 @@ message CleanupJobRequest {
   }
 }
 
-message SubmitRequestInit {
+message SubmitJobRequestInit {
   string local_path = 1; // local project path
   optional string remote_path = 2; // path to where to locate the remote project
   string name = 3; // cluster name - should be something easy to remember
@@ -141,6 +141,19 @@ message SubmitRequestInit {
   bool new_directory = 6; // ignore prior remote dir for this local path
   bool force = 7; // allow reuse of a running remote directory
   optional string project_name = 8; // project identifier from Orbitfile
+  optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
+  optional string template_values_json = 10; // template values JSON map from Orbitfile
+}
+
+message SubmitProjectRequestInit {
+  string project_name = 1; // registered project name
+  string project_tag = 2; // project version tag (name:tag submit)
+  string name = 3; // cluster name - should be something easy to remember
+  string sbatchscript = 4;
+  repeated SubmitPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
+  bool new_directory = 6; // ignore prior remote dir for this local path
+  bool force = 7; // allow reuse of a running remote directory
+  optional string remote_path = 8; // path to where to locate the remote project
   optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
   optional string template_values_json = 10; // template values JSON map from Orbitfile
 }
@@ -261,6 +274,26 @@ message ProjectRecord {
   string path = 2;
   string created_at = 3;
   string updated_at = 4;
+  optional string version_tag = 5;
+  optional string tarball_hash = 6;
+  optional string tool_version = 7;
+  optional string template_config_json = 8;
+  reserved 9;
+  optional string submit_sbatch_script = 10;
+  repeated string sbatch_scripts = 11;
+  optional string default_retrieve_path = 12;
+  repeated string sync_include = 13;
+  repeated string sync_exclude = 14;
+}
+
+message BuildProjectRequest {
+  string path = 1; // project root to package
+  bool package_git = 2; // include .git in tarball
+  reserved 3;
+}
+
+message BuildProjectResponse {
+  ProjectRecord project = 1;
 }
 
 message UpsertProjectRequest {
@@ -295,9 +328,17 @@ message DeleteProjectResponse {
 }
 
 // Client -> Server
-message SubmitRequest {
+message SubmitJobRequest {
   oneof msg {
-    SubmitRequestInit init = 1; // Initial file path submission
+    SubmitJobRequestInit init = 1; // Initial file path submission
+    MfaAnswer mfa = 2;
+  }
+}
+
+// Client -> Server
+message SubmitProjectRequest {
+  oneof msg {
+    SubmitProjectRequestInit init = 1; // Initial project submission
     MfaAnswer mfa = 2;
   }
 }
@@ -324,7 +365,8 @@ service Agent {
   rpc JobLogs(stream JobLogsRequest) returns (stream StreamEvent);
   rpc CancelJob(stream CancelJobRequest) returns (stream StreamEvent);
   rpc CleanupJob(stream CleanupJobRequest) returns (stream StreamEvent);
-  rpc Submit(stream SubmitRequest) returns (stream SubmitStreamEvent);
+  rpc SubmitJob(stream SubmitJobRequest) returns (stream SubmitStreamEvent);
+  rpc SubmitProject(stream SubmitProjectRequest) returns (stream SubmitStreamEvent);
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ResolveHomeDir(stream ResolveHomeDirRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
@@ -335,4 +377,5 @@ service Agent {
   rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
   rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
   rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+  rpc BuildProject(BuildProjectRequest) returns (BuildProjectResponse);
 }

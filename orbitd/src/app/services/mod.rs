@@ -3,6 +3,7 @@
 
 pub mod managers;
 pub mod os;
+pub mod project_building;
 pub mod random;
 pub mod remote_path;
 pub mod sbatch;

@@ -168,6 +168,8 @@ pub struct ProjectArgs {
 pub enum ProjectCmd {
     /// Initialize a project root and Orbitfile.
     Init(ProjectInitArgs),
+    /// Build a project tarball and register it locally.
+    Build(ProjectBuildArgs),
     /// Submit a registered project by project name.
     Submit(ProjectSubmitArgs),
     /// List registered projects.
@@ -187,8 +189,16 @@ pub struct ProjectInitArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct ProjectBuildArgs {
+    pub path: PathBuf,
+    /// Include .git directory in the tarball.
+    #[arg(long)]
+    pub package_git: bool,
+}
+
+#[derive(Args, Debug)]
 pub struct ProjectSubmitArgs {
-    /// Registered project name.
+    /// Built project name:tag (e.g., my-project:20260112.001 or my-project:latest).
     pub project: String,
     /// Cluster name.
     pub cluster: String,
@@ -223,13 +233,13 @@ pub struct ProjectListArgs {}
 
 #[derive(Args, Debug)]
 pub struct ProjectCheckArgs {
-    /// Project name. If omitted, all registered projects are checked.
+    /// Project name:tag. If omitted, all registered projects are checked.
     pub name: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct ProjectDeleteArgs {
-    /// Registered project name.
+    /// Project name or name:tag.
     pub name: String,
     /// Skip the confirmation prompt.
     #[arg(long, short = 'y')]

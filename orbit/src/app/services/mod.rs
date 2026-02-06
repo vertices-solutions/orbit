@@ -19,7 +19,8 @@ pub use project::{
     ProjectRuleSet, TemplateConfig, TemplateField, TemplateFieldType,
     build_default_orbitfile_contents, check_registered_project, discover_project_from_submit_root,
     load_project_from_root, merge_submit_filters, resolve_orbitfile_sbatch_script,
-    sanitize_project_name, upsert_orbitfile_project_name, validate_project_name,
+    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
+    validate_project_name,
 };
 pub use templates::{TemplateValues, resolve_template_values};
 
@@ -362,6 +363,33 @@ impl<'a> SbatchSelector<'a> {
                 let selection = self
                     .interaction
                     .select_sbatch(&relative_scripts)
+                    .await?
+                    .ok_or_else(|| AppError::local_error("sbatch selection canceled"))?;
+                Ok(selection)
+            }
+        }
+    }
+
+    pub async fn select_from_candidates(
+        &self,
+        candidates: &[String],
+    ) -> AppResult<String> {
+        match candidates.len() {
+            0 => Err(AppError::invalid_argument(
+                "no .sbatch files found in project metadata; provide the script path explicitly",
+            )),
+            1 => Ok(candidates[0].clone()),
+            _ => {
+                if !self.ui_mode.is_interactive() {
+                    let mut msg = "multiple .sbatch files found while running in non-interactive mode; specify which one to use with --sbatchscript:\n".to_string();
+                    for script in candidates {
+                        msg.push_str(&format!("  - {script}\n"));
+                    }
+                    return Err(AppError::invalid_argument(msg.trim_end()));
+                }
+                let selection = self
+                    .interaction
+                    .select_sbatch(candidates)
                     .await?
                     .ok_or_else(|| AppError::local_error("sbatch selection canceled"))?;
                 Ok(selection)

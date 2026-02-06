@@ -84,5 +84,14 @@ pub fn project_record_to_response(project: &ProjectRecord) -> proto::ProjectReco
         path: project.path.clone(),
         created_at: project.created_at.clone(),
         updated_at: project.updated_at.clone(),
+        version_tag: project.version_tag.clone(),
+        tarball_hash: project.tarball_hash.clone(),
+        tool_version: project.tool_version.clone(),
+        template_config_json: project.template_config_json.clone(),
+        submit_sbatch_script: project.submit_sbatch_script.clone(),
+        sbatch_scripts: project.sbatch_scripts.clone(),
+        default_retrieve_path: project.default_retrieve_path.clone(),
+        sync_include: project.sync_include.clone(),
+        sync_exclude: project.sync_exclude.clone(),
     }
 }

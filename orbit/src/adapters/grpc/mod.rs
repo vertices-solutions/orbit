@@ -19,13 +19,15 @@ use crate::app::errors::{
 use crate::app::ports::{InteractionPort, OrbitdPort, StreamOutputPort};
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, CancelJobRequest, CancelJobRequestInit, CleanupJobRequest,
-    CleanupJobRequestInit, DeleteClusterRequest, DeleteProjectRequest, GetProjectRequest,
-    JobLogsRequest, JobLogsRequestInit, ListClustersRequest, ListJobsRequest, ListProjectsRequest,
-    LsRequest, LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
-    RetrieveJobRequestInit, SetClusterInit, SetClusterRequest, SubmitPathFilterRule, SubmitRequest,
+    AddClusterInit, AddClusterRequest, BuildProjectRequest, CancelJobRequest, CancelJobRequestInit,
+    CleanupJobRequest, CleanupJobRequestInit, DeleteClusterRequest, DeleteProjectRequest,
+    GetProjectRequest, JobLogsRequest, JobLogsRequestInit, ListClustersRequest, ListJobsRequest,
+    ListProjectsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
+    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit,
+    SetClusterRequest, SubmitJobRequest, SubmitPathFilterRule, SubmitProjectRequest,
     UpsertProjectRequest, add_cluster_init, add_cluster_request, resolve_home_dir_request,
-    resolve_home_dir_request_init, set_cluster_request, stream_event, submit_stream_event,
+    resolve_home_dir_request_init, set_cluster_request, stream_event, submit_job_request,
+    submit_project_request, submit_stream_event,
 };
 use submit_errors::parse_remote_path_failure;
 
@@ -160,6 +162,31 @@ impl OrbitdPort for GrpcOrbitdPort {
             Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
         Ok(response.deleted)
+    }
+
+    async fn build_project(
+        &self,
+        path: String,
+        package_git: bool,
+    ) -> AppResult<proto::ProjectRecord> {
+        let mut client = self.connect().await?;
+        let request = BuildProjectRequest {
+            path,
+            package_git,
+        };
+        let response =
+            match timeout(Duration::from_secs(10), client.build_project(request)).await {
+                Ok(Ok(res)) => res.into_inner(),
+                Ok(Err(status)) => return Err(app_error_from_status(status)),
+                Err(e) => {
+                    return Err(AppError::network_error(format!(
+                        "operation timed out: {e}"
+                    )))
+                }
+            };
+        response
+            .project
+            .ok_or_else(|| AppError::remote_error("missing project in response"))
     }
 
     async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
@@ -448,7 +475,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         Ok((local_target, capture))
     }
 
-    async fn submit(
+    async fn submit_job(
         &self,
         name: String,
         local_path: String,
@@ -464,11 +491,11 @@ impl OrbitdPort for GrpcOrbitdPort {
         interaction: &dyn InteractionPort,
     ) -> AppResult<SubmitCapture> {
         let mut client = self.connect().await?;
-        let (tx_ans, rx_ans) = mpsc::channel::<SubmitRequest>(16);
+        let (tx_ans, rx_ans) = mpsc::channel::<SubmitJobRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
         tx_ans
-            .send(SubmitRequest {
-                msg: Some(proto::submit_request::Msg::Init(proto::SubmitRequestInit {
+            .send(SubmitJobRequest {
+                msg: Some(submit_job_request::Msg::Init(proto::SubmitJobRequestInit {
                     local_path,
                     remote_path,
                     name,
@@ -484,7 +511,7 @@ impl OrbitdPort for GrpcOrbitdPort {
             .await
             .map_err(|_| AppError::internal_error("failed to send submit init"))?;
 
-        let response = match client.submit(Request::new(outbound)).await {
+        let response = match client.submit_job(Request::new(outbound)).await {
             Ok(response) => response,
             Err(status) => {
                 let message = format_status_error(&status);
@@ -505,8 +532,77 @@ impl OrbitdPort for GrpcOrbitdPort {
             let tx_ans = tx_ans.clone();
             async move {
                 tx_ans
-                    .send(SubmitRequest {
-                        msg: Some(proto::submit_request::Msg::Mfa(answers)),
+                    .send(SubmitJobRequest {
+                        msg: Some(submit_job_request::Msg::Mfa(answers)),
+                    })
+                    .await
+                    .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+            }
+        })
+        .await
+    }
+
+    async fn submit_project(
+        &self,
+        project_name: String,
+        project_tag: String,
+        name: String,
+        remote_path: Option<String>,
+        new_directory: bool,
+        force: bool,
+        sbatchscript: String,
+        filters: Vec<SubmitPathFilterRule>,
+        default_retrieve_path: Option<String>,
+        template_values_json: Option<String>,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<SubmitCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<SubmitProjectRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        tx_ans
+            .send(SubmitProjectRequest {
+                msg: Some(submit_project_request::Msg::Init(
+                    proto::SubmitProjectRequestInit {
+                        project_name,
+                        project_tag,
+                        name,
+                        sbatchscript,
+                        filters,
+                        new_directory,
+                        force,
+                        remote_path,
+                        default_retrieve_path,
+                        template_values_json,
+                    },
+                )),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send submit init"))?;
+
+        let response = match client.submit_project(Request::new(outbound)).await {
+            Ok(response) => response,
+            Err(status) => {
+                let message = format_status_error(&status);
+                let failure = parse_remote_path_failure(status.message())
+                    .map(|failure| (failure.remote_path.to_string(), failure.reason));
+                let mut err = app_error_from_status(status);
+                err.message = match failure {
+                    Some((remote_path, reason)) => {
+                        format!("{message}\nRemote path: {remote_path} - {reason}")
+                    }
+                    None => message,
+                };
+                return Err(err);
+            }
+        };
+        let inbound = response.into_inner();
+        handle_submit_stream(inbound, output, interaction, move |answers| {
+            let tx_ans = tx_ans.clone();
+            async move {
+                tx_ans
+                    .send(SubmitProjectRequest {
+                        msg: Some(submit_project_request::Msg::Mfa(answers)),
                     })
                     .await
                     .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))

@@ -17,7 +17,8 @@ use crate::app::services::{
     check_registered_project, default_base_path_from_home, discover_project_from_submit_root,
     load_project_from_root, local_validate_default_base_path, merge_submit_filters,
     resolve_orbitfile_sbatch_script, resolve_template_values, sanitize_project_name,
-    upsert_orbitfile_project_name, validate_project_name,
+    template_config_from_json, upsert_orbitfile_project_name, validate_project_name,
+    ProjectRuleSet,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -131,6 +132,7 @@ pub async fn handle_job_submit(
                 ctx.interaction.as_ref(),
                 ctx.output.as_ref(),
                 ctx.ui_mode,
+                true,
             )
             .await?;
             let json = serde_json::to_string(&values).map_err(|err| {
@@ -163,7 +165,7 @@ pub async fn handle_job_submit(
     let mut stream_output = ctx.output.stream_output(StreamKind::Submit);
     let capture = ctx
         .orbitd
-        .submit(
+        .submit_job(
             cmd.name.clone(),
             resolved_local_path_display.clone(),
             cmd.remote_path,
@@ -697,11 +699,6 @@ pub async fn handle_project_init(
         });
     }
     let canonical = ctx.fs.canonicalize(&init_path)?;
-    let project_root = canonical.display().to_string();
-    let _ = ctx
-        .orbitd
-        .upsert_project(&resolved_name, &project_root)
-        .await?;
 
     Ok(CommandResult::ProjectInit {
         name: resolved_name,
@@ -712,10 +709,26 @@ pub async fn handle_project_init(
     })
 }
 
+pub async fn handle_project_build(
+    ctx: &AppContext,
+    cmd: ProjectBuildCommand,
+) -> AppResult<CommandResult> {
+    let build_path = resolve_project_init_path(ctx, &cmd.path)?;
+    let canonical = ctx.fs.canonicalize(&build_path)?;
+    let _project_config = load_project_from_root(ctx.fs.as_ref(), &canonical)?;
+    let project = ctx
+        .orbitd
+        .build_project(canonical.display().to_string(), cmd.package_git)
+        .await?;
+
+    Ok(CommandResult::ProjectBuild { project })
+}
+
 pub async fn handle_project_submit(
     ctx: &AppContext,
     cmd: ProjectSubmitCommand,
 ) -> AppResult<CommandResult> {
+    let (project_name, project_tag) = parse_project_ref(&cmd.project)?;
     let clusters = ctx.orbitd.list_clusters("", true).await?;
     let cluster = clusters
         .iter()
@@ -730,82 +743,70 @@ pub async fn handle_project_submit(
     validate_cluster_live(ctx, &cluster).await?;
 
     let project = ctx.orbitd.get_project(&cmd.project).await?;
-    let project_root = ctx
-        .fs
-        .canonicalize(&PathBuf::from(&project.path))
-        .map_err(|err| {
-            AppError::local_error(format!(
-                "failed to resolve project path '{}': {}",
-                project.path, err.message
-            ))
-        })?;
-    let project_config = load_project_from_root(ctx.fs.as_ref(), &project_root)?;
-    if project_config.name != cmd.project {
-        return Err(AppError::invalid_argument(format!(
-            "registered project '{}' has Orbitfile name '{}'",
-            cmd.project, project_config.name
-        )));
-    }
-
+    let project_root = PathBuf::from(&project.path);
     let sbatch_selector =
         SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
-    let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
-        sbatch_selector
-            .select(&project_root, Some(explicit))
-            .await?
-    } else if let Some(configured) = project_config.submit_sbatch_script.as_deref() {
-        resolve_orbitfile_sbatch_script(ctx.fs.as_ref(), &project_root, &project_root, configured)?
-    } else {
-        sbatch_selector.select(&project_root, None).await?
-    };
 
-    let filters = merge_submit_filters(cmd.filters, &project_config.rules);
-    let resolved_local_path_display = project_root.display().to_string();
+    let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
+        explicit.to_string()
+    } else if let Some(configured) = project.submit_sbatch_script.as_deref() {
+        configured.to_string()
+    } else {
+        sbatch_selector
+            .select_from_candidates(&project.sbatch_scripts)
+            .await?
+    };
+    let rules = ProjectRuleSet {
+        include: project.sync_include.clone(),
+        exclude: project.sync_exclude.clone(),
+    };
+    let filters = merge_submit_filters(cmd.filters.clone(), &rules);
+    let template_values_json =
+        if let Some(template_json) = project.template_config_json.as_deref() {
+            let template = template_config_from_json(template_json)?;
+            let values = resolve_template_values(
+                &template,
+                cmd.template_preset.as_deref(),
+                &cmd.template_fields,
+                cmd.fill_defaults,
+                &project_root,
+                ctx.fs.as_ref(),
+                ctx.interaction.as_ref(),
+                ctx.output.as_ref(),
+                ctx.ui_mode,
+                false,
+            )
+            .await?;
+            Some(serde_json::to_string(&values).map_err(|err| {
+                AppError::internal_error(format!("failed to serialize templates: {err}"))
+            })?)
+        } else {
+            if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
+                return Err(AppError::invalid_argument(
+                    "template values provided but Orbitfile has no [template] section",
+                ));
+            }
+            None
+        };
+
     ctx.output
         .success(&format!("Selected sbatch script: {sbatchscript}"))
         .await?;
-    ctx.output
-        .success(&format!("Local path: {resolved_local_path_display}"))
-        .await?;
-
-    let template_values_json = if let Some(template) = project_config.template.as_ref() {
-        let values = resolve_template_values(
-            template,
-            cmd.template_preset.as_deref(),
-            &cmd.template_fields,
-            cmd.fill_defaults,
-            &project_root,
-            ctx.fs.as_ref(),
-            ctx.interaction.as_ref(),
-            ctx.output.as_ref(),
-            ctx.ui_mode,
-        )
-        .await?;
-        Some(serde_json::to_string(&values).map_err(|err| {
-            AppError::internal_error(format!("failed to serialize templates: {err}"))
-        })?)
-    } else {
-        if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
-            return Err(AppError::invalid_argument(
-                "template values provided but Orbitfile has no [template] section",
-            ));
-        }
-        None
-    };
+    ctx.output.success("Project source: tarball").await?;
 
     let mut stream_output = ctx.output.stream_output(StreamKind::Submit);
     let capture = ctx
         .orbitd
-        .submit(
+        .submit_project(
+            project_name,
+            project_tag,
             cmd.cluster.clone(),
-            resolved_local_path_display.clone(),
             cmd.remote_path,
             cmd.new_directory,
             cmd.force,
             sbatchscript.clone(),
             filters,
-            Some(project_config.name.clone()),
-            project_config.default_retrieve_path.clone(),
+            project.default_retrieve_path.clone(),
             template_values_json,
             &mut *stream_output,
             ctx.interaction.as_ref(),
@@ -818,7 +819,7 @@ pub async fn handle_project_submit(
 
     Ok(CommandResult::JobSubmit {
         cluster: cmd.cluster,
-        local_path: resolved_local_path_display,
+        local_path: project.path.clone(),
         sbatchscript,
         capture,
     })
@@ -829,7 +830,8 @@ pub async fn handle_project_list(
     _cmd: ProjectListCommand,
 ) -> AppResult<CommandResult> {
     let projects = ctx.orbitd.list_projects().await?;
-    Ok(CommandResult::ProjectList { projects })
+    let summarized = summarize_projects(projects);
+    Ok(CommandResult::ProjectList { projects: summarized })
 }
 
 pub async fn handle_project_check(
@@ -913,10 +915,15 @@ pub async fn handle_project_delete(
     cmd: ProjectDeleteCommand,
 ) -> AppResult<CommandResult> {
     if !cmd.yes {
+        let scope = if cmd.name.contains(':') {
+            "from the local registry."
+        } else {
+            "and all of its tags from the local registry."
+        };
         ctx.output
             .info(&format!(
-                "WARNING:\nThis will delete project '{}' from the local registry.",
-                cmd.name
+                "WARNING:\nThis will delete project '{}' {}",
+                cmd.name, scope
             ))
             .await?;
         ctx.output.info("This action cannot be undone.").await?;
@@ -999,6 +1006,112 @@ async fn resolve_project_init_name(
         ctx.output.success(&format!("Project name: {name}")).await?;
     }
     Ok(name)
+}
+
+fn parse_project_ref(value: &str) -> AppResult<(String, String)> {
+    let trimmed = value.trim();
+    let Some((name, tag)) = trimmed.split_once(':') else {
+        return Err(AppError::invalid_argument(
+            "project submit requires <project name:tag>",
+        ));
+    };
+    let name = name.trim();
+    let tag = tag.trim();
+    if name.is_empty() || tag.is_empty() {
+        return Err(AppError::invalid_argument(
+            "project submit requires <project name:tag>",
+        ));
+    }
+    validate_project_name(name)?;
+    if tag != "latest" && !is_version_tag(tag) {
+        return Err(AppError::invalid_argument(format!(
+            "invalid project tag '{tag}'; expected latest or yyyymmdd.NNN"
+        )));
+    }
+    Ok((name.to_string(), tag.to_string()))
+}
+
+fn summarize_projects(projects: Vec<proto::ProjectRecord>) -> Vec<ProjectListItem> {
+    use std::collections::BTreeMap;
+
+    struct SummaryBuilder {
+        name: String,
+        tags: Vec<String>,
+        latest_tag: Option<String>,
+        latest_updated: Option<String>,
+        latest_path: Option<String>,
+        fallback_updated: String,
+        fallback_path: String,
+    }
+
+    let mut grouped: BTreeMap<String, SummaryBuilder> = BTreeMap::new();
+
+    for project in projects {
+        let entry = grouped
+            .entry(project.name.clone())
+            .or_insert_with(|| SummaryBuilder {
+                name: project.name.clone(),
+                tags: Vec::new(),
+                latest_tag: None,
+                latest_updated: None,
+                latest_path: None,
+                fallback_updated: project.updated_at.clone(),
+                fallback_path: project.path.clone(),
+            });
+
+        if project.updated_at > entry.fallback_updated {
+            entry.fallback_updated = project.updated_at.clone();
+            entry.fallback_path = project.path.clone();
+        }
+
+        if let Some(tag) = project.version_tag.clone() {
+            entry.tags.push(tag.clone());
+            let is_newest = entry
+                .latest_updated
+                .as_deref()
+                .map_or(true, |current| project.updated_at.as_str() > current);
+            if is_newest {
+                entry.latest_tag = Some(tag);
+                entry.latest_updated = Some(project.updated_at.clone());
+                entry.latest_path = Some(project.path.clone());
+            }
+        }
+    }
+
+    let mut output = Vec::with_capacity(grouped.len());
+    for (_, mut entry) in grouped {
+        entry.tags.sort();
+        entry.tags.dedup();
+        let (path, updated_at) = match entry.latest_updated {
+            Some(updated) => (
+                entry.latest_path.unwrap_or(entry.fallback_path),
+                updated,
+            ),
+            None => (entry.fallback_path, entry.fallback_updated),
+        };
+        output.push(ProjectListItem {
+            name: entry.name,
+            path,
+            latest_tag: entry.latest_tag,
+            tags: entry.tags,
+            updated_at,
+        });
+    }
+
+    output
+}
+
+fn is_version_tag(tag: &str) -> bool {
+    let mut parts = tag.splitn(2, '.');
+    let Some(date) = parts.next() else { return false; };
+    let Some(suffix) = parts.next() else { return false; };
+    if date.len() != 8 || !date.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    if suffix.len() != 3 || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        return false;
+    }
+    true
 }
 
 fn ensure_git_repository(path: &std::path::Path) -> AppResult<bool> {

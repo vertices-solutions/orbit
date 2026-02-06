@@ -373,6 +373,22 @@ fn result_to_json(result: &CommandResult) -> Value {
             }).collect::<Vec<_>>(),
             "status": "initialized",
         }),
+        CommandResult::ProjectBuild { project } => json!({
+            "name": project.name,
+            "versionTag": project.version_tag,
+            "path": project.path,
+            "tarballHash": project.tarball_hash,
+            "toolVersion": project.tool_version,
+            "templateConfig": project.template_config_json,
+            "submitSbatchScript": project.submit_sbatch_script,
+            "sbatchScripts": project.sbatch_scripts,
+            "defaultRetrievePath": project.default_retrieve_path,
+            "syncInclude": project.sync_include,
+            "syncExclude": project.sync_exclude,
+            "createdAt": project.created_at,
+            "updatedAt": project.updated_at,
+            "status": "built",
+        }),
         CommandResult::ProjectList { projects } => {
             let items = projects
                 .iter()
@@ -380,8 +396,9 @@ fn result_to_json(result: &CommandResult) -> Value {
                     json!({
                         "name": project.name,
                         "path": project.path,
-                        "createdAt": project.created_at,
-                        "updatedAt": project.updated_at,
+                        "latest_tag": project.latest_tag,
+                        "tags": project.tags,
+                        "updated_at": project.updated_at,
                     })
                 })
                 .collect::<Vec<_>>();

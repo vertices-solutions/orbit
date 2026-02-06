@@ -21,14 +21,15 @@ pub struct PreparedTemplate {
     pub values_json: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct TemplateConfig {
     fields: BTreeMap<String, TemplateField>,
     files: Vec<String>,
     presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
 enum TemplateFieldType {
     String,
     Integer,
@@ -39,7 +40,7 @@ enum TemplateFieldType {
     Enum,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 struct TemplateField {
     field_type: TemplateFieldType,
     default: Option<JsonValue>,
@@ -168,6 +169,15 @@ fn load_template_config(orbitfile_path: &Path) -> AppResult<Option<TemplateConfi
         ))
     })?;
     parse_template_config(raw.template)
+}
+
+pub fn load_template_config_json(orbitfile_path: &Path) -> AppResult<Option<String>> {
+    let Some(config) = load_template_config(orbitfile_path)? else {
+        return Ok(None);
+    };
+    let json = serde_json::to_string(&config)
+        .map_err(|err| local_error(format!("failed to serialize template config: {err}")))?;
+    Ok(Some(json))
 }
 
 fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateConfig>> {

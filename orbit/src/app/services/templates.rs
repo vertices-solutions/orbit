@@ -24,6 +24,7 @@ pub async fn resolve_template_values(
     interaction: &dyn InteractionPort,
     output: &dyn OutputPort,
     ui_mode: UiMode,
+    validate_paths: bool,
 ) -> AppResult<TemplateValues> {
     let mut values: TemplateValues = BTreeMap::new();
 
@@ -67,6 +68,7 @@ pub async fn resolve_template_values(
                 fs,
                 interaction,
                 output,
+                validate_paths,
             )
             .await?;
             values.insert(name.clone(), updated);
@@ -76,7 +78,7 @@ pub async fn resolve_template_values(
 
     for (name, field) in &config.fields {
         if let Some(value) = values.get(name) {
-            if is_path_field(field.field_type) {
+            if validate_paths && is_path_field(field.field_type) {
                 let raw = value.as_str().ok_or_else(|| {
                     AppError::invalid_argument(format!(
                         "template field '{name}' must be a string path"
@@ -98,6 +100,7 @@ pub async fn resolve_template_values(
                         fs,
                         interaction,
                         output,
+                        validate_paths,
                     )
                     .await?;
                     values.insert(name.clone(), updated);
@@ -125,6 +128,7 @@ pub async fn resolve_template_values(
             fs,
             interaction,
             output,
+            validate_paths,
         )
         .await?;
         values.insert(name.clone(), updated);
@@ -149,6 +153,7 @@ async fn prompt_for_field(
     fs: &dyn FilesystemPort,
     interaction: &dyn InteractionPort,
     output: &dyn OutputPort,
+    validate_paths: bool,
 ) -> AppResult<JsonValue> {
     if field_type == TemplateFieldType::Enum {
         if enum_values.is_empty() {
@@ -191,7 +196,7 @@ async fn prompt_for_field(
                 continue;
             }
         };
-        if is_path_field(field_type) {
+        if validate_paths && is_path_field(field_type) {
             if let Err(err) = validate_path(&input, project_root, field_type, fs) {
                 output.warn(&err.message).await?;
                 continue;

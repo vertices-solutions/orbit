@@ -757,12 +757,35 @@ def main():
 
         listed = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
         projects_payload = listed.get("projects") or []
+        if any(item.get("name") == project_name for item in projects_payload):
+            raise RuntimeError("project lifecycle: init should not register project")
+
+        build_result = parse_json_output(
+            run_cmd(non_interactive_cmd + ["project", "build", str(project_lifecycle_src)])
+        )
+        project_version = build_result.get("versionTag")
+        if build_result.get("name") != project_name or not project_version:
+            raise RuntimeError("project lifecycle: build returned unexpected project metadata")
+        project_ref = f"{project_name}:{project_version}"
+
+        listed = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
+        projects_payload = listed.get("projects") or []
         project_record = next(
-            (item for item in projects_payload if item.get("name") == project_name),
+            (
+                item
+                for item in projects_payload
+                if item.get("name") == project_name
+                and project_version in (item.get("tags") or [])
+            ),
             None,
         )
         if project_record is None:
-            raise RuntimeError("project lifecycle: initialized project missing from project list")
+            raise RuntimeError("project lifecycle: built project missing from project list")
+        if project_record.get("latest_tag") != project_version:
+            raise RuntimeError(
+                "project lifecycle: latest_tag did not match built version "
+                f"(expected={project_version}, actual={project_record.get('latest_tag')})"
+            )
         expected_project_path = str(project_lifecycle_src.resolve())
         if project_record.get("path") != expected_project_path:
             raise RuntimeError(
@@ -771,12 +794,12 @@ def main():
             )
 
         checked = parse_json_output(
-            run_cmd(non_interactive_cmd + ["project", "check", project_name])
+            run_cmd(non_interactive_cmd + ["project", "check", project_ref])
         )
         if checked.get("checked") != 1:
             raise RuntimeError("project lifecycle: project check did not report checked=1")
 
-        project_submit_cmd = orbit_cmd + ["project", "submit", project_name, args.cluster]
+        project_submit_cmd = orbit_cmd + ["project", "submit", project_ref, args.cluster]
         project_submit = run_cmd(project_submit_cmd)
         project_submit_output = (project_submit.stdout or "") + (project_submit.stderr or "")
         project_job_id = parse_job_id(project_submit_output)
@@ -802,7 +825,7 @@ def main():
         cleanup_job_and_validate(orbit_cmd, args.cluster, project_job_id, project_remote_path)
         print(f"project lifecycle: cleanup ok for job {project_job_id}")
 
-        run_cmd(orbit_cmd + ["project", "delete", project_name, "--yes"])
+        run_cmd(orbit_cmd + ["project", "delete", project_ref, "--yes"])
         listed_after_delete = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
         projects_after_delete = listed_after_delete.get("projects") or []
         if any(item.get("name") == project_name for item in projects_after_delete):

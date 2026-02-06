@@ -166,6 +166,29 @@ pub struct ProjectRecord {
     pub path: String,
     pub created_at: String,
     pub updated_at: String,
+    pub version_tag: Option<String>,
+    pub tarball_hash: Option<String>,
+    pub tool_version: Option<String>,
+    pub template_config_json: Option<String>,
+    pub submit_sbatch_script: Option<String>,
+    pub sbatch_scripts: Vec<String>,
+    pub default_retrieve_path: Option<String>,
+    pub sync_include: Vec<String>,
+    pub sync_exclude: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewProjectBuild {
+    pub name: String,
+    pub path: String,
+    pub tarball_hash: String,
+    pub tool_version: String,
+    pub template_config_json: Option<String>,
+    pub submit_sbatch_script: Option<String>,
+    pub sbatch_scripts: Vec<String>,
+    pub default_retrieve_path: Option<String>,
+    pub sync_include: Vec<String>,
+    pub sync_exclude: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

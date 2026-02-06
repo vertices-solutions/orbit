@@ -21,6 +21,7 @@ struct FileConfig {
     job_check_interval_secs: Option<u64>,
     port: Option<u16>,
     verbose: Option<bool>,
+    tarballs_dir: Option<String>,
 }
 
 #[derive(Debug)]
@@ -29,6 +30,7 @@ pub struct Config {
     pub job_check_interval_secs: u64,
     pub port: u16,
     pub verbose: bool,
+    pub tarballs_dir: PathBuf,
     #[allow(dead_code)]
     pub config_path: Option<PathBuf>,
 }
@@ -67,6 +69,7 @@ pub struct ConfigReport {
     pub job_check_interval_secs: ConfigValue<u64>,
     pub port: ConfigValue<u16>,
     pub verbose: ConfigValue<bool>,
+    pub tarballs_dir: ConfigValue<PathBuf>,
 }
 
 #[derive(Debug)]
@@ -81,6 +84,7 @@ pub struct Overrides {
     pub job_check_interval_secs: Option<u64>,
     pub port: Option<u16>,
     pub verbose: Option<bool>,
+    pub tarballs_dir: Option<PathBuf>,
 }
 
 #[allow(dead_code)]
@@ -158,11 +162,31 @@ pub fn load_with_report(
             },
         };
 
+    let (tarballs_dir, tarballs_dir_source) = match overrides.tarballs_dir {
+        Some(path) => (expand_path(path), ConfigSource::Override),
+        None => match file_config.tarballs_dir {
+            Some(raw) => (
+                resolve_path(
+                    &raw,
+                    config_path.as_deref().and_then(|path| path.parent()),
+                ),
+                ConfigSource::ConfigFile,
+            ),
+            None => (
+                default_tarballs_dir().with_context(|| {
+                    "failed to resolve default tarballs directory; set tarballs_dir in the config file"
+                })?,
+                ConfigSource::Default,
+            ),
+        },
+    };
+
     let config = Config {
         database_path,
         job_check_interval_secs,
         port,
         verbose,
+        tarballs_dir,
         config_path: config_path.clone(),
     };
 
@@ -186,6 +210,10 @@ pub fn load_with_report(
             value: config.verbose,
             source: verbose_source,
         },
+        tarballs_dir: ConfigValue {
+            value: config.tarballs_dir.clone(),
+            source: tarballs_dir_source,
+        },
     };
 
     Ok(LoadResult { config, report })
@@ -196,6 +224,12 @@ pub fn ensure_database_dir(path: &Path) -> Result<()> {
         fs::create_dir_all(parent)
             .with_context(|| format!("failed to create database directory {}", parent.display()))?;
     }
+    Ok(())
+}
+
+pub fn ensure_tarballs_dir(path: &Path) -> Result<()> {
+    fs::create_dir_all(path)
+        .with_context(|| format!("failed to create tarballs directory {}", path.display()))?;
     Ok(())
 }
 
@@ -254,6 +288,11 @@ fn default_database_path() -> Result<PathBuf> {
 fn default_config_dir() -> Result<PathBuf> {
     let base = dirs::config_dir().context("failed to resolve config directory")?;
     Ok(base.join(APP_DIR_NAME))
+}
+
+fn default_tarballs_dir() -> Result<PathBuf> {
+    let base = dirs::data_dir().context("failed to resolve data directory")?;
+    Ok(base.join(APP_DIR_NAME).join("tarballs"))
 }
 
 fn default_data_dir() -> Result<PathBuf> {
@@ -374,6 +413,7 @@ mod tests {
                 job_check_interval_secs: Some(2),
                 port: None,
                 verbose: None,
+                tarballs_dir: None,
             },
         )
         .unwrap();
@@ -401,6 +441,7 @@ mod tests {
                 job_check_interval_secs: Some(2),
                 port: None,
                 verbose: None,
+                tarballs_dir: None,
             },
         )
         .unwrap();
@@ -479,6 +520,7 @@ mod tests {
                 job_check_interval_secs: None,
                 port: Some(40002),
                 verbose: None,
+                tarballs_dir: None,
             },
         )
         .unwrap();
@@ -505,6 +547,7 @@ mod tests {
                 job_check_interval_secs: None,
                 port: None,
                 verbose: Some(true),
+                tarballs_dir: None,
             },
         )
         .unwrap();
