@@ -39,3 +39,36 @@ pub async fn lookup_addrs(host: &str, port: u16) -> Result<Vec<SocketAddr>, NetE
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn lookup_addrs_resolves_localhost() {
+        let addrs = lookup_addrs("localhost", 22)
+            .await
+            .expect("localhost should resolve");
+        assert!(!addrs.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lookup_first_addr_resolves_localhost() {
+        let addr = lookup_first_addr("localhost", 22)
+            .await
+            .expect("localhost should resolve");
+        assert_eq!(addr.port(), 22);
+    }
+
+    #[tokio::test]
+    async fn lookup_addrs_errors_for_unknown_domain() {
+        let host = "orbitd-should-not-exist.invalid";
+        let err = lookup_addrs(host, 22)
+            .await
+            .expect_err("invalid domain should fail");
+        match err {
+            NetError::DnsNotFound(value) | NetError::NoAddrs(value) => assert_eq!(value, host),
+            NetError::Resolve(_) => {}
+        }
+    }
+}

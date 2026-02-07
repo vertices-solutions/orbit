@@ -227,3 +227,42 @@ pub struct ClusterStatus {
     pub connected: bool,
     pub reachable: bool,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{ParseSlurmVersionError, SlurmVersion};
+    use std::str::FromStr;
+
+    #[test]
+    fn slurm_version_parses_valid_triplet() {
+        let version = SlurmVersion::from_str("24.11.2").expect("version should parse");
+        assert_eq!(version.major, 24);
+        assert_eq!(version.minor, 11);
+        assert_eq!(version.patch, 2);
+    }
+
+    #[test]
+    fn slurm_version_rejects_wrong_format() {
+        let err = SlurmVersion::from_str("24.11").expect_err("missing patch should fail");
+        assert!(matches!(err, ParseSlurmVersionError::WrongFormat));
+
+        let err = SlurmVersion::from_str("24.11.2.1").expect_err("extra part should fail");
+        assert!(matches!(err, ParseSlurmVersionError::WrongFormat));
+    }
+
+    #[test]
+    fn slurm_version_rejects_non_numeric_component() {
+        let err = SlurmVersion::from_str("24.x.2").expect_err("non numeric component should fail");
+        assert!(matches!(err, ParseSlurmVersionError::NotANumber));
+    }
+
+    #[test]
+    fn slurm_version_display_renders_triplet() {
+        let version = SlurmVersion {
+            major: 24,
+            minor: 11,
+            patch: 2,
+        };
+        assert_eq!(version.to_string(), "24.11.2");
+    }
+}

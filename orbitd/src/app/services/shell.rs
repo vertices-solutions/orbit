@@ -8,3 +8,18 @@ pub fn sh_escape(p: &str) -> String {
     out.push('\'');
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::sh_escape;
+
+    #[test]
+    fn sh_escape_wraps_plain_paths_in_single_quotes() {
+        assert_eq!(sh_escape("/tmp/hello world"), "'/tmp/hello world'");
+    }
+
+    #[test]
+    fn sh_escape_escapes_embedded_single_quotes() {
+        assert_eq!(sh_escape("a'b"), "'a'\\''b'");
+    }
+}

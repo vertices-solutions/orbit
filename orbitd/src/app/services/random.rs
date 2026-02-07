@@ -20,3 +20,32 @@ pub fn generate_run_directory_name() -> String {
     // Combine as "YYYY-MM-DD-xxxxxxxxxx"
     format!("{}-{}", date, rand_string)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::generate_run_directory_name;
+
+    #[test]
+    fn generate_run_directory_name_has_expected_shape() {
+        let value = generate_run_directory_name();
+        let bytes = value.as_bytes();
+
+        assert_eq!(value.len(), 21);
+        assert_eq!(bytes[4], b'-');
+        assert_eq!(bytes[7], b'-');
+        assert_eq!(bytes[10], b'-');
+
+        for ch in value[0..4].chars() {
+            assert!(ch.is_ascii_digit());
+        }
+        for ch in value[5..7].chars() {
+            assert!(ch.is_ascii_digit());
+        }
+        for ch in value[8..10].chars() {
+            assert!(ch.is_ascii_digit());
+        }
+        for ch in value[11..].chars() {
+            assert!(ch.is_ascii_lowercase());
+        }
+    }
+}

@@ -94,3 +94,36 @@ impl fmt::Display for AppError {
 impl std::error::Error for AppError {}
 
 pub type AppResult<T> = Result<T, AppError>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn new_sets_code_as_default_message() {
+        let err = AppError::new(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT);
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert_eq!(err.message(), codes::INVALID_ARGUMENT);
+        assert_eq!(err.context(), None);
+    }
+
+    #[test]
+    fn with_message_overrides_display_message() {
+        let err = AppError::with_message(
+            AppErrorKind::Conflict,
+            codes::CONFLICT,
+            "project already exists",
+        );
+        assert_eq!(err.message(), "project already exists");
+        assert_eq!(format!("{err}"), "project already exists");
+    }
+
+    #[test]
+    fn display_includes_context_when_present() {
+        let err = AppError::new(AppErrorKind::Internal, codes::INTERNAL_ERROR)
+            .with_context("while opening database");
+        assert_eq!(err.context(), Some("while opening database"));
+        assert_eq!(format!("{err}"), "internal_error (while opening database)");
+    }
+}
