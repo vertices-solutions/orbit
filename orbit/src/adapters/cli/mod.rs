@@ -166,3 +166,53 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::FromArgMatches;
+
+    #[test]
+    fn command_from_cli_maps_job_list_project_filter() {
+        let command = cli_command();
+        let matches = command
+            .try_get_matches_from([
+                "orbit",
+                "job",
+                "list",
+                "--cluster",
+                "cluster-a",
+                "--project",
+                "demo-project",
+            ])
+            .expect("parse matches");
+        let cli = Cli::from_arg_matches(&matches).expect("parse cli");
+
+        let command = command_from_cli(cli, &matches);
+        match command {
+            Command::Job(JobCommand::List(list)) => {
+                assert_eq!(list.cluster.as_deref(), Some("cluster-a"));
+                assert_eq!(list.project.as_deref(), Some("demo-project"));
+            }
+            _ => panic!("expected job list command"),
+        }
+    }
+
+    #[test]
+    fn command_from_cli_maps_job_list_without_project_filter() {
+        let command = cli_command();
+        let matches = command
+            .try_get_matches_from(["orbit", "job", "list", "--cluster", "cluster-a"])
+            .expect("parse matches");
+        let cli = Cli::from_arg_matches(&matches).expect("parse cli");
+
+        let command = command_from_cli(cli, &matches);
+        match command {
+            Command::Job(JobCommand::List(list)) => {
+                assert_eq!(list.cluster.as_deref(), Some("cluster-a"));
+                assert!(list.project.is_none());
+            }
+            _ => panic!("expected job list command"),
+        }
+    }
+}

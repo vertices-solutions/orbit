@@ -375,3 +375,44 @@ fn visible_buffer_segment(buffer: &[char], cursor: usize, max_len: usize) -> (St
     let offset = cursor.saturating_sub(start).min(max_len.saturating_sub(1));
     (visible, offset)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn line_editor_applies_default_once() {
+        let mut editor = LineEditor::new("prompt: ", 0, "hint", Some("default"));
+
+        assert!(editor.apply_default_if_empty());
+        assert!(!editor.apply_default_if_empty());
+        assert_eq!(editor.into_string(), "default");
+    }
+
+    #[test]
+    fn line_editor_default_does_not_override_user_input() {
+        let mut editor = LineEditor::new("prompt: ", 0, "hint", Some("default"));
+        editor.insert('x');
+
+        assert!(!editor.apply_default_if_empty());
+        assert_eq!(editor.into_string(), "x");
+    }
+
+    #[test]
+    fn visible_buffer_segment_scrolls_with_cursor() {
+        let buffer: Vec<char> = "abcdefghij".chars().collect();
+        let (visible, offset) = visible_buffer_segment(&buffer, 8, 4);
+
+        assert_eq!(visible, "fghi");
+        assert_eq!(offset, 3);
+    }
+
+    #[test]
+    fn visible_buffer_segment_keeps_tail_visible_at_end() {
+        let buffer: Vec<char> = "abcdefghij".chars().collect();
+        let (visible, offset) = visible_buffer_segment(&buffer, buffer.len(), 4);
+
+        assert_eq!(visible, "ghij");
+        assert_eq!(offset, 3);
+    }
+}
