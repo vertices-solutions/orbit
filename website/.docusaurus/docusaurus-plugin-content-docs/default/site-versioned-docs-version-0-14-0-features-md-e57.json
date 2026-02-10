@@ -1,0 +1,27 @@
+{
+  "id": "features",
+  "title": "Main Features",
+  "description": "Brief overview of the main user-facing capabilities in Orbit.",
+  "source": "@site/versioned_docs/version-0.14.0/features.md",
+  "sourceDirName": ".",
+  "slug": "/features",
+  "permalink": "/features",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/features.md",
+  "tags": [],
+  "version": "0.14.0",
+  "frontMatter": {
+    "title": "Main Features",
+    "description": "Brief overview of the main user-facing capabilities in Orbit."
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Quickstart",
+    "permalink": "/quickstart"
+  },
+  "next": {
+    "title": "Documentation Versions",
+    "permalink": "/versioning"
+  }
+}

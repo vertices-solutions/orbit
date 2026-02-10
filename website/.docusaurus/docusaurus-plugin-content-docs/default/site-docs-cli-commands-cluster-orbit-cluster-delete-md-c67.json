@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/cluster/orbit-cluster-delete",
+  "title": "orbit cluster delete",
+  "description": "Delete a cluster and its job records",
+  "source": "@site/docs/cli/commands/cluster/orbit-cluster-delete.md",
+  "sourceDirName": "cli/commands/cluster",
+  "slug": "/cli/commands/cluster/orbit-cluster-delete",
+  "permalink": "/next/cli/commands/cluster/orbit-cluster-delete",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/cluster/orbit-cluster-delete.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit cluster delete",
+    "description": "Delete a cluster and its job records"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit cluster add",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster-add"
+  },
+  "next": {
+    "title": "orbit cluster get",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster-get"
+  }
+}

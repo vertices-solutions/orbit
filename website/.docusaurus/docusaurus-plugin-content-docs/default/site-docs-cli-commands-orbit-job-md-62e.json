@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-job",
+  "title": "orbit job",
+  "description": "Operations on jobs: submit job, inspect its status, and retrieve its outputs and results",
+  "source": "@site/docs/cli/commands/orbit-job.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-job",
+  "permalink": "/cli/commands/orbit-job",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-job.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit job",
+    "description": "Operations on jobs: submit job, inspect its status, and retrieve its outputs and results"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job submit",
+    "permalink": "/cli/commands/orbit-job-submit"
+  },
+  "next": {
+    "title": "orbit ping",
+    "permalink": "/cli/commands/orbit-ping"
+  }
+}

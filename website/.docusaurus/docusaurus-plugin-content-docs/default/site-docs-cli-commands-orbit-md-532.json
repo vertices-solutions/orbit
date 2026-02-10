@@ -1,0 +1,23 @@
+{
+  "id": "cli/commands/orbit",
+  "title": "orbit",
+  "description": "Top-level help for the orbit CLI",
+  "source": "@site/docs/cli/commands/orbit.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit",
+  "permalink": "/next/cli/commands/orbit",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit",
+    "description": "Top-level help for the orbit CLI"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit ping",
+    "permalink": "/next/cli/commands/orbit-ping"
+  }
+}

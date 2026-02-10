@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-project-delete",
+  "title": "orbit project delete",
+  "description": "Delete a project from the local registry",
+  "source": "@site/docs/cli/commands/orbit-project-delete.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-project-delete",
+  "permalink": "/cli/commands/orbit-project-delete",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-project-delete.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit project delete",
+    "description": "Delete a project from the local registry"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit project check",
+    "permalink": "/cli/commands/orbit-project-check"
+  },
+  "next": {
+    "title": "orbit project init",
+    "permalink": "/cli/commands/orbit-project-init"
+  }
+}

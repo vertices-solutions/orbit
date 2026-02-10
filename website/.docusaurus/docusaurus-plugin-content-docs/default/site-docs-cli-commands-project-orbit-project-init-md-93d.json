@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/project/orbit-project-init",
+  "title": "orbit project init",
+  "description": "Initialize a project root and Orbitfile",
+  "source": "@site/docs/cli/commands/project/orbit-project-init.md",
+  "sourceDirName": "cli/commands/project",
+  "slug": "/cli/commands/project/orbit-project-init",
+  "permalink": "/next/cli/commands/project/orbit-project-init",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/project/orbit-project-init.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit project init",
+    "description": "Initialize a project root and Orbitfile"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit project delete",
+    "permalink": "/next/cli/commands/project/orbit-project-delete"
+  },
+  "next": {
+    "title": "orbit project list",
+    "permalink": "/next/cli/commands/project/orbit-project-list"
+  }
+}

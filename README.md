@@ -11,7 +11,8 @@
  ```
 </td> </tr> </table> 
 <p align="center">
-  <strong>Local first Slurm interface</strong>
+  <strong>Orbit enables you to both iterate quickly on ideas and automate repetitive tasks on Slurm.</strong>
+
 </p>
 
 
@@ -25,21 +26,12 @@
   <a href="https://github.com/vertices-solutions/orbit/actions/workflows/ci.yml">
     <img src="https://github.com/vertices-solutions/orbit/actions/workflows/ci.yml/badge.svg?branch=main" alt="Tests">
   </a>
-  <a href="https://codecov.io/gh/vertices-solutions/orbit">
-    <img src="https://codecov.io/gh/vertices-solutions/orbit/graph/badge.svg" alt="Coverage">
-  </a>
+  
 </p>
 
 
 
 
-> [!CAUTION]
-> `orbit` is in beta stage. Problems with it are now rare, but not impossible.
-> If you also encounter any bugs, problems or undesired behaviors in `orbit` - please, go ahead and report them in issues.
-> See the "Getting help" section for more details.
-
-
-`orbit` provides a local-first interface to Slurm over SSH.
 
 
 ## Why Orbit?
@@ -174,6 +166,23 @@ cargo run -p orbitd -- --config test.toml
 # use the client
 cargo run -p orbit -- --help
 ```
+
+## Documentation (Docusaurus)
+
+Documentation source lives in `website/`.
+
+- Generate CLI command reference pages from live help output:
+  - `python3 scripts/generate_cli_docs.py`
+  - or `just docs-generate-cli`
+- Run docs locally:
+  - `cd website && npm install`
+  - `npm run start`
+- Build static docs:
+  - `just docs-build`
+- Snapshot versioned docs for a release:
+  - `./scripts/version_docs.sh <x.y.z>`
+  - or `just docs-version <x.y.z>`
+
 ### Project Structure
 
 Project structure is described in detail in [architecture/ARCHITECTURE.md](architecture/ARCHITECTURE.md).

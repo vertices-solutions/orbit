@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/job/orbit-job-ls",
+  "title": "orbit job ls",
+  "description": "List files in a job work directory",
+  "source": "@site/docs/cli/commands/job/orbit-job-ls.md",
+  "sourceDirName": "cli/commands/job",
+  "slug": "/cli/commands/job/orbit-job-ls",
+  "permalink": "/next/cli/commands/job/orbit-job-ls",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/job/orbit-job-ls.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit job ls",
+    "description": "List files in a job work directory"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job logs",
+    "permalink": "/next/cli/commands/job/orbit-job-logs"
+  },
+  "next": {
+    "title": "orbit job retrieve",
+    "permalink": "/next/cli/commands/job/orbit-job-retrieve"
+  }
+}

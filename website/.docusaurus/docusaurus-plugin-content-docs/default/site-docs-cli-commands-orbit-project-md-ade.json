@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-project",
+  "title": "orbit project",
+  "description": "Operations on local projects and Orbitfile metadata",
+  "source": "@site/docs/cli/commands/orbit-project.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-project",
+  "permalink": "/cli/commands/orbit-project",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-project.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit project",
+    "description": "Operations on local projects and Orbitfile metadata"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit project submit",
+    "permalink": "/cli/commands/orbit-project-submit"
+  },
+  "next": {
+    "title": "orbit",
+    "permalink": "/cli/commands/orbit"
+  }
+}

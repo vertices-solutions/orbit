@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-cluster-list",
+  "title": "orbit cluster list",
+  "description": "List clusters",
+  "source": "@site/docs/cli/commands/orbit-cluster-list.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-cluster-list",
+  "permalink": "/cli/commands/orbit-cluster-list",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-cluster-list.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit cluster list",
+    "description": "List clusters"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit cluster get",
+    "permalink": "/cli/commands/orbit-cluster-get"
+  },
+  "next": {
+    "title": "orbit cluster ls",
+    "permalink": "/cli/commands/orbit-cluster-ls"
+  }
+}

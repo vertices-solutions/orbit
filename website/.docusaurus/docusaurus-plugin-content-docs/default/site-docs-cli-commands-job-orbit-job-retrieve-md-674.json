@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/job/orbit-job-retrieve",
+  "title": "orbit job retrieve",
+  "description": "Retrieve a file or directory from a job run folder",
+  "source": "@site/docs/cli/commands/job/orbit-job-retrieve.md",
+  "sourceDirName": "cli/commands/job",
+  "slug": "/cli/commands/job/orbit-job-retrieve",
+  "permalink": "/next/cli/commands/job/orbit-job-retrieve",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/job/orbit-job-retrieve.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit job retrieve",
+    "description": "Retrieve a file or directory from a job run folder"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job ls",
+    "permalink": "/next/cli/commands/job/orbit-job-ls"
+  },
+  "next": {
+    "title": "orbit job submit",
+    "permalink": "/next/cli/commands/job/orbit-job-submit"
+  }
+}
