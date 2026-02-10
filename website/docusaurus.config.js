@@ -4,7 +4,7 @@
 const config = {
   title: 'Orbit Documentation',
   tagline: 'Local-first Slurm interface',
-  url: 'https://vertices-solutions.github.io',
+  url: 'https://orbit.vertices.solutions',
   baseUrl: '/orbit',
   onBrokenLinks: 'throw',
   markdown: {
