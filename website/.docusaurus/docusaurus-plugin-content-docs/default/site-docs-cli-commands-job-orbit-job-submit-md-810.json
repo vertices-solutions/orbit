@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/job/orbit-job-submit",
+  "title": "orbit job submit",
+  "description": "Submit a project to a cluster",
+  "source": "@site/docs/cli/commands/job/orbit-job-submit.md",
+  "sourceDirName": "cli/commands/job",
+  "slug": "/cli/commands/job/orbit-job-submit",
+  "permalink": "/next/cli/commands/job/orbit-job-submit",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/job/orbit-job-submit.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit job submit",
+    "description": "Submit a project to a cluster"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job retrieve",
+    "permalink": "/next/cli/commands/job/orbit-job-retrieve"
+  },
+  "next": {
+    "title": "orbit cluster",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster"
+  }
+}

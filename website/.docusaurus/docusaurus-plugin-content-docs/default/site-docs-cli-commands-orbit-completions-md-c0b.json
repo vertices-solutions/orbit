@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-completions",
+  "title": "orbit completions",
+  "description": "Generate shell completions",
+  "source": "@site/docs/cli/commands/orbit-completions.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-completions",
+  "permalink": "/next/cli/commands/orbit-completions",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-completions.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit completions",
+    "description": "Generate shell completions"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit project submit",
+    "permalink": "/next/cli/commands/project/orbit-project-submit"
+  },
+  "next": {
+    "title": "orbit ping",
+    "permalink": "/next/cli/commands/orbit-ping"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "cli/index",
+  "title": "CLI Reference",
+  "description": "Command reference for the orbit CLI.",
+  "source": "@site/versioned_docs/version-0.14.0/cli/index.md",
+  "sourceDirName": "cli",
+  "slug": "/cli/",
+  "permalink": "/cli/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/index.md",
+  "tags": [],
+  "version": "0.14.0",
+  "frontMatter": {
+    "title": "CLI Reference",
+    "description": "Command reference for the orbit CLI."
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Documentation Versions",
+    "permalink": "/versioning"
+  },
+  "next": {
+    "title": "orbit job",
+    "permalink": "/cli/commands/job/orbit-job"
+  }
+}

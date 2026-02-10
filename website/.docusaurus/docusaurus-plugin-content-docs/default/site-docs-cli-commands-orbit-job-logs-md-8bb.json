@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-job-logs",
+  "title": "orbit job logs",
+  "description": "Show job logs",
+  "source": "@site/docs/cli/commands/orbit-job-logs.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-job-logs",
+  "permalink": "/cli/commands/orbit-job-logs",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-job-logs.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit job logs",
+    "description": "Show job logs"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job list",
+    "permalink": "/cli/commands/orbit-job-list"
+  },
+  "next": {
+    "title": "orbit job ls",
+    "permalink": "/cli/commands/orbit-job-ls"
+  }
+}

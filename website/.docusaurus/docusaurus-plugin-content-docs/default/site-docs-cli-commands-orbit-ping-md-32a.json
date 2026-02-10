@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-ping",
+  "title": "orbit ping",
+  "description": "Check that the daemon is reachable",
+  "source": "@site/docs/cli/commands/orbit-ping.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-ping",
+  "permalink": "/next/cli/commands/orbit-ping",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-ping.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit ping",
+    "description": "Check that the daemon is reachable"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit completions",
+    "permalink": "/next/cli/commands/orbit-completions"
+  },
+  "next": {
+    "title": "orbit",
+    "permalink": "/next/cli/commands/orbit"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/job/orbit-job-cleanup",
+  "title": "orbit job cleanup",
+  "description": "Clean up a job's remote directory",
+  "source": "@site/docs/cli/commands/job/orbit-job-cleanup.md",
+  "sourceDirName": "cli/commands/job",
+  "slug": "/cli/commands/job/orbit-job-cleanup",
+  "permalink": "/next/cli/commands/job/orbit-job-cleanup",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/job/orbit-job-cleanup.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit job cleanup",
+    "description": "Clean up a job's remote directory"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job cancel",
+    "permalink": "/next/cli/commands/job/orbit-job-cancel"
+  },
+  "next": {
+    "title": "orbit job get",
+    "permalink": "/next/cli/commands/job/orbit-job-get"
+  }
+}

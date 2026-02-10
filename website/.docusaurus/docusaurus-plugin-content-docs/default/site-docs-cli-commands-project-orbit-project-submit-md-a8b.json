@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/project/orbit-project-submit",
+  "title": "orbit project submit",
+  "description": "Submit a registered project by project name",
+  "source": "@site/docs/cli/commands/project/orbit-project-submit.md",
+  "sourceDirName": "cli/commands/project",
+  "slug": "/cli/commands/project/orbit-project-submit",
+  "permalink": "/next/cli/commands/project/orbit-project-submit",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/project/orbit-project-submit.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit project submit",
+    "description": "Submit a registered project by project name"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit project list",
+    "permalink": "/next/cli/commands/project/orbit-project-list"
+  },
+  "next": {
+    "title": "orbit completions",
+    "permalink": "/next/cli/commands/orbit-completions"
+  }
+}

@@ -844,6 +844,19 @@ pub async fn handle_project_check(
     ctx: &AppContext,
     cmd: ProjectCheckCommand,
 ) -> AppResult<CommandResult> {
+    if ctx.ui_mode.is_interactive() {
+        let scope = if cmd.name.is_some() {
+            "the selected project"
+        } else {
+            "all registered projects"
+        };
+        ctx.output
+            .info(&format!(
+                "`orbit project check` validates {scope}: project path exists, Orbitfile exists and parses, [project].name matches the registry entry, and [submit].sbatch_script (if set) resolves to a file inside the project root."
+            ))
+            .await?;
+    }
+
     let projects = match cmd.name {
         Some(name) => vec![ctx.orbitd.get_project(&name).await?],
         None => ctx.orbitd.list_projects().await?,

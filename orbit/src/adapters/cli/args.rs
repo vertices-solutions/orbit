@@ -177,6 +177,13 @@ pub enum ProjectCmd {
     /// List registered projects.
     List(ProjectListArgs),
     /// Validate one or all registered projects.
+    ///
+    /// `orbit project check` validates local registry entries against project
+    /// roots on disk. For each selected project, it verifies that the
+    /// registered path exists and is a directory, that an Orbitfile exists at
+    /// the project root and can be parsed, that `[project].name` in Orbitfile
+    /// matches the registered project name, and that `[submit].sbatch_script`
+    /// (if set) resolves to a file inside the project root.
     Check(ProjectCheckArgs),
     /// Delete a project from the local registry.
     Delete(ProjectDeleteArgs),
@@ -238,7 +245,9 @@ pub struct ProjectListArgs {}
 
 #[derive(Args, Debug)]
 pub struct ProjectCheckArgs {
-    /// Project name:tag. If omitted, all registered projects are checked.
+    /// Optional project identifier (`name` or `name:tag`).
+    ///
+    /// If omitted, `orbit project check` validates all registered projects.
     pub name: Option<String>,
 }
 

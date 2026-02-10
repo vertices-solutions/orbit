@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-cluster",
+  "title": "orbit cluster",
+  "description": "Operations on clusters: add, delete, poll, and manage clusters",
+  "source": "@site/docs/cli/commands/orbit-cluster.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-cluster",
+  "permalink": "/cli/commands/orbit-cluster",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-cluster.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit cluster",
+    "description": "Operations on clusters: add, delete, poll, and manage clusters"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit cluster set",
+    "permalink": "/cli/commands/orbit-cluster-set"
+  },
+  "next": {
+    "title": "orbit completions",
+    "permalink": "/cli/commands/orbit-completions"
+  }
+}

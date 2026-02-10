@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-project-build",
+  "title": "orbit project build",
+  "description": "Build a project tarball and register it locally",
+  "source": "@site/docs/cli/commands/orbit-project-build.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-project-build",
+  "permalink": "/cli/commands/orbit-project-build",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-project-build.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit project build",
+    "description": "Build a project tarball and register it locally"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit ping",
+    "permalink": "/cli/commands/orbit-ping"
+  },
+  "next": {
+    "title": "orbit project check",
+    "permalink": "/cli/commands/orbit-project-check"
+  }
+}

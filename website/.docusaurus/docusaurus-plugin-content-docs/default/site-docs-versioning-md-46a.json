@@ -1,0 +1,27 @@
+{
+  "id": "versioning",
+  "title": "Documentation Versions",
+  "description": "How Orbit docs are versioned by release and how to view the right CLI reference for your installed version.",
+  "source": "@site/docs/versioning.md",
+  "sourceDirName": ".",
+  "slug": "/versioning",
+  "permalink": "/next/versioning",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/versioning.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Documentation Versions",
+    "description": "How Orbit docs are versioned by release and how to view the right CLI reference for your installed version."
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Quickstart",
+    "permalink": "/next/quickstart"
+  },
+  "next": {
+    "title": "CLI Reference",
+    "permalink": "/next/cli/"
+  }
+}

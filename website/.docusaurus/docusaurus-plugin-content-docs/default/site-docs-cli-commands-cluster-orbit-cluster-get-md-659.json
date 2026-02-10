@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/cluster/orbit-cluster-get",
+  "title": "orbit cluster get",
+  "description": "Show cluster details",
+  "source": "@site/docs/cli/commands/cluster/orbit-cluster-get.md",
+  "sourceDirName": "cli/commands/cluster",
+  "slug": "/cli/commands/cluster/orbit-cluster-get",
+  "permalink": "/next/cli/commands/cluster/orbit-cluster-get",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/cluster/orbit-cluster-get.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit cluster get",
+    "description": "Show cluster details"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit cluster delete",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster-delete"
+  },
+  "next": {
+    "title": "orbit cluster list",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster-list"
+  }
+}

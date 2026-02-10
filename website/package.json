@@ -1,0 +1,24 @@
+{
+  "name": "orbit-docs",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "generate:cli": "python3 ../scripts/generate_cli_docs.py",
+    "start": "npm run generate:cli && docusaurus start",
+    "build": "npm run generate:cli && docusaurus build",
+    "docs:version": "npm run generate:cli && docusaurus docs:version",
+    "serve": "docusaurus serve",
+    "clear": "docusaurus clear"
+  },
+  "dependencies": {
+    "@docusaurus/core": "^3.0.0",
+    "@docusaurus/preset-classic": "^3.0.0",
+    "clsx": "^2.1.1",
+    "prism-react-renderer": "^2.4.1",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "engines": {
+    "node": ">=18.0"
+  }
+}

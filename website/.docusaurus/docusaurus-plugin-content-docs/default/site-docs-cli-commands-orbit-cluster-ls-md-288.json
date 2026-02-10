@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-cluster-ls",
+  "title": "orbit cluster ls",
+  "description": "List files on a cluster",
+  "source": "@site/docs/cli/commands/orbit-cluster-ls.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-cluster-ls",
+  "permalink": "/cli/commands/orbit-cluster-ls",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-cluster-ls.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit cluster ls",
+    "description": "List files on a cluster"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit cluster list",
+    "permalink": "/cli/commands/orbit-cluster-list"
+  },
+  "next": {
+    "title": "orbit cluster set",
+    "permalink": "/cli/commands/orbit-cluster-set"
+  }
+}

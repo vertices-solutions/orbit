@@ -1,0 +1,27 @@
+{
+  "id": "quickstart",
+  "title": "Quickstart",
+  "description": "Install Orbit, submit your first job, initialize your first project, and submit it in under 5 minutes.",
+  "source": "@site/docs/quickstart.md",
+  "sourceDirName": ".",
+  "slug": "/quickstart",
+  "permalink": "/next/quickstart",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/quickstart.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "Quickstart",
+    "description": "Install Orbit, submit your first job, initialize your first project, and submit it in under 5 minutes."
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Introduction",
+    "permalink": "/next/"
+  },
+  "next": {
+    "title": "Documentation Versions",
+    "permalink": "/next/versioning"
+  }
+}

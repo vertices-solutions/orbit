@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/job/orbit-job-cancel",
+  "title": "orbit job cancel",
+  "description": "Cancel a job",
+  "source": "@site/versioned_docs/version-0.14.0/cli/commands/job/orbit-job-cancel.md",
+  "sourceDirName": "cli/commands/job",
+  "slug": "/cli/commands/job/orbit-job-cancel",
+  "permalink": "/cli/commands/job/orbit-job-cancel",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/commands/job/orbit-job-cancel.md",
+  "tags": [],
+  "version": "0.14.0",
+  "frontMatter": {
+    "title": "orbit job cancel",
+    "description": "Cancel a job"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit job",
+    "permalink": "/cli/commands/job/orbit-job"
+  },
+  "next": {
+    "title": "orbit job cleanup",
+    "permalink": "/cli/commands/job/orbit-job-cleanup"
+  }
+}

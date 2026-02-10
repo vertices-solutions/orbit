@@ -1,0 +1,354 @@
+{
+  "docusaurus-plugin-content-docs": {
+    "default": {
+      "path": "/",
+      "versions": [
+        {
+          "name": "current",
+          "label": "next",
+          "isLast": false,
+          "path": "/next",
+          "mainDocId": "intro",
+          "docs": [
+            {
+              "id": "cli/commands/cluster/orbit-cluster",
+              "path": "/next/cli/commands/cluster/orbit-cluster",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-add",
+              "path": "/next/cli/commands/cluster/orbit-cluster-add",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-delete",
+              "path": "/next/cli/commands/cluster/orbit-cluster-delete",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-get",
+              "path": "/next/cli/commands/cluster/orbit-cluster-get",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-list",
+              "path": "/next/cli/commands/cluster/orbit-cluster-list",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-ls",
+              "path": "/next/cli/commands/cluster/orbit-cluster-ls",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-set",
+              "path": "/next/cli/commands/cluster/orbit-cluster-set",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job",
+              "path": "/next/cli/commands/job/orbit-job",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-cancel",
+              "path": "/next/cli/commands/job/orbit-job-cancel",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-cleanup",
+              "path": "/next/cli/commands/job/orbit-job-cleanup",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-get",
+              "path": "/next/cli/commands/job/orbit-job-get",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-list",
+              "path": "/next/cli/commands/job/orbit-job-list",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-logs",
+              "path": "/next/cli/commands/job/orbit-job-logs",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-ls",
+              "path": "/next/cli/commands/job/orbit-job-ls",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-retrieve",
+              "path": "/next/cli/commands/job/orbit-job-retrieve",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-submit",
+              "path": "/next/cli/commands/job/orbit-job-submit",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/orbit",
+              "path": "/next/cli/commands/orbit",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/orbit-completions",
+              "path": "/next/cli/commands/orbit-completions",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/orbit-ping",
+              "path": "/next/cli/commands/orbit-ping",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project",
+              "path": "/next/cli/commands/project/orbit-project",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-build",
+              "path": "/next/cli/commands/project/orbit-project-build",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-check",
+              "path": "/next/cli/commands/project/orbit-project-check",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-delete",
+              "path": "/next/cli/commands/project/orbit-project-delete",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-init",
+              "path": "/next/cli/commands/project/orbit-project-init",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-list",
+              "path": "/next/cli/commands/project/orbit-project-list",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-submit",
+              "path": "/next/cli/commands/project/orbit-project-submit",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/index",
+              "path": "/next/cli/",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "intro",
+              "path": "/next/",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "orbitfile",
+              "path": "/next/orbitfile"
+            },
+            {
+              "id": "quickstart",
+              "path": "/next/quickstart",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "versioning",
+              "path": "/next/versioning",
+              "sidebar": "docsSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docsSidebar": {
+              "link": {
+                "path": "/next/",
+                "label": "intro"
+              }
+            }
+          }
+        },
+        {
+          "name": "0.14.0",
+          "label": "0.14.0",
+          "isLast": true,
+          "path": "/",
+          "mainDocId": "intro",
+          "docs": [
+            {
+              "id": "cli/commands/cluster/orbit-cluster",
+              "path": "/cli/commands/cluster/orbit-cluster",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-add",
+              "path": "/cli/commands/cluster/orbit-cluster-add",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-delete",
+              "path": "/cli/commands/cluster/orbit-cluster-delete",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-get",
+              "path": "/cli/commands/cluster/orbit-cluster-get",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-list",
+              "path": "/cli/commands/cluster/orbit-cluster-list",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-ls",
+              "path": "/cli/commands/cluster/orbit-cluster-ls",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/cluster/orbit-cluster-set",
+              "path": "/cli/commands/cluster/orbit-cluster-set",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job",
+              "path": "/cli/commands/job/orbit-job",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-cancel",
+              "path": "/cli/commands/job/orbit-job-cancel",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-cleanup",
+              "path": "/cli/commands/job/orbit-job-cleanup",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-get",
+              "path": "/cli/commands/job/orbit-job-get",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-list",
+              "path": "/cli/commands/job/orbit-job-list",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-logs",
+              "path": "/cli/commands/job/orbit-job-logs",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-ls",
+              "path": "/cli/commands/job/orbit-job-ls",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-retrieve",
+              "path": "/cli/commands/job/orbit-job-retrieve",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/job/orbit-job-submit",
+              "path": "/cli/commands/job/orbit-job-submit",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/orbit",
+              "path": "/cli/commands/orbit",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/orbit-completions",
+              "path": "/cli/commands/orbit-completions",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/orbit-ping",
+              "path": "/cli/commands/orbit-ping",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project",
+              "path": "/cli/commands/project/orbit-project",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-build",
+              "path": "/cli/commands/project/orbit-project-build",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-check",
+              "path": "/cli/commands/project/orbit-project-check",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-delete",
+              "path": "/cli/commands/project/orbit-project-delete",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-init",
+              "path": "/cli/commands/project/orbit-project-init",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-list",
+              "path": "/cli/commands/project/orbit-project-list",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/commands/project/orbit-project-submit",
+              "path": "/cli/commands/project/orbit-project-submit",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "cli/index",
+              "path": "/cli/",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "intro",
+              "path": "/",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "orbitfile",
+              "path": "/orbitfile"
+            },
+            {
+              "id": "quickstart",
+              "path": "/quickstart",
+              "sidebar": "docsSidebar"
+            },
+            {
+              "id": "versioning",
+              "path": "/versioning",
+              "sidebar": "docsSidebar"
+            }
+          ],
+          "draftIds": [],
+          "sidebars": {
+            "docsSidebar": {
+              "link": {
+                "path": "/",
+                "label": "intro"
+              }
+            }
+          }
+        }
+      ],
+      "breadcrumbs": true
+    }
+  }
+}

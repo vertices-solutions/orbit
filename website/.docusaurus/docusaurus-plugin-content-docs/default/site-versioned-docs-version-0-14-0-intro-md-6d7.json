@@ -1,0 +1,24 @@
+{
+  "id": "intro",
+  "title": "Introduction",
+  "description": "Orbit is a local-first interface for working with Slurm clusters over SSH.",
+  "source": "@site/versioned_docs/version-0.14.0/intro.md",
+  "sourceDirName": ".",
+  "slug": "/",
+  "permalink": "/",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/intro.md",
+  "tags": [],
+  "version": "0.14.0",
+  "frontMatter": {
+    "title": "Introduction",
+    "description": "Orbit is a local-first interface for working with Slurm clusters over SSH.",
+    "slug": "/"
+  },
+  "sidebar": "docsSidebar",
+  "next": {
+    "title": "Quickstart",
+    "permalink": "/quickstart"
+  }
+}

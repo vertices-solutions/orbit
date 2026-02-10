@@ -1,0 +1,27 @@
+{
+  "id": "cli/commands/orbit-cluster-set",
+  "title": "orbit cluster set",
+  "description": "Update cluster parameters",
+  "source": "@site/docs/cli/commands/orbit-cluster-set.md",
+  "sourceDirName": "cli/commands",
+  "slug": "/cli/commands/orbit-cluster-set",
+  "permalink": "/cli/commands/orbit-cluster-set",
+  "draft": false,
+  "unlisted": false,
+  "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/docs/cli/commands/orbit-cluster-set.md",
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "title": "orbit cluster set",
+    "description": "Update cluster parameters"
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "orbit cluster ls",
+    "permalink": "/cli/commands/orbit-cluster-ls"
+  },
+  "next": {
+    "title": "orbit cluster",
+    "permalink": "/cli/commands/orbit-cluster"
+  }
+}
