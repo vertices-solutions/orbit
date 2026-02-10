@@ -10,11 +10,12 @@ use proto::{
     AddClusterRequest, BuildProjectRequest, BuildProjectResponse, CancelJobRequest,
     CleanupJobRequest, DeleteClusterRequest, DeleteClusterResponse, DeleteProjectRequest,
     DeleteProjectResponse, GetProjectRequest, GetProjectResponse, JobLogsRequest,
-    ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse,
-    ListPartitionsRequest, ListPartitionsResponse, ListPartitionsUnitResponse, ListProjectsRequest,
-    ListProjectsResponse, LsRequest, MfaAnswer, PingReply, PingRequest, ResolveHomeDirRequest,
-    RetrieveJobRequest, SetClusterRequest, StreamEvent, SubmitJobRequest, SubmitProjectRequest,
-    SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
+    ListAccountsRequest, ListAccountsResponse, ListAccountsUnitResponse, ListClustersRequest,
+    ListClustersResponse, ListJobsRequest, ListJobsResponse, ListPartitionsRequest,
+    ListPartitionsResponse, ListPartitionsUnitResponse, ListProjectsRequest, ListProjectsResponse,
+    LsRequest, MfaAnswer, PingReply, PingRequest, ResolveHomeDirRequest, RetrieveJobRequest,
+    SetClusterRequest, StreamEvent, SubmitJobRequest, SubmitProjectRequest, SubmitStreamEvent,
+    UpsertProjectRequest, UpsertProjectResponse,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -704,6 +705,33 @@ impl Agent for GrpcAgent {
         );
         Ok(Response::new(ListPartitionsResponse {
             partitions: responses,
+        }))
+    }
+
+    async fn list_accounts(
+        &self,
+        request: Request<ListAccountsRequest>,
+    ) -> Result<Response<ListAccountsResponse>, Status> {
+        let span = rpc_span(&request, "ListAccounts");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let name = request.into_inner().name;
+        let accounts = self
+            .usecases
+            .list_accounts(&name)
+            .await
+            .map_err(status_from_app_error)?;
+        let responses = accounts
+            .into_iter()
+            .map(|name| ListAccountsUnitResponse { name })
+            .collect::<Vec<_>>();
+        tracing::info!(
+            "list_accounts remote_addr={remote_addr} name={name} count={}",
+            responses.len()
+        );
+        Ok(Response::new(ListAccountsResponse {
+            accounts: responses,
         }))
     }
 

@@ -228,15 +228,27 @@ message ListClustersResponse {
 }
 
 message ListPartitionsRequest {
-  string name = 1;
+  string name = 1; // Accepts cluster name as input
 }
 
 message ListPartitionsUnitResponse {
-  string name = 1;
+  string name = 1; // Partition name
 }
 
 message ListPartitionsResponse {
-  repeated ListPartitionsUnitResponse partitions = 1;
+  repeated ListPartitionsUnitResponse partitions = 1; // List of partition names
+}
+
+message ListAccountsRequest {
+  string name = 1; // Accepts cluster name as input
+}
+
+message ListAccountsUnitResponse {
+  string name = 1; // Account name
+}
+
+message ListAccountsResponse {
+  repeated ListAccountsUnitResponse accounts = 1; // List of account names
 }
 
 message DeleteClusterRequest {
@@ -383,7 +395,8 @@ service Agent {
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ResolveHomeDir(stream ResolveHomeDirRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
-  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse); // Helper endpoint for listing partitions
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse); // Helper endpoint for listing accounts
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);

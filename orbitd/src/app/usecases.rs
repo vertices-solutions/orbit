@@ -38,6 +38,7 @@ const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
 const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
 const ORBITFILE_NAME: &str = "Orbitfile";
 const LIST_PARTITIONS_COMMAND: &str = "scontrol show partition -o";
+const LIST_ACCOUNTS_COMMAND: &str = "sshare -U -P -u $USER --format Account --noheader";
 
 #[derive(Clone)]
 pub struct UseCases {
@@ -267,6 +268,92 @@ impl UseCases {
         })?;
 
         Ok(parsed.into_iter().map(|partition| partition.name).collect())
+    }
+
+    pub async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>> {
+        let cluster_name = name.trim();
+        if cluster_name.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+
+        let host = match self.clusters.get_by_name(cluster_name).await? {
+            Some(host) => host,
+            None => {
+                return Err(AppError::with_message(
+                    AppErrorKind::NotFound,
+                    codes::NOT_FOUND,
+                    format!("cluster '{cluster_name}' not found"),
+                ));
+            }
+        };
+
+        let config = self.config_for_host(&host).await?;
+        if self
+            .remote_exec
+            .needs_connect(&config)
+            .await
+            .unwrap_or(true)
+        {
+            let stream = NoopStreamOutput;
+            let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
+            drop(mfa_tx);
+            let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+            self.remote_exec
+                .ensure_connected(&config, &stream, &mut mfa_port)
+                .await
+                .map_err(|err| {
+                    AppError::with_message(
+                        AppErrorKind::Aborted,
+                        codes::REMOTE_ERROR,
+                        format!("failed to connect to cluster '{cluster_name}': {err}"),
+                    )
+                })?;
+        }
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, LIST_ACCOUNTS_COMMAND)
+            .await
+            .map_err(|err| {
+                AppError::with_message(
+                    AppErrorKind::Aborted,
+                    codes::REMOTE_ERROR,
+                    format!("failed to enumerate accounts on '{cluster_name}': {err}"),
+                )
+            })?;
+
+        if capture.exit_code != 0 {
+            let stderr = String::from_utf8_lossy(&capture.stderr);
+            let detail = stderr.trim();
+            return Err(AppError::with_message(
+                AppErrorKind::Aborted,
+                codes::REMOTE_ERROR,
+                if detail.is_empty() {
+                    format!(
+                        "account enumeration command failed on '{cluster_name}' with exit code {}",
+                        capture.exit_code
+                    )
+                } else {
+                    format!(
+                        "account enumeration command failed on '{cluster_name}' with exit code {}: {}",
+                        capture.exit_code, detail
+                    )
+                },
+            ));
+        }
+
+        let output = String::from_utf8(capture.stdout).map_err(|err| {
+            AppError::with_message(
+                AppErrorKind::Internal,
+                codes::REMOTE_ERROR,
+                format!("failed to decode account output from '{cluster_name}': {err}"),
+            )
+        })?;
+
+        Ok(slurm::parse_sshare_accounts(&output))
     }
 
     pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
@@ -3640,6 +3727,113 @@ mod tests {
 
         let err = usecases
             .list_partitions("cluster-a")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::Aborted);
+        assert_eq!(err.code(), codes::REMOTE_ERROR);
+        assert!(err.message().contains("exit code 127"));
+        assert!(err.message().contains("command not found"));
+    }
+
+    const SAMPLE_ACCOUNTS_OUTPUT: &str =
+        "def-zovoilis-ab_cpu\ndef-zovoilis-ab_gpu\nrrg-zovoilis_cpu\n";
+
+    #[tokio::test]
+    async fn list_accounts_returns_account_names() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: SAMPLE_ACCOUNTS_OUTPUT.as_bytes().to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let accounts = usecases
+            .list_accounts("cluster-a")
+            .await
+            .expect("list accounts");
+        assert_eq!(
+            accounts,
+            vec![
+                "def-zovoilis-ab_cpu".to_string(),
+                "def-zovoilis-ab_gpu".to_string(),
+                "rrg-zovoilis_cpu".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_accounts_returns_empty_for_empty_output() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let accounts = usecases
+            .list_accounts("cluster-a")
+            .await
+            .expect("list accounts");
+        assert!(accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_accounts_rejects_empty_cluster_name() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases.list_accounts("   ").await.expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_returns_not_found_for_unknown_cluster() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases
+            .list_accounts("unknown-cluster")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::NotFound);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_returns_remote_error_when_command_fails() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: b"sshare: command not found".to_vec(),
+                exit_code: 127,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let err = usecases
+            .list_accounts("cluster-a")
             .await
             .expect_err("must fail");
         assert_eq!(err.kind(), AppErrorKind::Aborted);
