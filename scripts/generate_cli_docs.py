@@ -120,7 +120,7 @@ def parse_sections(help_text: str) -> tuple[str, dict[str, list[tuple[str, str]]
         section_match = re.match(r"^([A-Z][A-Za-z ]*):$", stripped)
         if section_match:
             current_section = section_match.group(1)
-            sections[current_section] = []
+            sections[current_section] = [] # type: ignore
             current_item_index = None
             continue
 

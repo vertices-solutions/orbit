@@ -37,6 +37,7 @@ use crate::app::types::{
 const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
 const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
 const ORBITFILE_NAME: &str = "Orbitfile";
+const LIST_PARTITIONS_COMMAND: &str = "scontrol show partition -o";
 
 #[derive(Clone)]
 pub struct UseCases {
@@ -172,6 +173,100 @@ impl UseCases {
             },
         );
         Ok(jobs)
+    }
+
+    pub async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>> {
+        let cluster_name = name.trim();
+        if cluster_name.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+
+        let host = match self.clusters.get_by_name(cluster_name).await? {
+            Some(host) => host,
+            None => {
+                return Err(AppError::with_message(
+                    AppErrorKind::NotFound,
+                    codes::NOT_FOUND,
+                    format!("cluster '{cluster_name}' not found"),
+                ));
+            }
+        };
+
+        let config = self.config_for_host(&host).await?;
+        if self
+            .remote_exec
+            .needs_connect(&config)
+            .await
+            .unwrap_or(true)
+        {
+            let stream = NoopStreamOutput;
+            let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
+            drop(mfa_tx);
+            let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+            self.remote_exec
+                .ensure_connected(&config, &stream, &mut mfa_port)
+                .await
+                .map_err(|err| {
+                    AppError::with_message(
+                        AppErrorKind::Aborted,
+                        codes::REMOTE_ERROR,
+                        format!("failed to connect to cluster '{cluster_name}': {err}"),
+                    )
+                })?;
+        }
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, LIST_PARTITIONS_COMMAND)
+            .await
+            .map_err(|err| {
+                AppError::with_message(
+                    AppErrorKind::Aborted,
+                    codes::REMOTE_ERROR,
+                    format!("failed to enumerate partitions on '{cluster_name}': {err}"),
+                )
+            })?;
+
+        if capture.exit_code != 0 {
+            let stderr = String::from_utf8_lossy(&capture.stderr);
+            let detail = stderr.trim();
+            return Err(AppError::with_message(
+                AppErrorKind::Aborted,
+                codes::REMOTE_ERROR,
+                if detail.is_empty() {
+                    format!(
+                        "partition enumeration command failed on '{cluster_name}' with exit code {}",
+                        capture.exit_code
+                    )
+                } else {
+                    format!(
+                        "partition enumeration command failed on '{cluster_name}' with exit code {}: {}",
+                        capture.exit_code, detail
+                    )
+                },
+            ));
+        }
+
+        let output = String::from_utf8(capture.stdout).map_err(|err| {
+            AppError::with_message(
+                AppErrorKind::Internal,
+                codes::REMOTE_ERROR,
+                format!("failed to decode partition output from '{cluster_name}': {err}"),
+            )
+        })?;
+
+        let parsed = slurm::parse_scontrol_partitions(&output).map_err(|err| {
+            AppError::with_message(
+                AppErrorKind::Internal,
+                codes::REMOTE_ERROR,
+                format!("failed to parse partition output from '{cluster_name}': {err}"),
+            )
+        })?;
+
+        Ok(parsed.into_iter().map(|partition| partition.name).collect())
     }
 
     pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
@@ -3116,7 +3211,7 @@ fn normalize_project_filter(project_filter: Option<&str>) -> AppResult<Option<St
 mod tests {
     use super::*;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use crate::app::ports::ExecCapture;
     use crate::app::types::{Distro, SlurmVersion};
@@ -3180,6 +3275,92 @@ mod tests {
 
         async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
             panic!("remove_session should not be called in list_jobs tests");
+        }
+    }
+
+    struct ScriptedRemoteExec {
+        capture: Mutex<Option<AppResult<ExecCapture>>>,
+        needs_connect: bool,
+        ensure_connected_error: Option<AppError>,
+    }
+
+    impl ScriptedRemoteExec {
+        fn new(
+            capture: AppResult<ExecCapture>,
+            needs_connect: bool,
+            ensure_connected_error: Option<AppError>,
+        ) -> Self {
+            Self {
+                capture: Mutex::new(Some(capture)),
+                needs_connect,
+                ensure_connected_error,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for ScriptedRemoteExec {
+        async fn exec_capture(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+        ) -> AppResult<ExecCapture> {
+            self.capture
+                .lock()
+                .expect("capture lock")
+                .take()
+                .expect("capture result should be present")
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in list_partitions tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            if let Some(err) = self.ensure_connected_error.clone() {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in list_partitions tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            Ok(self.needs_connect)
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in list_partitions tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in list_partitions tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("remove_session should not be called in list_partitions tests");
         }
     }
 
@@ -3247,7 +3428,13 @@ mod tests {
         }
     }
 
-    async fn build_usecases_for_list_jobs_tests() -> UseCases {
+    fn sample_localhost_host(name: &str) -> NewHost {
+        let mut host = sample_host(name);
+        host.address = Address::Hostname("localhost".to_string());
+        host
+    }
+
+    async fn build_usecases_with_remote_exec(remote_exec: Arc<dyn RemoteExecPort>) -> UseCases {
         let store = crate::adapters::db::HostStore::open_memory()
             .await
             .expect("in-memory host store");
@@ -3255,7 +3442,6 @@ mod tests {
         let clusters: Arc<dyn ClusterStorePort> = db.clone();
         let jobs: Arc<dyn JobStorePort> = db.clone();
         let projects: Arc<dyn ProjectStorePort> = db;
-        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(NoopRemoteExec);
         let file_sync: Arc<dyn FileSyncPort> = Arc::new(NoopFileSync);
         let local_fs: Arc<dyn LocalFilesystemPort> = Arc::new(crate::adapters::fs::LocalFilesystem);
         let network: Arc<dyn NetworkProbePort> = Arc::new(crate::adapters::network::NetworkAdapter);
@@ -3273,6 +3459,11 @@ mod tests {
             telemetry,
             std::env::temp_dir(),
         )
+    }
+
+    async fn build_usecases_for_list_jobs_tests() -> UseCases {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(NoopRemoteExec);
+        build_usecases_with_remote_exec(remote_exec).await
     }
 
     async fn seed_jobs_for_project_filtering(usecases: &UseCases) {
@@ -3340,6 +3531,121 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name, "cluster-a");
         assert_eq!(jobs[0].project_name.as_deref(), Some("demo-project"));
+    }
+
+    const SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED: &str = concat!(
+        "PartitionName=alpha_interactive AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL ",
+        "AllocNodes=ALL Default=NO QoS=interac DefaultTime=00:15:00 DisableRootJobs=YES ",
+        "ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO MaxNodes=UNLIMITED ",
+        "MaxTime=08:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED ",
+        "MaxCPUsPerSocket=UNLIMITED Nodes=c[1-10] PriorityJobFactor=1 PriorityTier=1 ",
+        "RootOnly=NO ReqResv=NO OverSubscribe=NO OverTimeLimit=NONE PreemptMode=OFF State=UP ",
+        "TotalCPUs=1920 TotalNodes=10 SelectTypeParameters=NONE JobDefaults=(null) ",
+        "DefMemPerCPU=256 MaxMemPerNode=UNLIMITED ",
+        "TRES=cpu=1920,mem=60000G,node=10,billing=15000000 ",
+        "TRESBillingWeights=CPU=1000,Mem=250G\n",
+        "PartitionName=beta_backfill AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL ",
+        "AllocNodes=ALL Default=NO QoS=N/A DefaultTime=00:15:00 DisableRootJobs=YES ",
+        "ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO MaxNodes=UNLIMITED ",
+        "MaxTime=1-00:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED ",
+        "MaxCPUsPerSocket=UNLIMITED Nodes=g[1-5] PriorityJobFactor=12 PriorityTier=1 ",
+        "RootOnly=NO ReqResv=NO OverSubscribe=NO OverTimeLimit=NONE PreemptMode=OFF State=UP ",
+        "TotalCPUs=560 TotalNodes=5 SelectTypeParameters=NONE JobDefaults=(null) ",
+        "DefMemPerCPU=256 MaxMemPerNode=UNLIMITED ",
+        "TRES=cpu=560,mem=10000G,node=5,billing=500000,gres/gpu=80 ",
+        "TRESBillingWeights=CPU=871.43,Mem=47.31G,GRES/gpu:h100=12200\n",
+        "PartitionName=gamma_oversub AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL ",
+        "AllocNodes=ALL Default=NO QoS=N/A DefaultTime=00:15:00 DisableRootJobs=YES ",
+        "ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO MaxNodes=UNLIMITED ",
+        "MaxTime=7-00:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED ",
+        "MaxCPUsPerSocket=UNLIMITED Nodes=o[1-3] PriorityJobFactor=4 PriorityTier=10 ",
+        "RootOnly=NO ReqResv=NO OverSubscribe=FORCE:8 OverTimeLimit=NONE PreemptMode=OFF ",
+        "State=UP TotalCPUs=132 TotalNodes=3 SelectTypeParameters=NONE JobDefaults=(null) ",
+        "DefMemPerCPU=256 MaxMemPerNode=UNLIMITED ",
+        "TRES=cpu=132,mem=552000M,node=3,billing=115028,gres/gpu=12,gres/gpu:t4=12 ",
+        "TRESBillingWeights=CPU=871.43,Mem=47.31G,GRES/gpu:h100=12200\n"
+    );
+
+    #[tokio::test]
+    async fn list_partitions_returns_partition_names() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED.as_bytes().to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let partitions = usecases
+            .list_partitions("cluster-a")
+            .await
+            .expect("list partitions");
+        assert_eq!(
+            partitions,
+            vec![
+                "alpha_interactive".to_string(),
+                "beta_backfill".to_string(),
+                "gamma_oversub".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_partitions_rejects_empty_cluster_name() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases
+            .list_partitions("   ")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn list_partitions_returns_not_found_for_unknown_cluster() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases
+            .list_partitions("unknown-cluster")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::NotFound);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_partitions_returns_remote_error_when_command_fails() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: b"scontrol: command not found".to_vec(),
+                exit_code: 127,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let err = usecases
+            .list_partitions("cluster-a")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::Aborted);
+        assert_eq!(err.code(), codes::REMOTE_ERROR);
+        assert!(err.message().contains("exit code 127"));
+        assert!(err.message().contains("command not found"));
     }
 
     #[test]

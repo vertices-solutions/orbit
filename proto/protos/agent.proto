@@ -227,6 +227,18 @@ message ListClustersResponse {
   repeated ListClustersUnitResponse clusters = 1;
 }
 
+message ListPartitionsRequest {
+  string name = 1;
+}
+
+message ListPartitionsUnitResponse {
+  string name = 1;
+}
+
+message ListPartitionsResponse {
+  repeated ListPartitionsUnitResponse partitions = 1;
+}
+
 message DeleteClusterRequest {
   string name = 1;
 }
@@ -371,6 +383,7 @@ service Agent {
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ResolveHomeDir(stream ResolveHomeDirRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse);
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);

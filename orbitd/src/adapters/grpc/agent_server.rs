@@ -11,9 +11,10 @@ use proto::{
     CleanupJobRequest, DeleteClusterRequest, DeleteClusterResponse, DeleteProjectRequest,
     DeleteProjectResponse, GetProjectRequest, GetProjectResponse, JobLogsRequest,
     ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse,
-    ListProjectsRequest, ListProjectsResponse, LsRequest, MfaAnswer, PingReply, PingRequest,
-    ResolveHomeDirRequest, RetrieveJobRequest, SetClusterRequest, StreamEvent, SubmitJobRequest,
-    SubmitProjectRequest, SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
+    ListPartitionsRequest, ListPartitionsResponse, ListPartitionsUnitResponse, ListProjectsRequest,
+    ListProjectsResponse, LsRequest, MfaAnswer, PingReply, PingRequest, ResolveHomeDirRequest,
+    RetrieveJobRequest, SetClusterRequest, StreamEvent, SubmitJobRequest, SubmitProjectRequest,
+    SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -677,6 +678,33 @@ impl Agent for GrpcAgent {
             .map_err(status_from_app_error)?;
         tracing::info!("delete_cluster completed remote_addr={remote_addr} name={name}");
         Ok(Response::new(DeleteClusterResponse { deleted }))
+    }
+
+    async fn list_partitions(
+        &self,
+        request: Request<ListPartitionsRequest>,
+    ) -> Result<Response<ListPartitionsResponse>, Status> {
+        let span = rpc_span(&request, "ListPartitions");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let name = request.into_inner().name;
+        let partitions = self
+            .usecases
+            .list_partitions(&name)
+            .await
+            .map_err(status_from_app_error)?;
+        let responses = partitions
+            .into_iter()
+            .map(|name| ListPartitionsUnitResponse { name })
+            .collect::<Vec<_>>();
+        tracing::info!(
+            "list_partitions remote_addr={remote_addr} name={name} count={}",
+            responses.len()
+        );
+        Ok(Response::new(ListPartitionsResponse {
+            partitions: responses,
+        }))
     }
 
     async fn submit_job(
