@@ -672,13 +672,17 @@ impl Agent for GrpcAgent {
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
-        let name = request.into_inner().name.trim().to_string();
+        let inbound = request.into_inner();
+        let name = inbound.name.trim().to_string();
+        let force = inbound.force;
         let deleted = self
             .usecases
-            .delete_cluster(&name)
+            .delete_cluster(&name, force)
             .await
             .map_err(status_from_app_error)?;
-        tracing::info!("delete_cluster completed remote_addr={remote_addr} name={name}");
+        tracing::info!(
+            "delete_cluster completed remote_addr={remote_addr} name={name} force={force}"
+        );
         Ok(Response::new(DeleteClusterResponse { deleted }))
     }
 

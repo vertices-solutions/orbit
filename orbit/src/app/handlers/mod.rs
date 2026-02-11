@@ -579,7 +579,7 @@ pub async fn handle_cluster_delete(
         }
     }
 
-    let deleted = ctx.orbitd.delete_cluster(&cmd.name).await?;
+    let deleted = ctx.orbitd.delete_cluster(&cmd.name, cmd.force).await?;
     if !deleted {
         return Err(AppError::cluster_not_found(format!(
             "cluster name '{}' is not known",

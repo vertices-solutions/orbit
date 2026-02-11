@@ -145,6 +145,7 @@ pub struct SetClusterCommand {
 pub struct DeleteClusterCommand {
     pub name: String,
     pub yes: bool,
+    pub force: bool,
 }
 
 #[derive(Debug, Clone)]

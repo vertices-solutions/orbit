@@ -290,6 +290,7 @@ message ListAccountsResponse {
 
 message DeleteClusterRequest {
   string name = 1;
+  bool force = 2; // allow deleting cluster even if it has running jobs
 }
 
 message DeleteClusterResponse {

@@ -126,6 +126,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             ClusterCmd::Delete(args) => ClusterCommand::Delete(DeleteClusterCommand {
                 name: args.name,
                 yes: args.yes,
+                force: args.force,
             }),
         }),
         Cmd::Project(project_args) => Command::Project(match project_args.cmd {

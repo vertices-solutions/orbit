@@ -299,6 +299,9 @@ pub struct DeleteClusterArgs {
     /// Skip the confirmation prompt.
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Force delete the cluster even if it has running jobs.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -505,6 +508,30 @@ mod tests {
                 _ => panic!("expected project delete command"),
             },
             _ => panic!("expected project command"),
+        }
+    }
+
+    #[test]
+    fn cluster_delete_force_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "cluster", "delete", "cluster-a"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Delete(delete) => assert!(!delete.force),
+                _ => panic!("expected cluster delete command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_delete_force_sets_true() {
+        let args = Cli::parse_from(["orbit", "cluster", "delete", "cluster-a", "--force"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Delete(delete) => assert!(delete.force),
+                _ => panic!("expected cluster delete command"),
+            },
+            _ => panic!("expected cluster command"),
         }
     }
 

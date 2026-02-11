@@ -245,10 +245,11 @@ impl OrbitdPort for GrpcOrbitdPort {
             .ok_or_else(|| AppError::remote_error("missing project in response"))
     }
 
-    async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
+    async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool> {
         let mut client = self.connect().await?;
         let delete_request = DeleteClusterRequest {
             name: name.to_string(),
+            force,
         };
         let response = match timeout(
             Duration::from_secs(5),

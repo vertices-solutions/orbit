@@ -568,7 +568,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(project)
     }
 
-    pub async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
+    pub async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(AppError::new(
@@ -576,7 +576,27 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 codes::INVALID_ARGUMENT,
             ));
         }
+        let Some(_host) = self.clusters.get_by_name(trimmed).await? else {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::NOT_FOUND,
+            ));
+        };
+        if !force {
+            let running_jobs = self.jobs.list_running_jobs().await?;
+            if running_jobs.iter().any(|job| job.name == trimmed) {
+                return Err(AppError::with_message(
+                    AppErrorKind::Conflict,
+                    codes::CONFLICT,
+                    format!(
+                        "deleting cluster '{trimmed}' is prohibited because it has running jobs; \
+cancel them with `job cancel` or pass --force"
+                    ),
+                ));
+            }
+        }
         let deleted = self.clusters.delete_by_name(trimmed).await?;
+        //TODO: can this even happen, or this is over-checking?
         if deleted == 0 {
             return Err(AppError::new(
                 AppErrorKind::InvalidArgument,
@@ -3845,6 +3865,68 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct DeleteClusterRemoteExec;
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for DeleteClusterRemoteExec {
+        async fn exec_capture(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+        ) -> AppResult<ExecCapture> {
+            panic!("exec_capture should not be called in delete_cluster tests");
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in delete_cluster tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected should not be called in delete_cluster tests");
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in delete_cluster tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            panic!("needs_connect should not be called in delete_cluster tests");
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in delete_cluster tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in delete_cluster tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            Ok(true)
+        }
+    }
+
     struct ScriptedRemoteExec {
         capture: Mutex<Option<AppResult<ExecCapture>>>,
         needs_connect: bool,
@@ -4171,6 +4253,101 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name, "cluster-a");
         assert_eq!(jobs[0].project_name.as_deref(), Some("demo-project"));
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_rejects_running_jobs_without_force() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+        let job_id = usecases
+            .jobs
+            .insert_job(&sample_job(host_id, "run-a", None))
+            .await
+            .expect("insert job");
+
+        let err = usecases
+            .delete_cluster("cluster-a", false)
+            .await
+            .expect_err("delete should fail");
+
+        assert_eq!(err.kind(), AppErrorKind::Conflict);
+        assert_eq!(err.code(), codes::CONFLICT);
+        assert!(err.message().contains("running jobs"));
+        assert!(err.message().contains("--force"));
+        assert!(
+            usecases
+                .clusters
+                .get_by_name("cluster-a")
+                .await
+                .expect("cluster lookup")
+                .is_some()
+        );
+        assert!(
+            usecases
+                .jobs
+                .get_job_by_job_id(job_id)
+                .await
+                .expect("job lookup")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_returns_not_found_for_unknown_cluster() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+
+        let err = usecases
+            .delete_cluster("unknown-cluster", false)
+            .await
+            .expect_err("delete should fail");
+
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_force_deletes_cluster_and_associated_jobs() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+        let job_id = usecases
+            .jobs
+            .insert_job(&sample_job(host_id, "run-a", None))
+            .await
+            .expect("insert job");
+
+        let deleted = usecases
+            .delete_cluster("cluster-a", true)
+            .await
+            .expect("delete should succeed");
+
+        assert!(deleted);
+        assert!(
+            usecases
+                .clusters
+                .get_by_name("cluster-a")
+                .await
+                .expect("cluster lookup")
+                .is_none()
+        );
+        assert!(
+            usecases
+                .jobs
+                .get_job_by_job_id(job_id)
+                .await
+                .expect("job lookup")
+                .is_none()
+        );
     }
 
     const SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED: &str = concat!(

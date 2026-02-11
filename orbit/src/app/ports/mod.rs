@@ -83,7 +83,7 @@ pub trait OrbitdPort: Send + Sync {
     async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;
     async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>>;
     async fn delete_project(&self, name: &str) -> AppResult<bool>;
-    async fn delete_cluster(&self, name: &str) -> AppResult<bool>;
+    async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool>;
 
     async fn ls(
         &self,
