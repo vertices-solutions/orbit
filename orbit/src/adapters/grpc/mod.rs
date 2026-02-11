@@ -965,8 +965,6 @@ impl OrbitdPort for GrpcOrbitdPort {
                         }
                         gathering_active = false;
                     }
-                    let message = format_status_error(&status);
-                    output.on_stderr(message.as_bytes()).await?;
                     output
                         .on_error(remote_code_for_status(status.code()))
                         .await?;
@@ -1334,9 +1332,7 @@ where
             },
             Ok(proto::StreamEvent { event: None }) => {}
             Err(status) => {
-                let message = format_status_error(&status);
                 let remote_code = remote_code_for_status(status.code());
-                output.on_stderr(message.as_bytes()).await?;
                 output.on_error(remote_code).await?;
                 output.on_exit_code(map_error_code(remote_code)).await?;
                 break;
@@ -1390,8 +1386,6 @@ where
             },
             Ok(proto::SubmitStreamEvent { event: None }) => {}
             Err(status) => {
-                let message = format_status_error(&status);
-                output.on_stderr(message.as_bytes()).await?;
                 output
                     .on_error(remote_code_for_status(status.code()))
                     .await?;
