@@ -15,9 +15,16 @@ pub enum StreamKind {
 }
 
 pub trait PromptFeedbackPort: Send {
+    fn start_information_gathering(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+    fn stop_information_gathering(&mut self) -> AppResult<()> {
+        Ok(())
+    }
     fn start_validation(&mut self, message: &str) -> AppResult<()>;
+    fn stop_validation(&mut self) -> AppResult<()>;
     fn finish_success(&mut self, message: &str) -> AppResult<()>;
-    fn finish_failure(&mut self) -> AppResult<()>;
+    fn finish_failure(&mut self, message: &str) -> AppResult<()>;
 }
 
 pub struct PromptLine {
@@ -37,6 +44,13 @@ impl PromptLine {
         Ok(())
     }
 
+    pub fn stop_validation(&mut self) -> AppResult<()> {
+        if let Some(feedback) = self.feedback.as_mut() {
+            feedback.stop_validation()?;
+        }
+        Ok(())
+    }
+
     pub fn finish_success(&mut self, message: &str) -> AppResult<()> {
         if let Some(feedback) = self.feedback.as_mut() {
             feedback.finish_success(message)?;
@@ -44,9 +58,9 @@ impl PromptLine {
         Ok(())
     }
 
-    pub fn finish_failure(&mut self) -> AppResult<()> {
+    pub fn finish_failure(&mut self, message: &str) -> AppResult<()> {
         if let Some(feedback) = self.feedback.as_mut() {
-            feedback.finish_failure()?;
+            feedback.finish_failure(message)?;
         }
         Ok(())
     }
@@ -222,6 +236,7 @@ pub trait InteractionPort: Send + Sync {
         help: &str,
         default: &str,
     ) -> AppResult<PromptLine>;
+    async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>>;
     async fn select_sbatch(&self, options: &[String]) -> AppResult<Option<String>>;
     async fn select_enum(
         &self,

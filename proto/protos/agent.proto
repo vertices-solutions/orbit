@@ -30,6 +30,8 @@ message StreamEvent {
     string error = 5; // Fatal error (connection/auth/exec)
     AddClusterScratchOptions add_cluster_scratch_options = 6; // AddCluster scratch candidates
     AddClusterScratchValidation add_cluster_scratch_validation = 7; // AddCluster scratch validation result
+    AddClusterBasePathPrompt add_cluster_base_path_prompt = 8; // AddCluster default base path prompt
+    AddClusterBasePathValidation add_cluster_base_path_validation = 9; // AddCluster default base path validation result
   }
 }
 
@@ -199,6 +201,20 @@ message AddClusterScratchSelection {
 message AddClusterScratchValidation {
   bool accepted = 1;
   optional string directory = 2;
+  optional string error = 3;
+}
+
+message AddClusterBasePathPrompt {
+  string suggested_path = 1;
+}
+
+message AddClusterBasePathSelection {
+  string path = 1;
+}
+
+message AddClusterBasePathValidation {
+  bool accepted = 1;
+  optional string path = 2;
   optional string error = 3;
 }
 
@@ -393,6 +409,7 @@ message AddClusterRequest {
     AddClusterInit init = 1;
     MfaAnswer mfa = 2;
     AddClusterScratchSelection scratch_selection = 3;
+    AddClusterBasePathSelection base_path_selection = 4;
   }
 }
 

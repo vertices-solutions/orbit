@@ -32,7 +32,7 @@ use crate::app::types::Address;
 use crate::app::usecases::{
     AddClusterInput, CancelJobInput, CleanupJobInput, JobLogsInput, LsInput, ResolveHomeDirInput,
     ResolveScratchDirectoriesInput, RetrieveJobInput, SetClusterInput, SubmitJobInput,
-    SubmitProjectInput, UseCases, ValidateScratchDirectoryInput,
+    SubmitProjectInput, UseCases, ValidateDefaultBasePathInput, ValidateScratchDirectoryInput,
 };
 
 pub type OutStream =
@@ -987,6 +987,8 @@ impl Agent for GrpcAgent {
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
+        let (base_path_tx, mut base_path_rx) =
+            mpsc::channel::<proto::AddClusterBasePathSelection>(16);
         let (scratch_tx, mut scratch_rx) = mpsc::channel::<proto::AddClusterScratchSelection>(16);
         tokio::spawn(
             async move {
@@ -999,6 +1001,11 @@ impl Agent for GrpcAgent {
                         }
                         Some(proto::add_cluster_request::Msg::ScratchSelection(selection)) => {
                             if scratch_tx.send(selection).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(proto::add_cluster_request::Msg::BasePathSelection(selection)) => {
+                            if base_path_tx.send(selection).await.is_err() {
                                 break;
                             }
                         }
@@ -1016,7 +1023,90 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
+                let mut resolved_default_base_path = default_base_path;
                 let mut resolved_scratch_directory = default_scratch_directory;
+
+                if interactive_scratch_selection && resolved_default_base_path.is_none() {
+                    if stream_output
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::AddClusterBasePathPrompt(
+                                proto::AddClusterBasePathPrompt {
+                                    suggested_path: "~/runs".to_string(),
+                                },
+                            )),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+
+                    loop {
+                        let Some(selection) = base_path_rx.recv().await else {
+                            let _ = evt_tx
+                                .send(Err(Status::cancelled(codes::CANCELED)))
+                                .await;
+                            return;
+                        };
+                        let validate_input = ValidateDefaultBasePathInput {
+                            username: username.clone(),
+                            address: address.clone(),
+                            port,
+                            identity_path: identity_path.clone(),
+                            session_name: Some(name.clone()),
+                            base_path: selection.path,
+                        };
+                        match usecases
+                            .validate_default_base_path(validate_input, &stream_output, &mut mfa_port)
+                            .await
+                        {
+                            Ok(path) => {
+                                resolved_default_base_path = Some(path.clone());
+                                if stream_output
+                                    .send(StreamEvent {
+                                        event: Some(
+                                            stream_event::Event::AddClusterBasePathValidation(
+                                                proto::AddClusterBasePathValidation {
+                                                    accepted: true,
+                                                    path: Some(path),
+                                                    error: None,
+                                                },
+                                            ),
+                                        ),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                break;
+                            }
+                            Err(err) if err.kind() == AppErrorKind::InvalidArgument => {
+                                if stream_output
+                                    .send(StreamEvent {
+                                        event: Some(
+                                            stream_event::Event::AddClusterBasePathValidation(
+                                                proto::AddClusterBasePathValidation {
+                                                    accepted: false,
+                                                    path: None,
+                                                    error: Some(err.message().to_string()),
+                                                },
+                                            ),
+                                        ),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Err(err) => {
+                                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                                return;
+                            }
+                        }
+                    }
+                }
 
                 if interactive_scratch_selection && resolved_scratch_directory.is_none() {
                     let resolve_input = ResolveScratchDirectoriesInput {
@@ -1182,7 +1272,7 @@ impl Agent for GrpcAgent {
                     address,
                     port,
                     identity_path,
-                    default_base_path,
+                    default_base_path: resolved_default_base_path,
                     default_scratch_directory: resolved_scratch_directory,
                 };
                 if let Err(err) = usecases

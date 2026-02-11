@@ -27,6 +27,7 @@ pub struct SubmitCapture {
 #[derive(Debug, Default, Clone)]
 pub struct AddClusterCapture {
     pub stream: StreamCapture,
+    pub default_base_path: Option<String>,
     pub default_scratch_directory: Option<String>,
 }
 

@@ -743,6 +743,38 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(normalized)
     }
 
+    pub async fn validate_default_base_path(
+        &self,
+        input: ValidateDefaultBasePathInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<String> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username,
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        let resolved = resolve_default_base_path(Some(input.base_path), &home_dir)?;
+        let normalized = normalize_default_base_path(resolved)?
+            .ok_or_else(|| invalid_argument("default base path cannot be empty"))?;
+        validate_and_prepare_default_base_path(self.remote_exec.as_ref(), &config, &normalized)
+            .await?;
+        tracing::info!("default base path validated resolved={}", normalized);
+        Ok(normalized)
+    }
+
     pub async fn ls(
         &self,
         input: LsInput,
@@ -2768,15 +2800,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             resolve_default_base_path(input.default_base_path, &home_dir)?;
         let normalized_default_base_path = normalize_default_base_path(resolved_default_base_path)?;
         if let Some(ref dbp) = normalized_default_base_path {
-            let command = format!("mkdir -p {}", dbp);
-            let capture = self
-                .remote_exec
-                .exec_capture(&config, &command)
-                .await
-                .map_err(|_| AppError::new(AppErrorKind::Internal, codes::REMOTE_ERROR))?;
-            if capture.exit_code != 0 {
-                return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
-            }
+            validate_and_prepare_default_base_path(self.remote_exec.as_ref(), &config, dbp).await?;
         }
         let resolved_default_scratch_directory =
             resolve_default_scratch_directory(input.default_scratch_directory, &home_dir)?;
@@ -2841,6 +2865,16 @@ pub struct ValidateScratchDirectoryInput {
     pub identity_path: Option<String>,
     pub session_name: Option<String>,
     pub directory: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidateDefaultBasePathInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+    pub base_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -3271,6 +3305,97 @@ async fn validate_scratch_directory_access(
     Ok(resolved)
 }
 
+async fn validate_and_prepare_default_base_path(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+    base_path: &str,
+) -> AppResult<()> {
+    let base_path_escaped = shell::sh_escape(base_path);
+
+    let exists_dir_command = format!("test -d {base_path_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &exists_dir_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+
+    if capture.exit_code != 0 {
+        let exists_entry_command = format!("test -e {base_path_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &exists_entry_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code == 0 {
+            return Err(invalid_argument(format!(
+                "default base path {base_path} exists but is not a directory"
+            )));
+        }
+
+        let parent = Path::new(base_path)
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+        let parent_escaped = shell::sh_escape(&parent);
+
+        let parent_exists_command = format!("test -d {parent_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &parent_exists_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(invalid_argument(format!(
+                "parent directory {parent} doesn't exist; only one level can be created"
+            )));
+        }
+
+        let parent_permissions_command =
+            format!("test -w {parent_escaped} && test -x {parent_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &parent_permissions_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(invalid_argument(format!(
+                "insufficient permissions to create {base_path} under {parent}"
+            )));
+        }
+
+        // Create only the specified directory. Parent directories must already exist.
+        let create_command = format!("mkdir -- {base_path_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &create_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(invalid_argument(format!(
+                "default base path {base_path} can't be created"
+            )));
+        }
+    }
+
+    let resolve_command = format!("cd -- {base_path_escaped} && pwd -P");
+    let capture = remote_exec
+        .exec_capture(config, &resolve_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "default base path {base_path} can't be accessed"
+        )));
+    }
+
+    let resolved = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let resolved = resolved.trim();
+    if resolved.is_empty() || !resolved.starts_with('/') {
+        return Err(invalid_argument(format!(
+            "default base path {base_path} can't be accessed"
+        )));
+    }
+
+    Ok(())
+}
+
 fn resolve_retrieve_local_target(
     path: &str,
     remote_path: &str,
@@ -3625,6 +3750,7 @@ fn normalize_project_filter(project_filter: Option<&str>) -> AppResult<Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -3776,6 +3902,78 @@ mod tests {
 
         async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
             panic!("remove_session should not be called in list_partitions tests");
+        }
+    }
+
+    struct SequencedRemoteExec {
+        captures: Mutex<VecDeque<(String, AppResult<ExecCapture>)>>,
+    }
+
+    impl SequencedRemoteExec {
+        fn new(captures: Vec<(String, AppResult<ExecCapture>)>) -> Self {
+            Self {
+                captures: Mutex::new(VecDeque::from(captures)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for SequencedRemoteExec {
+        async fn exec_capture(&self, _config: &SshConfig, command: &str) -> AppResult<ExecCapture> {
+            let mut captures = self.captures.lock().expect("captures lock");
+            let Some((expected, result)) = captures.pop_front() else {
+                panic!("unexpected command: {command}");
+            };
+            assert_eq!(command, expected);
+            result
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in base-path validation tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected should not be called in base-path validation tests");
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in base-path validation tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            panic!("needs_connect should not be called in base-path validation tests");
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in base-path validation tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in base-path validation tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("remove_session should not be called in base-path validation tests");
         }
     }
 
@@ -4211,6 +4409,123 @@ mod tests {
         )
         .expect("target");
         assert_eq!(target, base.join("output.log"));
+    }
+
+    fn sample_ssh_config_for_validation() -> SshConfig {
+        build_ssh_config(
+            Some("test-session".to_string()),
+            "alice".to_string(),
+            &Address::Hostname("cluster.example.com".to_string()),
+            "127.0.0.1:22".parse().expect("socket addr"),
+            None,
+        )
+    }
+
+    fn ok_capture(exit_code: i32, stdout: &str) -> AppResult<ExecCapture> {
+        Ok(ExecCapture {
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            exit_code,
+        })
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_creates_only_requested_directory() {
+        let base_path = "/home/alice/runs";
+        let parent = "/home/alice";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let parent_escaped = shell::sh_escape(parent);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -d {parent_escaped}"), ok_capture(0, "")),
+            (
+                format!("test -w {parent_escaped} && test -x {parent_escaped}"),
+                ok_capture(0, ""),
+            ),
+            (format!("mkdir -- {base_path_escaped}"), ok_capture(0, "")),
+            (
+                format!("cd -- {base_path_escaped} && pwd -P"),
+                ok_capture(0, "/home/alice/runs\n"),
+            ),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect("base path should be prepared");
+        assert!(
+            remote_exec
+                .captures
+                .lock()
+                .expect("captures lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_rejects_missing_parent() {
+        let base_path = "/new/root/runs";
+        let parent = "/new/root";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let parent_escaped = shell::sh_escape(parent);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -d {parent_escaped}"), ok_capture(1, "")),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        let err = validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect_err("must reject missing parent");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(
+            err.message().contains("only one level can be created"),
+            "unexpected error: {}",
+            err.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_rejects_insufficient_parent_permissions() {
+        let base_path = "/home/alice/runs";
+        let parent = "/home/alice";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let parent_escaped = shell::sh_escape(parent);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -d {parent_escaped}"), ok_capture(0, "")),
+            (
+                format!("test -w {parent_escaped} && test -x {parent_escaped}"),
+                ok_capture(1, ""),
+            ),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        let err = validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect_err("must reject insufficient parent permissions");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("insufficient permissions"));
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_rejects_existing_non_directory() {
+        let base_path = "/home/alice/runs";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(0, "")),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        let err = validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect_err("must reject existing non-directory");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("exists but is not a directory"));
     }
 
     #[test]

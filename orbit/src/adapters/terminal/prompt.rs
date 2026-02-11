@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-use super::console::{Spinner, SpinnerTarget, print_with_green_check_stdout};
+use super::console::{
+    Spinner, SpinnerTarget, print_with_green_check_stdout, print_with_red_cross_stdout,
+};
 use anyhow::bail;
 use crossterm::cursor;
 use crossterm::event::{self, Event, KeyCode, KeyModifiers};
@@ -65,14 +67,27 @@ struct PromptLineResult {
 
 pub(super) struct PromptFeedback {
     spinner: Option<Spinner>,
+    gathering_spinner: Option<Spinner>,
     moved: bool,
 }
 
 impl PromptFeedback {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             spinner: None,
+            gathering_spinner: None,
             moved: false,
+        }
+    }
+
+    pub(super) fn start_information_gathering(&mut self, message: &str) -> anyhow::Result<()> {
+        self.gathering_spinner = Spinner::start(message, SpinnerTarget::Stderr);
+        Ok(())
+    }
+
+    pub(super) fn stop_information_gathering(&mut self) {
+        if let Some(mut spinner) = self.gathering_spinner.take() {
+            spinner.stop();
         }
     }
 
@@ -82,6 +97,14 @@ impl PromptFeedback {
         Ok(())
     }
 
+    pub(super) fn stop_validation(&mut self) -> anyhow::Result<()> {
+        if !self.moved && self.spinner.is_none() {
+            return Ok(());
+        }
+        self.stop_spinner();
+        self.position_on_prompt_line()
+    }
+
     pub(super) fn finish_success(&mut self, message: &str) -> anyhow::Result<()> {
         self.stop_spinner();
         self.position_on_prompt_line()?;
@@ -89,12 +112,13 @@ impl PromptFeedback {
         Ok(())
     }
 
-    pub(super) fn finish_failure(&mut self) -> anyhow::Result<()> {
+    pub(super) fn finish_failure(&mut self, message: &str) -> anyhow::Result<()> {
         if !self.moved && self.spinner.is_none() {
             return Ok(());
         }
         self.stop_spinner();
-        self.clear_current_line()
+        self.position_on_prompt_line()?;
+        print_with_red_cross_stdout(message)
     }
 
     fn stop_spinner(&mut self) {
@@ -104,21 +128,6 @@ impl PromptFeedback {
     }
 
     fn position_on_prompt_line(&mut self) -> anyhow::Result<()> {
-        let mut stdout = std::io::stdout();
-        if !self.moved {
-            execute!(stdout, cursor::MoveUp(1))?;
-            self.moved = true;
-        }
-        execute!(
-            stdout,
-            cursor::MoveToColumn(0),
-            terminal::Clear(ClearType::CurrentLine)
-        )?;
-        stdout.flush()?;
-        Ok(())
-    }
-
-    fn clear_current_line(&mut self) -> anyhow::Result<()> {
         let mut stdout = std::io::stdout();
         if !self.moved {
             execute!(stdout, cursor::MoveUp(1))?;

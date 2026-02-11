@@ -14,11 +14,10 @@ use crate::app::errors::{
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
     AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector,
-    build_default_orbitfile_contents, check_registered_project, default_base_path_from_home,
-    discover_project_from_submit_root, load_project_from_root, local_validate_default_base_path,
-    merge_submit_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
-    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
-    validate_project_name,
+    build_default_orbitfile_contents, check_registered_project, discover_project_from_submit_root,
+    load_project_from_root, merge_submit_filters, resolve_orbitfile_sbatch_script,
+    resolve_template_values, sanitize_project_name, template_config_from_json,
+    upsert_orbitfile_project_name, validate_project_name,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -416,10 +415,9 @@ pub async fn handle_cluster_add(
         ctx.interaction.as_ref(),
         ctx.fs.as_ref(),
         ctx.network.as_ref(),
-        ctx.output.as_ref(),
         ctx.ui_mode,
     );
-    let mut resolved = resolver.resolve(cmd, &existing_names).await?;
+    let resolved = resolver.resolve(cmd, &existing_names).await?;
     if let Some(host) = resolved.hostname.as_deref().or(resolved.ip.as_deref()) {
         if let Some(existing) = clusters.iter().find(|cluster| {
             cluster.username == resolved.username
@@ -430,66 +428,6 @@ pub async fn handle_cluster_add(
                 "another cluster with name '{}' is already using {}:{}:{}; use 'cluster set' to update it.",
                 existing.name, resolved.username, host, resolved.port
             )));
-        }
-    }
-
-    let mut needs_base_path_prompt = resolved.default_base_path.is_none();
-    if let Some(ref value) = resolved.default_base_path {
-        if let Err(err) = local_validate_default_base_path(value) {
-            if !ctx.ui_mode.is_interactive() {
-                return Err(err);
-            }
-            ctx.output
-                .warn(&format!(
-                    "Default base path '{}' is invalid: {}",
-                    value, err.message
-                ))
-                .await?;
-            needs_base_path_prompt = true;
-        }
-    }
-
-    if needs_base_path_prompt {
-        let home_dir = ctx
-            .orbitd
-            .resolve_home_dir(
-                Some(resolved.name.clone()),
-                resolved.username.clone(),
-                resolved.hostname.clone(),
-                resolved.ip.clone(),
-                Some(resolved.identity_path.clone()),
-                resolved.port,
-                ctx.interaction.as_ref(),
-            )
-            .await?;
-        loop {
-            let default_path = default_base_path_from_home(&home_dir);
-            let mut prompt = ctx
-                .interaction
-                .prompt_line_with_default_confirmable(
-                    "Default base path: ",
-                    "Remote base folder for projects.",
-                    &default_path,
-                )
-                .await?;
-            let base_path = prompt.input.trim().to_string();
-            prompt.start_validation("Validating default base path...")?;
-            match local_validate_default_base_path(&base_path) {
-                Ok(()) => {
-                    prompt.finish_success(&format!("Default base path: {base_path}"))?;
-                    resolved.default_base_path = Some(base_path);
-                    break;
-                }
-                Err(err) => {
-                    prompt.finish_failure()?;
-                    ctx.output
-                        .warn(&format!(
-                            "Default base path '{}' is invalid: {}",
-                            base_path, err.message
-                        ))
-                        .await?;
-                }
-            }
         }
     }
 
@@ -518,6 +456,10 @@ pub async fn handle_cluster_add(
         ));
     }
 
+    let default_base_path = add_cluster
+        .default_base_path
+        .clone()
+        .or(resolved.default_base_path.clone());
     let default_scratch_directory = add_cluster.default_scratch_directory;
 
     Ok(CommandResult::ClusterAdd {
@@ -527,7 +469,7 @@ pub async fn handle_cluster_add(
         ip: resolved.ip,
         port: resolved.port,
         identity_path: resolved.identity_path,
-        default_base_path: resolved.default_base_path,
+        default_base_path,
         default_scratch_directory,
     })
 }

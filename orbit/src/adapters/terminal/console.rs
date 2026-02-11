@@ -20,6 +20,13 @@ pub(super) fn print_with_green_check_stdout(message: &str) -> Result<()> {
     write_stdout_with_green_ticks(line.as_bytes())
 }
 
+pub(super) fn print_with_red_cross_stdout(message: &str) -> Result<()> {
+    let mut line = String::from("✗ ");
+    line.push_str(message);
+    line.push('\n');
+    write_stdout_with_green_ticks(line.as_bytes())
+}
+
 pub(super) fn print_with_green_check_stderr(message: &str) -> Result<()> {
     let mut line = String::from("✓ ");
     line.push_str(message);

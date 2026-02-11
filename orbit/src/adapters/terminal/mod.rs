@@ -173,9 +173,26 @@ struct TerminalPromptFeedback {
 }
 
 impl PromptFeedbackPort for TerminalPromptFeedback {
+    fn start_information_gathering(&mut self, message: &str) -> AppResult<()> {
+        self.inner
+            .start_information_gathering(message)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    fn stop_information_gathering(&mut self) -> AppResult<()> {
+        self.inner.stop_information_gathering();
+        Ok(())
+    }
+
     fn start_validation(&mut self, message: &str) -> AppResult<()> {
         self.inner
             .start_validation(message)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    fn stop_validation(&mut self) -> AppResult<()> {
+        self.inner
+            .stop_validation()
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
@@ -185,9 +202,9 @@ impl PromptFeedbackPort for TerminalPromptFeedback {
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
-    fn finish_failure(&mut self) -> AppResult<()> {
+    fn finish_failure(&mut self, message: &str) -> AppResult<()> {
         self.inner
-            .finish_failure()
+            .finish_failure(message)
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 }
@@ -237,6 +254,12 @@ impl InteractionPort for TerminalInteraction {
                 )
             })
             .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>> {
+        Ok(Box::new(TerminalPromptFeedback {
+            inner: prompt::PromptFeedback::new(),
+        }))
     }
 
     async fn select_sbatch(&self, options: &[String]) -> AppResult<Option<String>> {

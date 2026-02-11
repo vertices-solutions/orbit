@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 
 use crate::app::commands::{CommandResult, InitActionStatus, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
-use crate::app::ports::{InteractionPort, OutputPort, PromptLine, StreamKind, StreamOutputPort};
+use crate::app::ports::{
+    InteractionPort, OutputPort, PromptFeedbackPort, PromptLine, StreamKind, StreamOutputPort,
+};
 use format::{cluster_to_json, job_to_json};
 
 pub struct JsonOutput;
@@ -71,6 +73,26 @@ impl NonInteractiveInteraction {
     }
 }
 
+struct NoopPromptFeedback;
+
+impl PromptFeedbackPort for NoopPromptFeedback {
+    fn start_validation(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn stop_validation(&mut self) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn finish_success(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn finish_failure(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
 #[tonic::async_trait]
 impl InteractionPort for NonInteractiveInteraction {
     async fn confirm(&self, _prompt: &str, _help: &str) -> AppResult<bool> {
@@ -111,6 +133,10 @@ impl InteractionPort for NonInteractiveInteraction {
         Err(AppError::invalid_argument(
             "input required; rerun without --non-interactive",
         ))
+    }
+
+    async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>> {
+        Ok(Box::new(NoopPromptFeedback))
     }
 
     async fn select_sbatch(&self, _options: &[String]) -> AppResult<Option<String>> {
