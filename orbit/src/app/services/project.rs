@@ -60,19 +60,6 @@ pub struct TemplateField {
     pub enum_values: Vec<String>,
 }
 
-/// Result of checking a registered project on disk.
-/// Captures success/failure and a human-readable reason for failures.
-/// CheckedProjectStatus because ProjectCheckStatus is a type.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CheckedProjectStatus {
-    pub name: String,
-    pub ok: bool,
-    pub reason: Option<String>,
-}
-
-pub type ProjectCheckFailure = CheckedProjectStatus;
-pub type ProjectCheckStatus = CheckedProjectStatus;
-
 /// Top-level Orbitfile representation for serialization/deserialization.
 /// Each section is optional so missing tables can be detected and defaulted.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -368,81 +355,6 @@ pub fn resolve_orbitfile_sbatch_script(
         ));
     }
     Ok(rel.to_string_lossy().replace('\\', "/"))
-}
-
-pub fn check_registered_project(
-    fs: &dyn FilesystemPort,
-    name: &str,
-    path: &Path,
-) -> ProjectCheckStatus {
-    let base_name = name.split_once(':').map(|(base, _)| base).unwrap_or(name);
-    if !fs.is_dir(path).unwrap_or(false) {
-        return CheckedProjectStatus {
-            name: name.to_string(),
-            ok: false,
-            reason: Some(format!(
-                "Project {} path does not exist: {}",
-                name,
-                path.display()
-            )),
-        };
-    }
-    let orbitfile_path = path.join(ORBITFILE_NAME);
-    if !fs.is_file(&orbitfile_path).unwrap_or(false) {
-        return CheckedProjectStatus {
-            name: name.to_string(),
-            ok: false,
-            reason: Some(format!(
-                "Project {} has no Orbitfile at {}",
-                name,
-                orbitfile_path.display()
-            )),
-        };
-    }
-
-    let config = match load_project_from_root(fs, path) {
-        Ok(config) => config,
-        Err(err) => {
-            return CheckedProjectStatus {
-                name: name.to_string(),
-                ok: false,
-                reason: Some(format!(
-                    "Project {} has invalid Orbitfile: {}",
-                    name, err.message
-                )),
-            };
-        }
-    };
-
-    if config.name != base_name {
-        return CheckedProjectStatus {
-            name: name.to_string(),
-            ok: false,
-            reason: Some(format!(
-                "Project {} has invalid Orbitfile: [project].name '{}' does not match registry name '{}'",
-                name, config.name, base_name
-            )),
-        };
-    }
-
-    if let Some(ref sbatch_script) = config.submit_sbatch_script
-        && let Err(err) = resolve_orbitfile_sbatch_script(fs, path, path, sbatch_script)
-    {
-        return CheckedProjectStatus {
-            name: name.to_string(),
-            ok: false,
-            reason: Some(format!(
-                "Project {} has invalid [submit].sbatch_script: {}",
-                name, err.message
-            )),
-        };
-    }
-
-    CheckedProjectStatus {
-        name: name.to_string(),
-        ok: true,
-        reason: None,
-    }
 }
 
 fn trim_optional(value: Option<String>) -> Option<String> {

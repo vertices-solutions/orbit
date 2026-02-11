@@ -62,7 +62,7 @@ by adapters.
   multiple candidates exist; used in `handle_job_submit`. It can also select from
   stored project metadata during `project submit`.
 - `project` service module: Orbitfile discovery/parsing, project name validation, submit filter merge,
-  Orbitfile sbatch resolution, template config JSON parsing, and local project check helpers.
+  Orbitfile sbatch resolution, and template config JSON parsing.
   - `local_validate_default_base_path`: validates base path rules for clusters; used in
     `handle_cluster_add` during default base path checks.
   - `default_base_path_from_home`: derives the default base path from a home directory;
@@ -114,7 +114,6 @@ Ports live in `app/ports`, adapters in `adapters/`:
 - `project init` creates/updates Orbitfile only (no registry write).
 - `project build` packages a tarball, validates sbatch availability, and writes build metadata to the registry.
 - `project submit` is tarball-only and does not require local paths; it uses stored build metadata.
-- `project check` validates registry path, Orbitfile parse/fields, and configured sbatch script path.
 - `project delete` removes a project from the local registry and deletes associated tarballs (with confirmation unless `--yes`).
 - `validate_cluster_live` performs a reachability check and a lightweight `ls` RPC
   to confirm connectivity before submit.

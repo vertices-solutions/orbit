@@ -31,6 +31,9 @@ _orbit() {
             orbit,ping)
                 cmd="orbit__ping"
                 ;;
+            orbit,project)
+                cmd="orbit__project"
+                ;;
             orbit__cluster,add)
                 cmd="orbit__cluster__add"
                 ;;
@@ -88,6 +91,9 @@ _orbit() {
             orbit__help,ping)
                 cmd="orbit__help__ping"
                 ;;
+            orbit__help,project)
+                cmd="orbit__help__project"
+                ;;
             orbit__help__cluster,add)
                 cmd="orbit__help__cluster__add"
                 ;;
@@ -129,6 +135,21 @@ _orbit() {
                 ;;
             orbit__help__job,submit)
                 cmd="orbit__help__job__submit"
+                ;;
+            orbit__help__project,build)
+                cmd="orbit__help__project__build"
+                ;;
+            orbit__help__project,delete)
+                cmd="orbit__help__project__delete"
+                ;;
+            orbit__help__project,init)
+                cmd="orbit__help__project__init"
+                ;;
+            orbit__help__project,list)
+                cmd="orbit__help__project__list"
+                ;;
+            orbit__help__project,submit)
+                cmd="orbit__help__project__submit"
                 ;;
             orbit__job,cancel)
                 cmd="orbit__job__cancel"
@@ -184,6 +205,42 @@ _orbit() {
             orbit__job__help,submit)
                 cmd="orbit__job__help__submit"
                 ;;
+            orbit__project,build)
+                cmd="orbit__project__build"
+                ;;
+            orbit__project,delete)
+                cmd="orbit__project__delete"
+                ;;
+            orbit__project,help)
+                cmd="orbit__project__help"
+                ;;
+            orbit__project,init)
+                cmd="orbit__project__init"
+                ;;
+            orbit__project,list)
+                cmd="orbit__project__list"
+                ;;
+            orbit__project,submit)
+                cmd="orbit__project__submit"
+                ;;
+            orbit__project__help,build)
+                cmd="orbit__project__help__build"
+                ;;
+            orbit__project__help,delete)
+                cmd="orbit__project__help__delete"
+                ;;
+            orbit__project__help,help)
+                cmd="orbit__project__help__help"
+                ;;
+            orbit__project__help,init)
+                cmd="orbit__project__help__init"
+                ;;
+            orbit__project__help,list)
+                cmd="orbit__project__help__list"
+                ;;
+            orbit__project__help,submit)
+                cmd="orbit__project__help__submit"
+                ;;
             *)
                 ;;
         esac
@@ -191,7 +248,7 @@ _orbit() {
 
     case "${cmd}" in
         orbit)
-            opts="-c -h -V --config --non-interactive --help --version ping job cluster completions help"
+            opts="-c -h -V --config --non-interactive --help --version ping job cluster project completions help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 1 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -267,7 +324,7 @@ _orbit() {
             return 0
             ;;
         orbit__cluster__get)
-            opts="-h --json --non-interactive --help <NAME>"
+            opts="-h --non-interactive --help <NAME>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -393,7 +450,7 @@ _orbit() {
             return 0
             ;;
         orbit__cluster__list)
-            opts="-h --json --non-interactive --help"
+            opts="-h --check-reachability --non-interactive --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -427,6 +484,14 @@ _orbit() {
                 return 0
             fi
             case "${prev}" in
+                --host)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --username)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --port)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -461,7 +526,7 @@ _orbit() {
             return 0
             ;;
         orbit__help)
-            opts="ping job cluster completions help"
+            opts="ping job cluster project completions help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -740,6 +805,90 @@ _orbit() {
             COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
             return 0
             ;;
+        orbit__help__project)
+            opts="init build submit list delete"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__help__project__build)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__help__project__delete)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__help__project__init)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__help__project__list)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__help__project__submit)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
         orbit__job)
             opts="-h --non-interactive --help submit list get logs cancel cleanup ls retrieve help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
@@ -783,7 +932,7 @@ _orbit() {
             return 0
             ;;
         orbit__job__get)
-            opts="-h --cluster --json --non-interactive --help <JOB_ID>"
+            opts="-h --cluster --non-interactive --help <JOB_ID>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -941,13 +1090,17 @@ _orbit() {
             return 0
             ;;
         orbit__job__list)
-            opts="-h --cluster --json --non-interactive --help"
+            opts="-h --cluster --project --non-interactive --help"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
                 --cluster)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --project)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
                     ;;
@@ -991,7 +1144,7 @@ _orbit() {
             return 0
             ;;
         orbit__job__retrieve)
-            opts="-h --output --overwrite --force --non-interactive --help <JOB_ID> <PATH>"
+            opts="-h --output --overwrite --force --non-interactive --help <JOB_ID> [PATH]"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
@@ -1009,12 +1162,28 @@ _orbit() {
             return 0
             ;;
         orbit__job__submit)
-            opts="-h --remote-path --new-directory --force --include --exclude --non-interactive --help <NAME> <LOCAL_PATH> [SBATCHSCRIPT]"
+            opts="-h --to --sbatchscript --preset --field --fill-defaults --remote-path --new-directory --force --include --exclude --non-interactive --help <LOCAL_PATH>"
             if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
                 COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
                 return 0
             fi
             case "${prev}" in
+                --to)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --sbatchscript)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --preset)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --field)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 --remote-path)
                     COMPREPLY=($(compgen -f "${cur}"))
                     return 0
@@ -1041,6 +1210,220 @@ _orbit() {
                 return 0
             fi
             case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project)
+            opts="-h --non-interactive --help init build submit list delete help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 2 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__build)
+            opts="-h --package-git --non-interactive --help <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__delete)
+            opts="-y -h --yes --non-interactive --help <NAME>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help)
+            opts="init build submit list delete help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help__build)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help__delete)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help__help)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help__init)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help__list)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__help__submit)
+            opts=""
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 4 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__init)
+            opts="-h --name --non-interactive --help <PATH>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --name)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__list)
+            opts="-h --non-interactive --help"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                *)
+                    COMPREPLY=()
+                    ;;
+            esac
+            COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+            return 0
+            ;;
+        orbit__project__submit)
+            opts="-h --to --sbatchscript --preset --field --fill-defaults --remote-path --new-directory --force --include --exclude --non-interactive --help <PROJECT>"
+            if [[ ${cur} == -* || ${COMP_CWORD} -eq 3 ]] ; then
+                COMPREPLY=( $(compgen -W "${opts}" -- "${cur}") )
+                return 0
+            fi
+            case "${prev}" in
+                --to)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --sbatchscript)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --preset)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --field)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --remote-path)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --include)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
+                --exclude)
+                    COMPREPLY=($(compgen -f "${cur}"))
+                    return 0
+                    ;;
                 *)
                     COMPREPLY=()
                     ;;

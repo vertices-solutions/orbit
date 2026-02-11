@@ -153,9 +153,6 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 })
             }
             ProjectCmd::List(_args) => ProjectCommand::List(ProjectListCommand),
-            ProjectCmd::Check(args) => {
-                ProjectCommand::Check(ProjectCheckCommand { name: args.name })
-            }
             ProjectCmd::Delete(args) => ProjectCommand::Delete(ProjectDeleteCommand {
                 name: args.name,
                 yes: args.yes,

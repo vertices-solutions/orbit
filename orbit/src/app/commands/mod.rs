@@ -153,7 +153,6 @@ pub enum ProjectCommand {
     Build(ProjectBuildCommand),
     Submit(ProjectSubmitCommand),
     List(ProjectListCommand),
-    Check(ProjectCheckCommand),
     Delete(ProjectDeleteCommand),
 }
 
@@ -185,11 +184,6 @@ pub struct ProjectSubmitCommand {
 
 #[derive(Debug, Clone)]
 pub struct ProjectListCommand;
-
-#[derive(Debug, Clone)]
-pub struct ProjectCheckCommand {
-    pub name: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct ProjectDeleteCommand {

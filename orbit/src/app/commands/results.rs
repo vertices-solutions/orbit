@@ -134,9 +134,6 @@ pub enum CommandResult {
     ProjectList {
         projects: Vec<ProjectListItem>,
     },
-    ProjectCheck {
-        checked: usize,
-    },
     ProjectDelete {
         name: String,
     },

@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
-use serde_json::json;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -14,10 +13,10 @@ use crate::app::errors::{
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
     AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector,
-    build_default_orbitfile_contents, check_registered_project, discover_project_from_submit_root,
-    load_project_from_root, merge_submit_filters, resolve_orbitfile_sbatch_script,
-    resolve_template_values, sanitize_project_name, template_config_from_json,
-    upsert_orbitfile_project_name, validate_project_name,
+    build_default_orbitfile_contents, discover_project_from_submit_root, load_project_from_root,
+    merge_submit_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
+    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
+    validate_project_name,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -786,95 +785,6 @@ pub async fn handle_project_list(
     Ok(CommandResult::ProjectList {
         projects: summarized,
     })
-}
-
-pub async fn handle_project_check(
-    ctx: &AppContext,
-    cmd: ProjectCheckCommand,
-) -> AppResult<CommandResult> {
-    if ctx.ui_mode.is_interactive() {
-        let scope = if cmd.name.is_some() {
-            "the selected project"
-        } else {
-            "all registered projects"
-        };
-        ctx.output
-            .info(&format!(
-                "`orbit project check` validates {scope}: project path exists, Orbitfile exists and parses, [project].name matches the registry entry, and [submit].sbatch_script (if set) resolves to a file inside the project root."
-            ))
-            .await?;
-    }
-
-    let projects = match cmd.name {
-        Some(name) => vec![ctx.orbitd.get_project(&name).await?],
-        None => ctx.orbitd.list_projects().await?,
-    };
-
-    let mut statuses = Vec::with_capacity(projects.len());
-    for project in projects {
-        if ctx.ui_mode.is_interactive() {
-            ctx.output
-                .info(&format!("checking {}...", project.name))
-                .await?;
-        }
-        let status = check_registered_project(
-            ctx.fs.as_ref(),
-            &project.name,
-            &PathBuf::from(&project.path),
-        );
-        if ctx.ui_mode.is_interactive() {
-            if status.ok {
-                ctx.output
-                    .success(&format!("{} healthy", status.name))
-                    .await?;
-            } else if let Some(reason) = status.reason.as_deref() {
-                ctx.output
-                    .warn(&format!("✗ {} failed check: {}", status.name, reason))
-                    .await?;
-            } else {
-                ctx.output
-                    .warn(&format!("✗ {} failed check", status.name))
-                    .await?;
-            }
-        }
-        statuses.push(status);
-    }
-
-    let checked = statuses.len();
-    let failed = statuses.iter().filter(|status| !status.ok).count();
-    let passed = checked.saturating_sub(failed);
-    if failed > 0 {
-        if ctx.ui_mode.is_interactive() {
-            ctx.output
-                .warn(&format!(
-                    "{checked} CHECKED, {failed} FAILED, {passed} PASSED"
-                ))
-                .await?;
-        }
-        let details = statuses
-            .iter()
-            .map(|status| {
-                if status.ok {
-                    json!({
-                        "name": status.name,
-                        "ok": true
-                    })
-                } else {
-                    json!({
-                        "name": status.name,
-                        "ok": false,
-                        "reason": status.reason.clone().unwrap_or_else(|| "unknown failure".to_string())
-                    })
-                }
-            })
-            .collect::<Vec<_>>();
-        return Err(
-            AppError::project_check_failed("One or more projects failed checks.")
-                .with_details(json!(details)),
-        );
-    }
-
-    Ok(CommandResult::ProjectCheck { checked })
 }
 
 pub async fn handle_project_delete(

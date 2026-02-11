@@ -450,9 +450,6 @@ fn result_to_json(result: &CommandResult) -> Value {
                 .collect::<Vec<_>>();
             json!({ "projects": items })
         }
-        CommandResult::ProjectCheck { checked } => json!({
-            "checked": checked,
-        }),
         CommandResult::ProjectDelete { name } => json!({
             "name": name,
             "status": "deleted",

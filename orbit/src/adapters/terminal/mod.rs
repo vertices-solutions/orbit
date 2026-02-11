@@ -126,9 +126,6 @@ impl OutputPort for TerminalOutput {
                     print!("{}", format_projects_table(projects));
                 }
             }
-            CommandResult::ProjectCheck { checked } => {
-                println!("{checked} PASSED");
-            }
             CommandResult::ProjectDelete { name } => {
                 println!("Project '{}' deleted.", name);
             }

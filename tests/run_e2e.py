@@ -937,12 +937,6 @@ def main():
                 f"(expected={expected_project_path}, actual={project_record.get('path')})"
             )
 
-        checked = parse_json_output(
-            run_cmd(non_interactive_cmd + ["project", "check", project_ref])
-        )
-        if checked.get("checked") != 1:
-            raise RuntimeError("project lifecycle: project check did not report checked=1")
-
         project_submit_cmd = non_interactive_cmd + [
             "project",
             "submit",
