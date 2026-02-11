@@ -494,7 +494,7 @@ pub async fn handle_cluster_add(
     }
 
     let mut stream_output = ctx.output.stream_output(StreamKind::Generic);
-    let capture = ctx
+    let add_cluster = ctx
         .orbitd
         .add_cluster(
             resolved.name.clone(),
@@ -504,17 +504,21 @@ pub async fn handle_cluster_add(
             Some(resolved.identity_path.clone()),
             resolved.port,
             resolved.default_base_path.clone(),
+            resolved.default_scratch_directory.clone(),
+            ctx.ui_mode.is_interactive(),
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
         .await?;
-    if capture.exit_code.unwrap_or(0) != 0 {
+    if add_cluster.stream.exit_code.unwrap_or(0) != 0 {
         return Err(stream_error(
-            &capture,
+            &add_cluster.stream,
             ErrorContext::Cluster,
             "command failed",
         ));
     }
+
+    let default_scratch_directory = add_cluster.default_scratch_directory;
 
     Ok(CommandResult::ClusterAdd {
         name: resolved.name,
@@ -524,6 +528,7 @@ pub async fn handle_cluster_add(
         port: resolved.port,
         identity_path: resolved.identity_path,
         default_base_path: resolved.default_base_path,
+        default_scratch_directory,
     })
 }
 

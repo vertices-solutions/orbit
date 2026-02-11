@@ -301,6 +301,7 @@ mod tests {
             updated_at: "2026-02-07T00:00:00Z".to_string(),
             accounting_available: true,
             default_base_path: Some("/home/alice/jobs".to_string()),
+            default_scratch_directory: Some("/scratch/alice".to_string()),
         }
     }
 }

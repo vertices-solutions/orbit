@@ -19,9 +19,9 @@ Projects are a first-class concept in the CLI + daemon contract:
   (e.g., gRPC, terminal UI, JSON output, filesystem).
 - Command: a request object representing a single user intent, suffixed with `Command`
   (e.g., `SubmitJobCommand`, `AddClusterCommand`).
-- Handler / Use case: the application logic that executes a command via ports and services. Handlers are
+- Services: various data handling helpers. These should become adapters once the appropriate ports for them are established and a critical mass of code is accumulated.
+- Handler / Use Case: the application logic that executes a command via ports and services. Handlers are
   named with `handle_*` functions in `app/handlers`.
-- Services: various data handling helpers. These should become adapters once the appropriate ports for them are established.
 - Dispatcher: the router that maps a `Command` request to its handler.
 - OutputPort: transforms command result data into user-facing output (tables, JSON).
 - StreamOutput: a stream of output events (stdout/stderr/progress/exit) from long-running operations; 

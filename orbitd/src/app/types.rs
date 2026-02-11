@@ -102,6 +102,7 @@ pub struct NewHost {
     pub accounting_available: bool,
 
     pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
 }
 
 /// Full stored host record.
@@ -121,6 +122,7 @@ pub struct HostRecord {
     pub updated_at: String, // RFC3339
     pub accounting_available: bool,
     pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

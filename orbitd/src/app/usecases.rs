@@ -629,6 +629,120 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(())
     }
 
+    pub async fn resolve_scratch_directories(
+        &self,
+        input: ResolveScratchDirectoriesInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<Vec<String>> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username.clone(),
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        let username = fetch_remote_username(self.remote_exec.as_ref(), &config)
+            .await
+            .unwrap_or_else(|_| input.username.trim().to_string());
+        let raw_candidates = vec![
+            "~/scratch".to_string(),
+            format!("/scratch/{username}"),
+            format!("/localscratch/{username}"),
+        ];
+        tracing::debug!(
+            "scratch discovery start session={} username={} candidates={:?}",
+            config.session_name.as_deref().unwrap_or("<none>"),
+            username,
+            raw_candidates
+        );
+
+        let mut found = Vec::new();
+        for raw in raw_candidates {
+            let resolved = resolve_default_scratch_directory(Some(raw), &home_dir)?;
+            let Some(normalized) = normalize_default_scratch_directory(resolved)? else {
+                continue;
+            };
+            match validate_scratch_directory_access(self.remote_exec.as_ref(), &config, &normalized)
+                .await
+            {
+                Ok(real_path) => {
+                    tracing::debug!(
+                        "scratch discovery accepted candidate={} resolved={}",
+                        normalized,
+                        real_path
+                    );
+                    if !found.contains(&normalized) {
+                        found.push(normalized);
+                    }
+                }
+                Err(err) => {
+                    if err.kind() != AppErrorKind::InvalidArgument {
+                        return Err(err);
+                    }
+                    tracing::debug!(
+                        "scratch discovery rejected candidate={} reason={}",
+                        normalized,
+                        err.message()
+                    );
+                }
+            }
+        }
+        tracing::debug!(
+            "scratch discovery done session={} found={:?}",
+            config.session_name.as_deref().unwrap_or("<none>"),
+            found
+        );
+        Ok(found)
+    }
+
+    pub async fn validate_scratch_directory(
+        &self,
+        input: ValidateScratchDirectoryInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<String> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username,
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        let resolved = resolve_default_scratch_directory(Some(input.directory), &home_dir)?;
+        let normalized = normalize_default_scratch_directory(resolved)?
+            .ok_or_else(|| invalid_argument("scratch directory cannot be empty"))?;
+        let real_path =
+            validate_scratch_directory_access(self.remote_exec.as_ref(), &config, &normalized)
+                .await?;
+        tracing::info!(
+            "scratch directory validated input={} resolved={}",
+            normalized,
+            real_path
+        );
+        Ok(normalized)
+    }
+
     pub async fn ls(
         &self,
         input: LsInput,
@@ -2137,6 +2251,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     port: input.port,
                     identity_path: input.identity_path,
                     default_base_path: input.default_base_path,
+                    default_scratch_directory: input.default_scratch_directory,
                     emit_progress: true,
                 },
                 stream,
@@ -2202,6 +2317,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         let default_base_path = input
             .default_base_path
             .or_else(|| existing.default_base_path.clone());
+        let default_scratch_directory = existing.default_scratch_directory.clone();
         let port = input.port.unwrap_or(existing.port);
 
         let cluster_name = input.name.clone();
@@ -2214,6 +2330,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     port,
                     identity_path,
                     default_base_path,
+                    default_scratch_directory,
                     emit_progress: false,
                 },
                 stream,
@@ -2661,6 +2778,14 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
             }
         }
+        let resolved_default_scratch_directory =
+            resolve_default_scratch_directory(input.default_scratch_directory, &home_dir)?;
+        let normalized_default_scratch_directory =
+            normalize_default_scratch_directory(resolved_default_scratch_directory)?;
+        if let Some(ref path) = normalized_default_scratch_directory {
+            let _ =
+                validate_scratch_directory_access(self.remote_exec.as_ref(), &config, path).await?;
+        }
 
         let new_host = NewHost {
             username: input.username,
@@ -2673,6 +2798,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             identity_path: input.identity_path,
             accounting_available: accounting_enabled,
             default_base_path: normalized_default_base_path,
+            default_scratch_directory: normalized_default_scratch_directory,
         };
 
         if self.clusters.upsert_host(&new_host).await.is_err() {
@@ -2696,6 +2822,25 @@ pub struct ResolveHomeDirInput {
     pub port: u16,
     pub identity_path: Option<String>,
     pub session_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolveScratchDirectoriesInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidateScratchDirectoryInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+    pub directory: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2783,6 +2928,7 @@ pub struct AddClusterInput {
     pub port: u16,
     pub identity_path: Option<String>,
     pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -2803,6 +2949,7 @@ struct ClusterUpsertInput {
     port: u16,
     identity_path: Option<String>,
     default_base_path: Option<String>,
+    default_scratch_directory: Option<String>,
     emit_progress: bool,
 }
 
@@ -2888,6 +3035,27 @@ async fn fetch_remote_home_dir(
     Ok(home.to_string())
 }
 
+async fn fetch_remote_username(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+) -> AppResult<String> {
+    let command = "printf '%s' \"$USER\"";
+    let capture = remote_exec
+        .exec_capture(config, command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    let user_raw = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let user = user_raw.trim();
+    if user.is_empty() {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    Ok(user.to_string())
+}
+
 fn resolve_default_base_path(
     default_base_path: Option<String>,
     home_dir: &str,
@@ -2941,6 +3109,166 @@ fn normalize_default_base_path(default_base_path: Option<String>) -> AppResult<O
             codes::INVALID_ARGUMENT,
         ))
     }
+}
+
+fn resolve_default_scratch_directory(
+    default_scratch_directory: Option<String>,
+    home_dir: &str,
+) -> AppResult<Option<String>> {
+    let default_scratch_directory = default_scratch_directory.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let Some(raw) = default_scratch_directory else {
+        return Ok(None);
+    };
+
+    if raw == "~" {
+        return Ok(Some(home_dir.to_string()));
+    }
+
+    if let Some(suffix) = raw.strip_prefix("~/") {
+        if suffix.is_empty() {
+            return Ok(Some(home_dir.to_string()));
+        }
+        let expanded = PathBuf::from(home_dir).join(suffix);
+        return Ok(Some(expanded.to_string_lossy().into_owned()));
+    }
+
+    if raw.starts_with('~') {
+        return Err(invalid_argument(
+            "scratch directory must be absolute or start with '~/'",
+        ));
+    }
+
+    Ok(Some(raw))
+}
+
+fn normalize_default_scratch_directory(
+    default_scratch_directory: Option<String>,
+) -> AppResult<Option<String>> {
+    let Some(path) = default_scratch_directory else {
+        return Ok(None);
+    };
+    let normalized = remote_path::normalize_path(path);
+    if normalized.is_absolute() {
+        Ok(Some(normalized.to_string_lossy().into_owned()))
+    } else {
+        Err(invalid_argument(
+            "scratch directory must be absolute or start with '~/'",
+        ))
+    }
+}
+
+async fn validate_scratch_directory_access(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+    directory: &str,
+) -> AppResult<String> {
+    let directory_escaped = shell::sh_escape(directory);
+
+    let exists_command = format!("test -d {directory_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &exists_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} doesn't exist"
+        )));
+    }
+
+    let resolve_command = format!("cd -- {directory_escaped} && pwd -P");
+    let capture = remote_exec
+        .exec_capture(config, &resolve_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't be accessed"
+        )));
+    }
+    let resolved = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let resolved = resolved.trim().to_string();
+    if resolved.is_empty() || !resolved.starts_with('/') {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't be accessed"
+        )));
+    }
+    tracing::debug!(
+        "scratch directory resolved input={} resolved={}",
+        directory,
+        resolved
+    );
+    let resolved_escaped = shell::sh_escape(&resolved);
+
+    let list_command = format!("ls -A -- {resolved_escaped} >/dev/null");
+    let capture = remote_exec
+        .exec_capture(config, &list_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't be listed"
+        )));
+    }
+
+    let probe_file = format!(
+        "{}/.orbit-scratch-probe-{}",
+        resolved.trim_end_matches('/'),
+        random::generate_run_directory_name()
+    );
+    let probe_file_escaped = shell::sh_escape(&probe_file);
+
+    let create_command = format!("touch -- {probe_file_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &create_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't create files"
+        )));
+    }
+
+    let write_command = format!("printf 'orbit' > {probe_file_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &write_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        let _ = remote_exec
+            .exec_capture(config, &format!("rm -f -- {probe_file_escaped}"))
+            .await;
+        return Err(invalid_argument(format!(
+            "directory {directory} can't create files"
+        )));
+    }
+
+    let read_command = format!("cat -- {probe_file_escaped} >/dev/null");
+    let capture = remote_exec
+        .exec_capture(config, &read_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        let _ = remote_exec
+            .exec_capture(config, &format!("rm -f -- {probe_file_escaped}"))
+            .await;
+        return Err(invalid_argument(format!(
+            "directory {directory} can't read files"
+        )));
+    }
+
+    let _ = remote_exec
+        .exec_capture(config, &format!("rm -f -- {probe_file_escaped}"))
+        .await;
+    Ok(resolved)
 }
 
 fn resolve_retrieve_local_target(
@@ -3498,6 +3826,7 @@ mod tests {
             kernel_version: "6.8.0".to_string(),
             accounting_available: true,
             default_base_path: Some("/home/alice/runs".to_string()),
+            default_scratch_directory: Some("/scratch/alice".to_string()),
         }
     }
 
@@ -3922,6 +4251,31 @@ mod tests {
     fn normalize_default_base_path_rejects_relative() {
         // Disallows relative default base paths to avoid ambiguous storage roots.
         let err = normalize_default_base_path(Some("relative/path".to_string())).unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn resolve_default_scratch_directory_expands_home_and_preserves_none() {
+        let home = "/home/alice";
+        let resolved = resolve_default_scratch_directory(Some("~/scratch".to_string()), home)
+            .expect("scratch path should resolve");
+        assert_eq!(resolved, Some("/home/alice/scratch".to_string()));
+
+        let resolved = resolve_default_scratch_directory(None, home).expect("none should pass");
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolve_default_scratch_directory_rejects_tilde_prefix() {
+        let err =
+            resolve_default_scratch_directory(Some("~other".to_string()), "/home").unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn normalize_default_scratch_directory_rejects_relative() {
+        let err =
+            normalize_default_scratch_directory(Some("relative/path".to_string())).unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
     }
 

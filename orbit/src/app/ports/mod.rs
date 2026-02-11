@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse, SubmitResult, SubmitStatus};
 
-use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
+use crate::app::commands::{AddClusterCapture, CommandResult, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -162,9 +162,11 @@ pub trait OrbitdPort: Send + Sync {
         identity_path: Option<String>,
         port: u32,
         default_base_path: Option<String>,
+        default_scratch_directory: Option<String>,
+        interactive_scratch_selection: bool,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<StreamCapture>;
+    ) -> AppResult<AddClusterCapture>;
 
     async fn set_cluster(
         &self,

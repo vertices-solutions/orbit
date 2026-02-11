@@ -137,6 +137,7 @@ impl HostStore {
               kernel_version TEXT NOT NULL,
               accounting_available INTEGER NOT NULL,
               default_base_path TEXT,
+              default_scratch_directory TEXT,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               CHECK (hostname IS NOT NULL OR ip IS NOT NULL)
@@ -151,6 +152,26 @@ impl HostStore {
         )
         .execute(&self.pool)
         .await?;
+        // TODO: move migrations into a separate function.
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(hosts)")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+        if !columns.iter().any(|name| name == "default_base_path") {
+            sqlx::query("ALTER TABLE hosts ADD COLUMN default_base_path TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
+        if !columns
+            .iter()
+            .any(|name| name == "default_scratch_directory")
+        {
+            sqlx::query("ALTER TABLE hosts ADD COLUMN default_scratch_directory TEXT")
+                .execute(&self.pool)
+                .await?;
+        }
 
         Ok(())
     }
@@ -300,8 +321,8 @@ impl HostStore {
               username, hostname, ip,
               slurm_major, slurm_minor, slurm_patch,
               distro_name, distro_version, kernel_version,
-              port, identity_path,accounting_available, default_base_path
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              port, identity_path,accounting_available, default_base_path, default_scratch_directory
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -319,6 +340,7 @@ impl HostStore {
         .bind(&host.identity_path)
         .bind(host.accounting_available)
         .bind(&host.default_base_path)
+        .bind(&host.default_scratch_directory)
         .fetch_one(&self.pool)
         .await?;
 
@@ -375,8 +397,9 @@ impl HostStore {
               port = ?12,
               identity_path = ?13,
               accounting_available = ?14,
-              default_base_path = ?15
-            WHERE id = ?16
+              default_base_path = ?15,
+              default_scratch_directory = ?16
+            WHERE id = ?17
             "#,
         )
         .bind(&host.name)
@@ -394,6 +417,7 @@ impl HostStore {
         .bind(&host.identity_path)
         .bind(host.accounting_available)
         .bind(&host.default_base_path)
+        .bind(&host.default_scratch_directory)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -1137,6 +1161,7 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
         identity_path: row.try_get("identity_path").unwrap(),
         accounting_available,
         default_base_path: row.try_get("default_base_path").unwrap(),
+        default_scratch_directory: row.try_get("default_scratch_directory").ok().flatten(),
     }
 }
 
@@ -1250,6 +1275,7 @@ mod tests {
             identity_path: Some("/home/jeff/.ssh/id_ed25519".to_string()),
             accounting_available: true,
             default_base_path: Some("/home/jeff/runs".to_string()),
+            default_scratch_directory: Some("/scratch/jeff".to_string()),
         }
     }
 
@@ -1261,6 +1287,10 @@ mod tests {
         let got = db.get_by_name("gpu01").await.unwrap().unwrap();
         assert_eq!(got.id, id);
         assert_eq!(got.name, "gpu01");
+        assert_eq!(
+            got.default_scratch_directory.as_deref(),
+            Some("/scratch/jeff")
+        );
     }
 
     #[tokio::test]
@@ -1418,6 +1448,7 @@ mod tests {
             identity_path: Some("/home/alice/.ssh/id_ed25519".to_string()),
             accounting_available: true,
             default_base_path: Some("/home/alice/runs".to_string()),
+            default_scratch_directory: Some("/scratch/alice".to_string()),
         };
         db.insert_host(&host).await.unwrap();
         let mut info_map: HashMap<String, serde_json::Value> = HashMap::new();

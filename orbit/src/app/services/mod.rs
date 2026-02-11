@@ -36,6 +36,7 @@ pub struct ResolvedAddCluster {
     pub port: u32,
     pub identity_path: String,
     pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
 }
 
 pub struct AddClusterResolver<'a> {
@@ -359,6 +360,7 @@ impl<'a> AddClusterResolver<'a> {
             port,
             identity_path,
             default_base_path,
+            default_scratch_directory: None,
         })
     }
 

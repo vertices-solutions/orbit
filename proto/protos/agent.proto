@@ -28,6 +28,8 @@ message StreamEvent {
     int32 exit_code = 3; // Exit code (emitted once when known)
     MfaPrompt mfa = 4; // MFA prompt round
     string error = 5; // Fatal error (connection/auth/exec)
+    AddClusterScratchOptions add_cluster_scratch_options = 6; // AddCluster scratch candidates
+    AddClusterScratchValidation add_cluster_scratch_validation = 7; // AddCluster scratch validation result
   }
 }
 
@@ -179,6 +181,25 @@ message AddClusterInit {
   optional string identity_path = 5;
   uint32 port = 6;
   optional string default_base_path = 7;
+  optional string default_scratch_directory = 8;
+  bool interactive_scratch_selection = 9;
+}
+
+message AddClusterScratchOptions {
+  repeated string directories = 1;
+}
+
+message AddClusterScratchSelection {
+  oneof selection {
+    string directory = 1;
+    bool none = 2;
+  }
+}
+
+message AddClusterScratchValidation {
+  bool accepted = 1;
+  optional string directory = 2;
+  optional string error = 3;
 }
 
 message ResolveHomeDirRequestInit {
@@ -371,6 +392,7 @@ message AddClusterRequest {
   oneof msg {
     AddClusterInit init = 1;
     MfaAnswer mfa = 2;
+    AddClusterScratchSelection scratch_selection = 3;
   }
 }
 

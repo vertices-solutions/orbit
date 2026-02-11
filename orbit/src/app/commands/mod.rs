@@ -8,8 +8,8 @@ use proto::SubmitPathFilterRule;
 mod results;
 
 pub use results::{
-    CommandResult, InitActionStatus, ProjectInitAction, ProjectListItem, StreamCapture,
-    SubmitCapture,
+    AddClusterCapture, CommandResult, InitActionStatus, ProjectInitAction, ProjectListItem,
+    StreamCapture, SubmitCapture,
 };
 
 #[derive(Debug, Clone)]
