@@ -183,7 +183,7 @@ Outbound adapters:
   accessed only through store ports.
 - `projects` rows persist build metadata:
   - `name` + `version_tag` (split from `name`)
-  - `tarball_hash` + tool version
+  - `tarball_hash` (content hash) + `tarball_hash_function` + tool version
   - `template_config_json`
   - `[submit].sbatch_script` (resolved at build time) and discovered `.sbatch` candidates
   - `[sync]` include/exclude and `[retrieve].default_path`
@@ -198,7 +198,8 @@ Outbound adapters:
 - Build (`project build`):
   - Resolves project root (nearest `Orbitfile`), parses metadata, validates project name.
   - Ensures at least one sbatch script is resolvable (Orbitfile default or discovered `.sbatch` files).
-  - Creates a deterministic tarball (`.tar.zst`) stored under `tarballs_dir` and registers metadata in SQLite.
+  - Creates a deterministic tarball (`.tar.zst`) stored under `tarballs_dir`; tarball filename is derived from hash(`name:tag`) while persisted `tarball_hash` stores the container content hash.
+  - Registers build metadata (including `tarball_hash_function`) in SQLite.
   - Rejects builds when `tarballs_dir` is inside the project root (self-archive guard).
 - Submit (`project submit`):
   - Resolves the project record by name:tag (or `latest`).

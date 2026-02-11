@@ -423,6 +423,7 @@ fn result_to_json(result: &CommandResult) -> Value {
             "versionTag": project.version_tag,
             "path": project.path,
             "tarballHash": project.tarball_hash,
+            "tarballHashFunction": project.tarball_hash_function,
             "toolVersion": project.tool_version,
             "templateConfig": project.template_config_json,
             "submitSbatchScript": project.submit_sbatch_script,

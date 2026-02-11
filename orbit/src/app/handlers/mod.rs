@@ -114,6 +114,7 @@ pub async fn handle_job_submit(
     let mut project_name = None;
     let mut default_retrieve_path = None;
     let mut template_values_json = None;
+
     if let Some(project) = discovered_project {
         validate_project_name(&project.name)?;
         filters = merge_submit_filters(filters, &project.rules);

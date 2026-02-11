@@ -346,6 +346,7 @@ message ProjectRecord {
   optional string default_retrieve_path = 12;
   repeated string sync_include = 13;
   repeated string sync_exclude = 14;
+  optional string tarball_hash_function = 15;
 }
 
 message BuildProjectRequest {

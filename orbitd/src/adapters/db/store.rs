@@ -245,7 +245,8 @@ impl HostStore {
               name TEXT PRIMARY KEY,
               path TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              tarball_hash_function TEXT NOT NULL DEFAULT 'blake3'
             );
             CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
             "#,
@@ -535,7 +536,7 @@ impl HostStore {
                    SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                  WHERE name = ?1
                  RETURNING name, path, created_at, updated_at,
-                           tarball_hash, tool_version, template_config_json,
+                           tarball_hash, tarball_hash_function, tool_version, template_config_json,
                            submit_sbatch_script, sbatch_scripts,
                            default_retrieve_path, sync_include, sync_exclude
                 "#,
@@ -551,7 +552,7 @@ impl HostStore {
             INSERT INTO projects(name, path)
             VALUES (?1, ?2)
             RETURNING name, path, created_at, updated_at,
-                      tarball_hash, tool_version, template_config_json,
+                      tarball_hash, tarball_hash_function, tool_version, template_config_json,
                       submit_sbatch_script, sbatch_scripts,
                       default_retrieve_path, sync_include, sync_exclude
             "#,
@@ -575,6 +576,9 @@ impl HostStore {
         if build.tarball_hash.trim().is_empty() {
             return Err(HostStoreError::EmptyProjectPath);
         }
+        if build.tarball_hash_function.trim().is_empty() {
+            return Err(HostStoreError::EmptyProjectPath);
+        }
         if build.tool_version.trim().is_empty() {
             return Err(HostStoreError::EmptyProjectPath);
         }
@@ -589,6 +593,7 @@ impl HostStore {
               name,
               path,
               tarball_hash,
+              tarball_hash_function,
               tool_version,
               template_config_json,
               submit_sbatch_script,
@@ -596,10 +601,11 @@ impl HostStore {
               default_retrieve_path,
               sync_include,
               sync_exclude
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
             ON CONFLICT(name) DO UPDATE SET
               path = excluded.path,
               tarball_hash = excluded.tarball_hash,
+              tarball_hash_function = excluded.tarball_hash_function,
               tool_version = excluded.tool_version,
               template_config_json = excluded.template_config_json,
               submit_sbatch_script = excluded.submit_sbatch_script,
@@ -609,7 +615,7 @@ impl HostStore {
               sync_exclude = excluded.sync_exclude,
               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
             RETURNING name, path, created_at, updated_at,
-                      tarball_hash, tool_version, template_config_json,
+                      tarball_hash, tarball_hash_function, tool_version, template_config_json,
                       submit_sbatch_script, sbatch_scripts,
                       default_retrieve_path, sync_include, sync_exclude
             "#,
@@ -617,6 +623,7 @@ impl HostStore {
         .bind(trimmed_name)
         .bind(trimmed_path)
         .bind(build.tarball_hash.trim())
+        .bind(build.tarball_hash_function.trim())
         .bind(build.tool_version.trim())
         .bind(build.template_config_json.as_deref())
         .bind(build.submit_sbatch_script.as_deref())
@@ -634,7 +641,7 @@ impl HostStore {
         let row = sqlx::query(
             r#"
             SELECT name, path, created_at, updated_at,
-                   tarball_hash, tool_version, template_config_json,
+                   tarball_hash, tarball_hash_function, tool_version, template_config_json,
                    submit_sbatch_script, sbatch_scripts,
                    default_retrieve_path, sync_include, sync_exclude
               FROM projects
@@ -657,7 +664,7 @@ impl HostStore {
         let row = sqlx::query(
             r#"
             SELECT name, path, created_at, updated_at,
-                   tarball_hash, tool_version, template_config_json,
+                   tarball_hash, tarball_hash_function, tool_version, template_config_json,
                    submit_sbatch_script, sbatch_scripts,
                    default_retrieve_path, sync_include, sync_exclude
               FROM projects
@@ -678,7 +685,7 @@ impl HostStore {
         let rows = sqlx::query(
             r#"
             SELECT name, path, created_at, updated_at,
-                   tarball_hash, tool_version, template_config_json,
+                   tarball_hash, tarball_hash_function, tool_version, template_config_json,
                    submit_sbatch_script, sbatch_scripts,
                    default_retrieve_path, sync_include, sync_exclude
               FROM projects
@@ -1220,6 +1227,7 @@ fn row_to_project(row: sqlx::sqlite::SqliteRow) -> ProjectRecord {
         updated_at: row.try_get("updated_at").unwrap(),
         version_tag,
         tarball_hash: row.try_get("tarball_hash").ok().flatten(),
+        tarball_hash_function: row.try_get("tarball_hash_function").ok().flatten(),
         tool_version: row.try_get("tool_version").ok().flatten(),
         template_config_json: row.try_get("template_config_json").ok().flatten(),
         submit_sbatch_script: row.try_get("submit_sbatch_script").ok().flatten(),
@@ -1859,6 +1867,7 @@ mod tests {
             name: "proj-a:20250101.001".to_string(),
             path: "/tmp/proj-a".to_string(),
             tarball_hash: "hash-a".to_string(),
+            tarball_hash_function: "blake3".to_string(),
             tool_version: "1.0.0".to_string(),
             template_config_json: None,
             submit_sbatch_script: None,
@@ -1873,6 +1882,7 @@ mod tests {
             name: "proj-a:20250101.002".to_string(),
             path: "/tmp/proj-a".to_string(),
             tarball_hash: "hash-b".to_string(),
+            tarball_hash_function: "blake3".to_string(),
             tool_version: "1.0.0".to_string(),
             template_config_json: None,
             submit_sbatch_script: None,

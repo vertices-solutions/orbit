@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use std::fs::{self, File};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 
 use tar::Builder;
@@ -89,6 +90,17 @@ pub fn create_tarball(
         .finish()
         .map_err(|err| local_error(format!("failed to finish tarball: {err}")))?;
     Ok(())
+}
+
+pub fn blake3_file_hash(path: &Path) -> AppResult<String> {
+    let file = File::open(path)
+        .map_err(|err| local_error(format!("failed to open file {}: {err}", path.display())))?;
+    let mut reader = BufReader::new(file);
+    let mut hasher = blake3::Hasher::new();
+    hasher
+        .update_reader(&mut reader)
+        .map_err(|err| local_error(format!("failed to hash file {}: {err}", path.display())))?;
+    Ok(hasher.finalize().to_hex().to_string())
 }
 
 pub fn unpack_tarball(tarball_path: &Path, dest_dir: &Path) -> AppResult<()> {
@@ -336,5 +348,16 @@ mod tests {
         let env = fs::read_to_string(extracted.join(".env")).expect("read");
         assert_eq!(env, "KEY=value");
         assert!(extracted.join("alpha/empty").is_dir());
+    }
+
+    #[test]
+    fn blake3_file_hash_matches_reference_digest() {
+        let root = tempdir().expect("root");
+        let file = root.path().join("sample.txt");
+        fs::write(&file, "orbit").expect("write");
+
+        let hash = blake3_file_hash(&file).expect("hash");
+        let expected = blake3::hash(b"orbit").to_hex().to_string();
+        assert_eq!(hash, expected);
     }
 }

@@ -39,6 +39,7 @@ const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
 const ORBITFILE_NAME: &str = "Orbitfile";
 const LIST_PARTITIONS_COMMAND: &str = "scontrol show partition -o";
 const LIST_ACCOUNTS_COMMAND: &str = "sshare -U -P -u $USER --format Account --noheader";
+const TARBALL_HASH_FUNCTION_BLAKE3: &str = "blake3";
 
 #[derive(Clone)]
 pub struct UseCases {
@@ -399,6 +400,7 @@ impl UseCases {
                 codes::INVALID_ARGUMENT,
             ));
         }
+        // If delete_all is true - all (local) project versions will be deleted
         let (base_name, delete_name, delete_all) =
             if let Some((project_name, tag)) = split_project_ref(trimmed) {
                 let base = project_name.to_string();
@@ -429,26 +431,31 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             ));
         }
 
-        let mut tarball_hashes: Vec<String> = Vec::new();
+        let mut tarball_paths: Vec<PathBuf> = Vec::new();
         if delete_all {
+            // Enumerating tarballs for the project
             let projects = self.projects.list_projects().await?;
             for project in projects {
                 if project.name == base_name {
-                    if let Some(hash) = project.tarball_hash.clone() {
-                        tarball_hashes.push(hash);
+                    if let Some(version_tag) = project.version_tag.as_deref() {
+                        let project_ref = format!("{}:{version_tag}", project.name);
+                        tarball_paths.push(tarball_path_for_project_ref(
+                            &self.tarballs_dir,
+                            &project_ref,
+                        ));
                     }
                 }
             }
         } else if !delete_name.is_empty() {
             if let Some(project) = self.projects.get_project_by_name(&delete_name).await? {
-                if let Some(hash) = project.tarball_hash {
-                    tarball_hashes.push(hash);
-                }
+                tarball_paths.push(tarball_path_for_project_record(
+                    &self.tarballs_dir,
+                    &project,
+                )?);
             }
         }
 
-        for hash in tarball_hashes {
-            let tarball_path = self.tarballs_dir.join(format!("{hash}.tar.zst"));
+        for tarball_path in tarball_paths {
             match std::fs::remove_file(&tarball_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -525,12 +532,8 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             )));
         }
 
-        let (version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{project_name}:{version_tag}"));
-        let tarball_hash = format!("{:x}", hasher.finalize());
-        let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
+        let (_version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
+        let tarball_path = tarball_path_for_project_ref(&self.tarballs_dir, &project_ref);
 
         let template_config_json = templates::load_template_config_json(&orbitfile_path)?;
 
@@ -539,11 +542,13 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             .and_then(|name| name.to_str())
             .ok_or_else(|| invalid_argument("project path has no directory name"))?;
         project_building::create_tarball(&project_root, root_name, &tarball_path, package_git)?;
+        let tarball_hash = project_building::blake3_file_hash(&tarball_path)?;
 
         let build = NewProjectBuild {
             name: project_ref,
             path: project_root.display().to_string(),
             tarball_hash,
+            tarball_hash_function: TARBALL_HASH_FUNCTION_BLAKE3.to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             template_config_json,
             submit_sbatch_script,
@@ -1874,11 +1879,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     .ok_or_else(|| AppError::new(AppErrorKind::InvalidArgument, codes::NOT_FOUND))?
             };
             input.local_path = project.path.clone();
-            let tarball_hash = project
-                .tarball_hash
-                .clone()
-                .ok_or_else(|| invalid_argument("project tarball is missing; run project build"))?;
-            let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
+            let tarball_path = tarball_path_for_project_record(&self.tarballs_dir, &project)?;
             if !tarball_path.is_file() {
                 return Err(AppError::with_message(
                     AppErrorKind::InvalidArgument,
@@ -3677,6 +3678,31 @@ fn split_project_ref(value: &str) -> Option<(&str, &str)> {
     } else {
         Some((name, tag))
     }
+}
+
+fn tarball_file_hash_from_project_ref(project_ref: &str) -> String {
+    // project name:project tag ref
+    let mut hasher = Sha256::new();
+    hasher.update(project_ref);
+    format!("{:x}", hasher.finalize())
+}
+
+fn tarball_path_for_project_ref(tarballs_dir: &Path, project_ref: &str) -> PathBuf {
+    // tarball path from project reference (hashes project name:tag, joins tarballs dir to it)
+    let file_hash = tarball_file_hash_from_project_ref(project_ref);
+    tarballs_dir.join(format!("{file_hash}.tar.zst"))
+}
+
+fn tarball_path_for_project_record(
+    tarballs_dir: &Path,
+    project: &ProjectRecord,
+) -> AppResult<PathBuf> {
+    let version_tag = project
+        .version_tag
+        .as_deref()
+        .ok_or_else(|| invalid_argument("project build is missing version tag"))?;
+    let project_ref = format!("{}:{version_tag}", project.name);
+    Ok(tarball_path_for_project_ref(tarballs_dir, &project_ref))
 }
 
 impl UseCases {
