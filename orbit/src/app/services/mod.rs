@@ -112,8 +112,8 @@ impl<'a> AddClusterResolver<'a> {
             }
         };
 
-        let name = match name_arg {
-            Some(value) => value,
+        let mut name = match name_arg.as_deref() {
+            Some(value) => value.to_string(),
             None => {
                 if non_interactive {
                     default_name_for_host(hostname.as_deref(), ip.as_deref())?
@@ -124,15 +124,29 @@ impl<'a> AddClusterResolver<'a> {
             }
         };
 
-        let name = match validate_name(&name, existing_names) {
-            Ok(()) => name,
-            Err(err) => {
-                if non_interactive {
-                    return Err(err);
+        if non_interactive {
+            validate_name(&name, existing_names)?;
+        } else if name_arg.is_some() {
+            match self
+                .validate_with_feedback(
+                    &name,
+                    "Validating name...",
+                    |input| {
+                        validate_name(input, existing_names)?;
+                        Ok(input.to_string())
+                    },
+                    |validated_name| format!("Name: {validated_name}"),
+                )
+                .await
+            {
+                Ok(validated_name) => {
+                    name = validated_name;
                 }
-                self.prompt_name(existing_names, &name).await?
+                Err(_) => {
+                    name = self.prompt_name(existing_names, &name).await?;
+                }
             }
-        };
+        }
 
         let port = parsed_destination.port.unwrap_or(DEFAULT_SSH_PORT);
 
@@ -169,7 +183,9 @@ impl<'a> AddClusterResolver<'a> {
 
         let default_base_path = match default_base_path_arg {
             Some(value) => {
-                local_validate_default_base_path(&value)?;
+                if non_interactive {
+                    local_validate_default_base_path(&value)?;
+                }
                 Some(value)
             }
             None => {
@@ -240,6 +256,32 @@ impl<'a> AddClusterResolver<'a> {
         .await
     }
 
+    async fn validate_with_feedback<T, V, S>(
+        &self,
+        input: &str,
+        validation_message: &str,
+        mut validate: V,
+        mut success_message: S,
+    ) -> AppResult<T>
+    where
+        V: FnMut(&str) -> AppResult<T>,
+        S: FnMut(&T) -> String,
+    {
+        let mut feedback = self.interaction.prompt_feedback().await?;
+        feedback.start_validation(validation_message)?;
+        match validate(input) {
+            Ok(value) => {
+                let message = success_message(&value);
+                feedback.finish_success(&message)?;
+                Ok(value)
+            }
+            Err(err) => {
+                feedback.finish_failure(&validation_error_message(&err))?;
+                Err(err)
+            }
+        }
+    }
+
     async fn prompt_and_validate<T, V, S>(
         &self,
         prompt: &str,
@@ -284,6 +326,14 @@ impl<'a> AddClusterResolver<'a> {
                 }
             }
         }
+    }
+}
+
+fn validation_error_message(err: &AppError) -> String {
+    if err.message.trim().is_empty() {
+        "validation failed".to_string()
+    } else {
+        err.message.clone()
     }
 }
 

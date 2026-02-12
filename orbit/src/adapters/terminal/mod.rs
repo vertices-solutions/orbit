@@ -255,7 +255,7 @@ impl InteractionPort for TerminalInteraction {
 
     async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>> {
         Ok(Box::new(TerminalPromptFeedback {
-            inner: prompt::PromptFeedback::new(),
+            inner: prompt::PromptFeedback::for_inline(),
         }))
     }
 

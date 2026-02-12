@@ -705,13 +705,18 @@ impl OrbitdPort for GrpcOrbitdPort {
             ),
             None => None,
         };
+        let init_default_base_path = if interactive_scratch_selection {
+            None
+        } else {
+            default_base_path.clone()
+        };
         let init = AddClusterInit {
             name,
             username,
             host: Some(host),
             identity_path: identity_path_expanded,
             port,
-            default_base_path: default_base_path.clone(),
+            default_base_path: init_default_base_path,
             default_scratch_directory: default_scratch_directory.clone(),
             interactive_scratch_selection,
         };
@@ -728,6 +733,11 @@ impl OrbitdPort for GrpcOrbitdPort {
             .map_err(app_error_from_status)?;
         let mut inbound = response.into_inner();
         let mut selected_default_base_path = default_base_path.clone();
+        let mut provided_base_path = if interactive_scratch_selection {
+            default_base_path.clone()
+        } else {
+            None
+        };
         let mut base_path_default = default_base_path.clone();
         let mut pending_base_path_prompt: Option<PromptLine> = None;
         let mut pending_base_path_input: Option<String> = None;
@@ -901,6 +911,15 @@ impl OrbitdPort for GrpcOrbitdPort {
                             suggested_default.to_string()
                         };
                         base_path_default = Some(prompt_default.clone());
+                        if let Some(path) = provided_base_path.take() {
+                            let base_path = path.trim().to_string();
+                            let message = "Validating default base path...".to_string();
+                            active_validation_spinner_message = Some(message.clone());
+                            validation_spinner = InlineSpinner::start(&message);
+                            pending_base_path_input = Some(base_path.clone());
+                            send_add_cluster_base_path_selection(&tx_ans, base_path).await?;
+                            continue;
+                        }
                         let mut base_path_prompt =
                             prompt_add_cluster_default_base_path(interaction, &prompt_default)
                                 .await?;
@@ -914,46 +933,66 @@ impl OrbitdPort for GrpcOrbitdPort {
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
-                        if let Some(mut prompt) = pending_base_path_prompt.take() {
-                            if validation.accepted {
-                                let validated_path = validation
-                                    .path
-                                    .clone()
-                                    .or_else(|| pending_base_path_input.clone())
-                                    .unwrap_or_else(|| "<default base path>".to_string());
-                                prompt.finish_success(&format!(
+                        active_validation_spinner_message = None;
+                        let mut prompt = pending_base_path_prompt.take();
+                        if validation.accepted {
+                            let validated_path = validation
+                                .path
+                                .clone()
+                                .or_else(|| pending_base_path_input.clone())
+                                .unwrap_or_else(|| "<default base path>".to_string());
+                            if let Some(active_prompt) = prompt.as_mut() {
+                                active_prompt.finish_success(&format!(
                                     "Default base path: {validated_path}"
                                 ))?;
-                                selected_default_base_path = Some(validated_path);
-                                pending_base_path_input = None;
-                                if !gathering_active {
-                                    if let Some(feedback) = gathering_feedback.as_mut() {
-                                        feedback.start_information_gathering(
-                                            gathering_spinner_message,
-                                        )?;
-                                        gathering_active = true;
-                                    }
-                                }
                             } else {
-                                let failure_reason = validation
-                                    .error
-                                    .as_deref()
-                                    .filter(|value| !value.trim().is_empty())
-                                    .unwrap_or("validation failed");
-                                prompt.finish_failure(failure_reason)?;
-                                let next_default =
-                                    base_path_default.as_deref().unwrap_or("~/runs").to_string();
-                                let mut next_prompt = prompt_add_cluster_default_base_path(
-                                    interaction,
-                                    &next_default,
-                                )
-                                .await?;
-                                let next_path = next_prompt.input.trim().to_string();
-                                next_prompt.start_validation("Validating default base path...")?;
-                                pending_base_path_input = Some(next_path.clone());
-                                pending_base_path_prompt = Some(next_prompt);
-                                send_add_cluster_base_path_selection(&tx_ans, next_path).await?;
+                                output
+                                    .on_stderr(
+                                        format!("✓ Default base path: {validated_path}\n")
+                                            .as_bytes(),
+                                    )
+                                    .await?;
                             }
+                            selected_default_base_path = Some(validated_path);
+                            pending_base_path_input = None;
+                            if !gathering_active {
+                                if let Some(feedback) = gathering_feedback.as_mut() {
+                                    feedback
+                                        .start_information_gathering(gathering_spinner_message)?;
+                                    gathering_active = true;
+                                }
+                            }
+                        } else {
+                            let failure_reason = validation
+                                .error
+                                .as_deref()
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or("validation failed");
+                            if let Some(active_prompt) = prompt.as_mut() {
+                                active_prompt.finish_failure(failure_reason)?;
+                            } else {
+                                let failed_path = pending_base_path_input
+                                    .as_deref()
+                                    .unwrap_or("<default base path>");
+                                output
+                                    .on_stderr(
+                                        format!(
+                                            "✗ Validation of {failed_path} failed: {failure_reason}\n"
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            let next_default =
+                                base_path_default.as_deref().unwrap_or("~/runs").to_string();
+                            let mut next_prompt =
+                                prompt_add_cluster_default_base_path(interaction, &next_default)
+                                    .await?;
+                            let next_path = next_prompt.input.trim().to_string();
+                            next_prompt.start_validation("Validating default base path...")?;
+                            pending_base_path_input = Some(next_path.clone());
+                            pending_base_path_prompt = Some(next_prompt);
+                            send_add_cluster_base_path_selection(&tx_ans, next_path).await?;
                         }
                     }
                     stream_event::Event::AddClusterDefaultPrompt(_prompt) => {

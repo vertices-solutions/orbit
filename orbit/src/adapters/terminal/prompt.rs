@@ -69,14 +69,29 @@ pub(super) struct PromptFeedback {
     spinner: Option<Spinner>,
     gathering_spinner: Option<Spinner>,
     moved: bool,
+    move_up_on_first_position: bool,
 }
 
 impl PromptFeedback {
     pub(super) fn new() -> Self {
+        Self::for_prompt_line()
+    }
+
+    pub(super) fn for_prompt_line() -> Self {
         Self {
             spinner: None,
             gathering_spinner: None,
             moved: false,
+            move_up_on_first_position: true,
+        }
+    }
+
+    pub(super) fn for_inline() -> Self {
+        Self {
+            spinner: None,
+            gathering_spinner: None,
+            moved: false,
+            move_up_on_first_position: false,
         }
     }
 
@@ -130,7 +145,9 @@ impl PromptFeedback {
     fn position_on_prompt_line(&mut self) -> anyhow::Result<()> {
         let mut stdout = std::io::stdout();
         if !self.moved {
-            execute!(stdout, cursor::MoveUp(1))?;
+            if self.move_up_on_first_position {
+                execute!(stdout, cursor::MoveUp(1))?;
+            }
             self.moved = true;
         }
         execute!(
