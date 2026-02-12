@@ -58,6 +58,7 @@ pub fn cluster_status_to_response(status: &ClusterStatus) -> ListClustersUnitRes
         accounting_available: host.accounting_available,
         default_base_path: host.default_base_path.to_owned(),
         reachable: status.reachable,
+        is_default: host.is_default,
     }
 }
 
@@ -170,6 +171,7 @@ mod tests {
         assert_eq!(response.name, "cluster-a");
         assert_eq!(response.connected, true);
         assert_eq!(response.reachable, false);
+        assert!(!response.is_default);
         assert_eq!(
             response.default_base_path.as_deref(),
             Some("/home/alice/jobs")
@@ -305,6 +307,7 @@ mod tests {
             accounting_available: true,
             default_base_path: Some("/home/alice/jobs".to_string()),
             default_scratch_directory: Some("/scratch/alice".to_string()),
+            is_default: false,
         }
     }
 }

@@ -994,6 +994,7 @@ impl Agent for GrpcAgent {
         let (base_path_tx, mut base_path_rx) =
             mpsc::channel::<proto::AddClusterBasePathSelection>(16);
         let (scratch_tx, mut scratch_rx) = mpsc::channel::<proto::AddClusterScratchSelection>(16);
+        let (default_tx, mut default_rx) = mpsc::channel::<proto::AddClusterDefaultSelection>(16);
         tokio::spawn(
             async move {
                 while let Ok(Some(item)) = inbound.message().await {
@@ -1010,6 +1011,11 @@ impl Agent for GrpcAgent {
                         }
                         Some(proto::add_cluster_request::Msg::BasePathSelection(selection)) => {
                             if base_path_tx.send(selection).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(proto::add_cluster_request::Msg::DefaultSelection(selection)) => {
+                            if default_tx.send(selection).await.is_err() {
                                 break;
                             }
                         }
@@ -1280,7 +1286,7 @@ impl Agent for GrpcAgent {
                     default_scratch_directory: resolved_scratch_directory,
                 };
                 if let Err(err) = usecases
-                    .add_cluster(input, &stream_output, &mut mfa_port)
+                    .add_cluster(input, &stream_output, &mut mfa_port, &mut default_rx)
                     .await
                 {
                     let _ = evt_tx.send(Err(status_from_app_error(err))).await;

@@ -71,16 +71,7 @@ pub async fn handle_job_submit(
     cmd: SubmitJobCommand,
 ) -> AppResult<CommandResult> {
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.cluster)
-        .cloned()
-        .ok_or_else(|| {
-            AppError::cluster_not_found(format!(
-                "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.cluster
-            ))
-        })?;
+    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--to")?;
 
     validate_cluster_live(ctx, &cluster).await?;
 
@@ -165,7 +156,7 @@ pub async fn handle_job_submit(
     let capture = ctx
         .orbitd
         .submit_job(
-            cmd.cluster.clone(),
+            cluster.name.clone(),
             resolved_local_path_display.clone(),
             cmd.remote_path,
             cmd.new_directory,
@@ -185,7 +176,7 @@ pub async fn handle_job_submit(
     }
 
     Ok(CommandResult::JobSubmit {
-        cluster: cmd.cluster,
+        cluster: cluster.name,
         local_path: resolved_local_path_display,
         sbatchscript,
         capture,
@@ -368,11 +359,8 @@ pub async fn handle_cluster_get(
     cmd: ClusterGetCommand,
 ) -> AppResult<CommandResult> {
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.name)
-        .cloned()
-        .ok_or_else(|| AppError::cluster_not_found(format!("cluster '{}' not found", cmd.name)))?;
+    let cluster =
+        resolve_cluster_by_name_or_default(&clusters, cmd.name.as_deref(), "'cluster get <name>'")?;
     Ok(CommandResult::ClusterDetails { cluster })
 }
 
@@ -380,11 +368,17 @@ pub async fn handle_cluster_ls(
     ctx: &AppContext,
     cmd: ClusterLsCommand,
 ) -> AppResult<CommandResult> {
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
+    let cluster = resolve_cluster_by_name_or_default(
+        &clusters,
+        cmd.name.as_deref(),
+        "'cluster ls <name> [path]'",
+    )?;
     let mut stream_output = ctx.output.stream_output(StreamKind::Generic);
     let capture = ctx
         .orbitd
         .ls(
-            cmd.name,
+            cluster.name,
             None,
             cmd.path,
             &mut *stream_output,
@@ -406,7 +400,15 @@ pub async fn handle_cluster_add(
     cmd: AddClusterCommand,
 ) -> AppResult<CommandResult> {
     ctx.output.info("Adding new cluster...").await?;
+    let force_default = cmd.is_default;
     let clusters = ctx.orbitd.list_clusters("", true).await?;
+    let planned_is_default = if clusters.is_empty() || force_default {
+        Some(true)
+    } else if ctx.ui_mode.is_interactive() {
+        None
+    } else {
+        Some(false)
+    };
     let existing_names = clusters
         .iter()
         .map(|cluster| cluster.name.clone())
@@ -444,6 +446,7 @@ pub async fn handle_cluster_add(
             resolved.default_base_path.clone(),
             resolved.default_scratch_directory.clone(),
             ctx.ui_mode.is_interactive(),
+            planned_is_default,
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
@@ -461,6 +464,10 @@ pub async fn handle_cluster_add(
         .clone()
         .or(resolved.default_base_path.clone());
     let default_scratch_directory = add_cluster.default_scratch_directory;
+    let is_default = add_cluster
+        .is_default
+        .or(planned_is_default)
+        .unwrap_or(false);
 
     Ok(CommandResult::ClusterAdd {
         name: resolved.name,
@@ -471,6 +478,7 @@ pub async fn handle_cluster_add(
         identity_path: resolved.identity_path,
         default_base_path,
         default_scratch_directory,
+        is_default,
     })
 }
 
@@ -504,21 +512,16 @@ pub async fn handle_cluster_set(
     }
 
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.name)
-        .cloned()
-        .ok_or_else(|| {
-            AppError::cluster_not_found(format!(
-                "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.name
-            ))
-        })?;
+    let cluster = resolve_cluster_by_name_or_default(
+        &clusters,
+        cmd.name.as_deref(),
+        "'cluster set <name> ...'",
+    )?;
 
     if cmd.host.is_none() && cluster.host.is_none() {
         return Err(AppError::invalid_argument(format!(
             "cluster '{}' has no address; pass --host to update it",
-            cmd.name
+            cluster.name
         )));
     }
 
@@ -681,16 +684,7 @@ pub async fn handle_project_submit(
 ) -> AppResult<CommandResult> {
     let (project_name, project_tag) = parse_project_ref(&cmd.project)?;
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.cluster)
-        .cloned()
-        .ok_or_else(|| {
-            AppError::cluster_not_found(format!(
-                "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.cluster
-            ))
-        })?;
+    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--to")?;
     validate_cluster_live(ctx, &cluster).await?;
 
     let project = ctx.orbitd.get_project(&cmd.project).await?;
@@ -751,7 +745,7 @@ pub async fn handle_project_submit(
         .submit_project(
             project_name,
             project_tag,
-            cmd.cluster.clone(),
+            cluster.name.clone(),
             cmd.remote_path,
             cmd.new_directory,
             cmd.force,
@@ -769,7 +763,7 @@ pub async fn handle_project_submit(
     }
 
     Ok(CommandResult::JobSubmit {
-        cluster: cmd.cluster,
+        cluster: cluster.name,
         local_path: project.path.clone(),
         sbatchscript,
         capture,
@@ -831,6 +825,42 @@ pub async fn handle_project_delete(
 
 fn bytes_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).to_string()
+}
+
+fn resolve_cluster_by_name_or_default(
+    clusters: &[ListClustersUnitResponse],
+    requested_name: Option<&str>,
+    explicit_hint: &str,
+) -> AppResult<ListClustersUnitResponse> {
+    if let Some(name) = requested_name {
+        return clusters
+            .iter()
+            .find(|cluster| cluster.name == name)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::cluster_not_found(format!(
+                    "cluster '{}' not found; use 'cluster add' to create it",
+                    name
+                ))
+            });
+    }
+
+    if clusters.is_empty() {
+        return Err(AppError::cluster_not_found(
+            "no clusters configured; use 'cluster add' to create one",
+        ));
+    }
+
+    clusters
+        .iter()
+        .find(|cluster| cluster.is_default)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::cluster_not_found(format!(
+                "no default cluster configured; specify a cluster with {}",
+                explicit_hint
+            ))
+        })
 }
 
 fn resolve_project_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {

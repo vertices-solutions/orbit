@@ -114,6 +114,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 name: args.name,
                 identity_path: args.identity_path,
                 default_base_path: args.default_base_path,
+                is_default: args.is_default,
             }),
             ClusterCmd::Set(args) => ClusterCommand::Set(SetClusterCommand {
                 name: args.name,

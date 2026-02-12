@@ -576,7 +576,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 codes::INVALID_ARGUMENT,
             ));
         }
-        let Some(_host) = self.clusters.get_by_name(trimmed).await? else {
+        let Some(host) = self.clusters.get_by_name(trimmed).await? else {
             return Err(AppError::new(
                 AppErrorKind::InvalidArgument,
                 codes::NOT_FOUND,
@@ -603,6 +603,9 @@ cancel them with `job cancel` or pass --force"
                 codes::NOT_FOUND,
             ));
         }
+        if host.is_default {
+            self.promote_last_added_cluster_to_default().await?;
+        }
         let _ = self.remote_exec.remove_session(trimmed).await;
         self.telemetry.event(
             "cluster.deleted",
@@ -612,6 +615,19 @@ cancel them with `job cancel` or pass --force"
             },
         );
         Ok(true)
+    }
+
+    async fn promote_last_added_cluster_to_default(&self) -> AppResult<()> {
+        let mut remaining_hosts = self.clusters.list_hosts(None).await?;
+        let Some(last_added) = remaining_hosts.pop() else {
+            return Ok(());
+        };
+        if last_added.is_default {
+            return Ok(());
+        }
+        let replacement = host_record_to_new_host(&last_added, true);
+        self.clusters.upsert_host(&replacement).await?;
+        Ok(())
     }
 
     pub async fn resolve_home_dir(
@@ -2292,6 +2308,7 @@ cancel them with `job cancel` or pass --force"
         input: AddClusterInput,
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
+        default_selection: &mut mpsc::Receiver<proto::AddClusterDefaultSelection>,
     ) -> AppResult<()> {
         let cluster_name = input.name.clone();
         let user_name = input.username.clone();
@@ -2305,10 +2322,12 @@ cancel them with `job cancel` or pass --force"
                     identity_path: input.identity_path,
                     default_base_path: input.default_base_path,
                     default_scratch_directory: input.default_scratch_directory,
+                    is_default: false,
                     emit_progress: true,
                 },
                 stream,
                 mfa,
+                Some(default_selection),
             )
             .await;
         if result.is_ok() {
@@ -2384,10 +2403,12 @@ cancel them with `job cancel` or pass --force"
                     identity_path,
                     default_base_path,
                     default_scratch_directory,
+                    is_default: existing.is_default,
                     emit_progress: false,
                 },
                 stream,
                 mfa,
+                None,
             )
             .await;
         if result.is_ok() {
@@ -2708,6 +2729,7 @@ cancel them with `job cancel` or pass --force"
         input: ClusterUpsertInput,
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
+        mut default_selection: Option<&mut mpsc::Receiver<proto::AddClusterDefaultSelection>>,
     ) -> AppResult<()> {
         let reachable = self
             .network
@@ -2831,6 +2853,10 @@ cancel them with `job cancel` or pass --force"
             let _ =
                 validate_scratch_directory_access(self.remote_exec.as_ref(), &config, path).await?;
         }
+        let is_default = match default_selection.as_deref_mut() {
+            Some(selection) => Self::recv_cluster_default_selection(stream, selection).await?,
+            None => input.is_default,
+        };
 
         let new_host = NewHost {
             username: input.username,
@@ -2844,6 +2870,7 @@ cancel them with `job cancel` or pass --force"
             accounting_available: accounting_enabled,
             default_base_path: normalized_default_base_path,
             default_scratch_directory: normalized_default_scratch_directory,
+            is_default,
         };
 
         if self.clusters.upsert_host(&new_host).await.is_err() {
@@ -2857,6 +2884,25 @@ cancel them with `job cancel` or pass --force"
         }
 
         Ok(())
+    }
+
+    async fn recv_cluster_default_selection(
+        stream: &dyn StreamOutputPort,
+        selection: &mut mpsc::Receiver<proto::AddClusterDefaultSelection>,
+    ) -> AppResult<bool> {
+        stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::AddClusterDefaultPrompt(
+                    proto::AddClusterDefaultPrompt {
+                        current_default_name: None,
+                    },
+                )),
+            })
+            .await?;
+        let Some(selected) = selection.recv().await else {
+            return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
+        };
+        Ok(selected.is_default)
     }
 }
 
@@ -3005,6 +3051,7 @@ struct ClusterUpsertInput {
     identity_path: Option<String>,
     default_base_path: Option<String>,
     default_scratch_directory: Option<String>,
+    is_default: bool,
     emit_progress: bool,
 }
 
@@ -3056,6 +3103,23 @@ fn build_ssh_config(
         identity_path,
         ki_submethods: None,
         keepalive_secs: 60,
+    }
+}
+
+fn host_record_to_new_host(host: &HostRecord, is_default: bool) -> NewHost {
+    NewHost {
+        name: host.name.clone(),
+        username: host.username.clone(),
+        address: host.address.clone(),
+        port: host.port,
+        identity_path: host.identity_path.clone(),
+        slurm: host.slurm,
+        distro: host.distro.clone(),
+        kernel_version: host.kernel_version.clone(),
+        accounting_available: host.accounting_available,
+        default_base_path: host.default_base_path.clone(),
+        default_scratch_directory: host.default_scratch_directory.clone(),
+        is_default,
     }
 }
 
@@ -4133,6 +4197,7 @@ mod tests {
             accounting_available: true,
             default_base_path: Some("/home/alice/runs".to_string()),
             default_scratch_directory: Some("/scratch/alice".to_string()),
+            is_default: false,
         }
     }
 
@@ -4348,6 +4413,51 @@ mod tests {
                 .expect("job lookup")
                 .is_none()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_promotes_last_added_when_default_is_removed() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+
+        let mut host_a = sample_host("cluster-a");
+        host_a.is_default = true;
+        let host_b = sample_host("cluster-b");
+        let host_c = sample_host("cluster-c");
+
+        usecases
+            .clusters
+            .upsert_host(&host_a)
+            .await
+            .expect("insert default cluster");
+        usecases
+            .clusters
+            .upsert_host(&host_b)
+            .await
+            .expect("insert cluster-b");
+        usecases
+            .clusters
+            .upsert_host(&host_c)
+            .await
+            .expect("insert cluster-c");
+
+        let deleted = usecases
+            .delete_cluster("cluster-a", true)
+            .await
+            .expect("delete should succeed");
+        assert!(deleted);
+
+        let hosts = usecases
+            .clusters
+            .list_hosts(None)
+            .await
+            .expect("list hosts after delete");
+        assert_eq!(hosts.len(), 2);
+        let default_hosts: Vec<_> = hosts.iter().filter(|host| host.is_default).collect();
+        assert_eq!(default_hosts.len(), 1);
+        assert_eq!(default_hosts[0].name, "cluster-c");
+        assert!(hosts.iter().any(|host| host.name == "cluster-b"));
+        assert!(hosts.iter().any(|host| host.name == "cluster-c"));
     }
 
     const SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED: &str = concat!(

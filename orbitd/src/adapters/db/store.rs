@@ -138,6 +138,7 @@ impl HostStore {
               accounting_available INTEGER NOT NULL,
               default_base_path TEXT,
               default_scratch_directory TEXT,
+              is_default INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               CHECK (hostname IS NOT NULL OR ip IS NOT NULL)
@@ -148,6 +149,9 @@ impl HostStore {
             CREATE INDEX IF NOT EXISTS idx_hosts_hostname ON hosts(hostname);
             CREATE INDEX IF NOT EXISTS idx_hosts_ip ON hosts(ip);
             CREATE INDEX IF NOT EXISTS idx_hosts_username ON hosts(username);
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_single_default
+              ON hosts(is_default)
+              WHERE is_default = 1;
             "#,
         )
         .execute(&self.pool)
@@ -172,6 +176,20 @@ impl HostStore {
                 .execute(&self.pool)
                 .await?;
         }
+        if !columns.iter().any(|name| name == "is_default") {
+            sqlx::query("ALTER TABLE hosts ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0")
+                .execute(&self.pool)
+                .await?;
+        }
+        sqlx::query(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_single_default
+              ON hosts(is_default)
+              WHERE is_default = 1
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }
@@ -322,8 +340,8 @@ impl HostStore {
               username, hostname, ip,
               slurm_major, slurm_minor, slurm_patch,
               distro_name, distro_version, kernel_version,
-              port, identity_path,accounting_available, default_base_path, default_scratch_directory
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              port, identity_path, accounting_available, default_base_path, default_scratch_directory, is_default
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -342,6 +360,7 @@ impl HostStore {
         .bind(host.accounting_available)
         .bind(&host.default_base_path)
         .bind(&host.default_scratch_directory)
+        .bind(host.is_default)
         .fetch_one(&self.pool)
         .await?;
 
@@ -354,6 +373,9 @@ impl HostStore {
     /// 3) Else, insert a new row.
     pub async fn upsert_host(&self, host: &NewHost) -> Result<i64> {
         if let Some(id) = self.find_id_by_name(&host.name).await? {
+            if host.is_default {
+                self.clear_default_flags(Some(id)).await?;
+            }
             self.update_host(id, host).await?;
             return Ok(id);
         }
@@ -361,8 +383,14 @@ impl HostStore {
             .find_id_by_user_and_address(&host.username, &host.address, host.port)
             .await?
         {
+            if host.is_default {
+                self.clear_default_flags(Some(id)).await?;
+            }
             self.update_host(id, host).await?;
             return Ok(id);
+        }
+        if host.is_default {
+            self.clear_default_flags(None).await?;
         }
         self.insert_host(host).await
     }
@@ -399,8 +427,9 @@ impl HostStore {
               identity_path = ?13,
               accounting_available = ?14,
               default_base_path = ?15,
-              default_scratch_directory = ?16
-            WHERE id = ?17
+              default_scratch_directory = ?16,
+              is_default = ?17
+            WHERE id = ?18
             "#,
         )
         .bind(&host.name)
@@ -419,6 +448,7 @@ impl HostStore {
         .bind(host.accounting_available)
         .bind(&host.default_base_path)
         .bind(&host.default_scratch_directory)
+        .bind(host.is_default)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -510,6 +540,23 @@ impl HostStore {
             out.push(row_to_host(row));
         }
         Ok(out)
+    }
+
+    async fn clear_default_flags(&self, except_id: Option<i64>) -> Result<()> {
+        match except_id {
+            Some(id) => {
+                sqlx::query("UPDATE hosts SET is_default = 0 WHERE is_default = 1 AND id != ?")
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            None => {
+                sqlx::query("UPDATE hosts SET is_default = 0 WHERE is_default = 1")
+                    .execute(&self.pool)
+                    .await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn upsert_project(&self, name: &str, path: &str) -> Result<ProjectRecord> {
@@ -1147,6 +1194,7 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
     };
 
     let accounting_available = row.try_get::<i64, _>("accounting_available").unwrap_or(0) != 0;
+    let is_default = row.try_get::<i64, _>("is_default").unwrap_or(0) != 0;
     HostRecord {
         id: row.try_get("id").unwrap(),
         name: row.try_get("name").unwrap(),
@@ -1169,6 +1217,7 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
         accounting_available,
         default_base_path: row.try_get("default_base_path").unwrap(),
         default_scratch_directory: row.try_get("default_scratch_directory").ok().flatten(),
+        is_default,
     }
 }
 
@@ -1284,6 +1333,7 @@ mod tests {
             accounting_available: true,
             default_base_path: Some("/home/jeff/runs".to_string()),
             default_scratch_directory: Some("/scratch/jeff".to_string()),
+            is_default: false,
         }
     }
 
@@ -1317,6 +1367,41 @@ mod tests {
         assert_eq!(id1, id2);
         let got = db.get_by_name("c1").await.unwrap().unwrap();
         assert_eq!(got.kernel_version, "6.1.0-20-amd64");
+    }
+
+    #[tokio::test]
+    async fn upsert_default_unsets_previous_default() {
+        let db = HostStore::open_memory().await.unwrap();
+
+        let mut first = make_host("c1", "carol", Address::Hostname("node-1".into()));
+        first.is_default = true;
+        db.upsert_host(&first).await.unwrap();
+
+        let mut second = make_host("c2", "carol", Address::Hostname("node-2".into()));
+        second.is_default = true;
+        db.upsert_host(&second).await.unwrap();
+
+        let first_saved = db.get_by_name("c1").await.unwrap().unwrap();
+        let second_saved = db.get_by_name("c2").await.unwrap().unwrap();
+        assert!(!first_saved.is_default);
+        assert!(second_saved.is_default);
+    }
+
+    #[tokio::test]
+    async fn upsert_non_default_keeps_existing_default() {
+        let db = HostStore::open_memory().await.unwrap();
+
+        let mut first = make_host("c1", "carol", Address::Hostname("node-1".into()));
+        first.is_default = true;
+        db.upsert_host(&first).await.unwrap();
+
+        let second = make_host("c2", "carol", Address::Hostname("node-2".into()));
+        db.upsert_host(&second).await.unwrap();
+
+        let first_saved = db.get_by_name("c1").await.unwrap().unwrap();
+        let second_saved = db.get_by_name("c2").await.unwrap().unwrap();
+        assert!(first_saved.is_default);
+        assert!(!second_saved.is_default);
     }
 
     // Edge cases start here.
@@ -1457,6 +1542,7 @@ mod tests {
             accounting_available: true,
             default_base_path: Some("/home/alice/runs".to_string()),
             default_scratch_directory: Some("/scratch/alice".to_string()),
+            is_default: false,
         };
         db.insert_host(&host).await.unwrap();
         let mut info_map: HashMap<String, serde_json::Value> = HashMap::new();

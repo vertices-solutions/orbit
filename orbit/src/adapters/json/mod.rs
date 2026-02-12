@@ -372,6 +372,7 @@ fn result_to_json(result: &CommandResult) -> Value {
             identity_path,
             default_base_path,
             default_scratch_directory,
+            is_default,
         } => json!({
             "name": name,
             "username": username,
@@ -381,6 +382,7 @@ fn result_to_json(result: &CommandResult) -> Value {
             "identity_path": identity_path,
             "default_base_path": default_base_path,
             "default_scratch_directory": default_scratch_directory,
+            "is_default": is_default,
             "status": "added",
         }),
         CommandResult::ClusterSet { name, .. } => json!({

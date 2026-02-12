@@ -32,6 +32,7 @@ message StreamEvent {
     AddClusterScratchValidation add_cluster_scratch_validation = 7; // AddCluster scratch validation result
     AddClusterBasePathPrompt add_cluster_base_path_prompt = 8; // AddCluster default base path prompt
     AddClusterBasePathValidation add_cluster_base_path_validation = 9; // AddCluster default base path validation result
+    AddClusterDefaultPrompt add_cluster_default_prompt = 10; // AddCluster default cluster prompt
   }
 }
 
@@ -218,6 +219,14 @@ message AddClusterBasePathValidation {
   optional string error = 3;
 }
 
+message AddClusterDefaultPrompt {
+  optional string current_default_name = 1; // optional context for client-facing prompt text
+}
+
+message AddClusterDefaultSelection {
+  bool is_default = 1;
+}
+
 message ResolveHomeDirRequestInit {
   string username = 1;
   oneof host {
@@ -253,6 +262,7 @@ message ListClustersUnitResponse {
   bool accounting_available = 8;
   optional string default_base_path = 9;
   bool reachable = 10;
+  bool is_default = 11;
 }
 
 message ListJobsRequest {
@@ -412,6 +422,7 @@ message AddClusterRequest {
     MfaAnswer mfa = 2;
     AddClusterScratchSelection scratch_selection = 3;
     AddClusterBasePathSelection base_path_selection = 4;
+    AddClusterDefaultSelection default_selection = 5; // final default choice, sent at the end
   }
 }
 

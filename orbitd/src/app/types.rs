@@ -103,6 +103,7 @@ pub struct NewHost {
 
     pub default_base_path: Option<String>,
     pub default_scratch_directory: Option<String>,
+    pub is_default: bool,
 }
 
 /// Full stored host record.
@@ -123,6 +124,7 @@ pub struct HostRecord {
     pub accounting_available: bool,
     pub default_base_path: Option<String>,
     pub default_scratch_directory: Option<String>,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

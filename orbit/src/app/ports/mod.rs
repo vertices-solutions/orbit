@@ -178,6 +178,7 @@ pub trait OrbitdPort: Send + Sync {
         default_base_path: Option<String>,
         default_scratch_directory: Option<String>,
         interactive_scratch_selection: bool,
+        planned_is_default: Option<bool>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<AddClusterCapture>;

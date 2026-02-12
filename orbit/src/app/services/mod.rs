@@ -880,6 +880,7 @@ mod tests {
             name: None,
             identity_path: Some(identity_path.clone()),
             default_base_path: None,
+            is_default: false,
         };
 
         let resolver = AddClusterResolver::new(
@@ -906,6 +907,7 @@ mod tests {
             name: None,
             identity_path: Some("~/.ssh/id_rsa".into()),
             default_base_path: None,
+            is_default: false,
         };
 
         let resolver = AddClusterResolver::new(
@@ -958,6 +960,7 @@ mod tests {
             name: Some("local".into()),
             identity_path: Some(identity_path),
             default_base_path: None,
+            is_default: false,
         };
 
         let resolver = AddClusterResolver::new(

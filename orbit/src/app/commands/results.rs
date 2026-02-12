@@ -29,6 +29,7 @@ pub struct AddClusterCapture {
     pub stream: StreamCapture,
     pub default_base_path: Option<String>,
     pub default_scratch_directory: Option<String>,
+    pub is_default: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +114,7 @@ pub enum CommandResult {
         identity_path: String,
         default_base_path: Option<String>,
         default_scratch_directory: Option<String>,
+        is_default: bool,
     },
     ClusterSet {
         name: String,

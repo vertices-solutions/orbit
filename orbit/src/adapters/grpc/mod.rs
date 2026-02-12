@@ -679,6 +679,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         default_base_path: Option<String>,
         default_scratch_directory: Option<String>,
         interactive_scratch_selection: bool,
+        planned_is_default: Option<bool>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<AddClusterCapture> {
@@ -731,6 +732,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         let mut pending_base_path_prompt: Option<PromptLine> = None;
         let mut pending_base_path_input: Option<String> = None;
         let mut selected_scratch_directory = default_scratch_directory;
+        let mut selected_is_default = planned_is_default;
         let mut scratch_options: Vec<String> = Vec::new();
         let gathering_spinner_message = "Gathering additional cluster information...";
         let mut gathering_feedback: Option<Box<dyn PromptFeedbackPort>> =
@@ -954,6 +956,42 @@ impl OrbitdPort for GrpcOrbitdPort {
                             }
                         }
                     }
+                    stream_event::Event::AddClusterDefaultPrompt(_prompt) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        let gathering_was_active = gathering_active;
+                        if gathering_was_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.stop_information_gathering()?;
+                            }
+                            gathering_active = false;
+                        }
+
+                        let make_default = if let Some(value) = planned_is_default {
+                            value
+                        } else {
+                            interaction
+                                .confirm(
+                                    "Set this cluster as the default? (yes/no): ",
+                                    "Type yes to confirm, no to cancel.",
+                                )
+                                .await?
+                        };
+                        selected_is_default = Some(make_default);
+                        send_add_cluster_default_selection(&tx_ans, make_default).await?;
+                        let label = if make_default { "yes" } else { "no" };
+                        output
+                            .on_stderr(format!("✓ Default cluster: {label}\n").as_bytes())
+                            .await?;
+
+                        if gathering_was_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.start_information_gathering(gathering_spinner_message)?;
+                                gathering_active = true;
+                            }
+                        }
+                    }
                 },
                 Ok(proto::StreamEvent { event: None }) => {}
                 Err(status) => {
@@ -987,6 +1025,7 @@ impl OrbitdPort for GrpcOrbitdPort {
             stream: output.take_stream_capture(),
             default_base_path: selected_default_base_path,
             default_scratch_directory: selected_scratch_directory,
+            is_default: selected_is_default,
         })
     }
 
@@ -1252,6 +1291,20 @@ async fn send_add_cluster_scratch_selection(
         })
         .await
         .map_err(|_| AppError::remote_error("server closed while sending scratch selection"))
+}
+
+async fn send_add_cluster_default_selection(
+    sender: &mpsc::Sender<AddClusterRequest>,
+    is_default: bool,
+) -> AppResult<()> {
+    sender
+        .send(AddClusterRequest {
+            msg: Some(add_cluster_request::Msg::DefaultSelection(
+                proto::AddClusterDefaultSelection { is_default },
+            )),
+        })
+        .await
+        .map_err(|_| AppError::remote_error("server closed while sending default selection"))
 }
 
 fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
