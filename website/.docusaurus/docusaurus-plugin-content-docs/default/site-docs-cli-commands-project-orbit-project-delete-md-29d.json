@@ -17,8 +17,8 @@
   },
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "orbit project check",
-    "permalink": "/next/cli/commands/project/orbit-project-check"
+    "title": "orbit project build",
+    "permalink": "/next/cli/commands/project/orbit-project-build"
   },
   "next": {
     "title": "orbit project init",

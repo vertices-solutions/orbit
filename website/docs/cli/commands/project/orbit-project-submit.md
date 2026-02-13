@@ -7,7 +7,7 @@ Submit a registered project by project name
 
 Parent command: [`orbit project`](./orbit-project)
 
-**Usage:** `orbit project submit [OPTIONS] --to <CLUSTER> <PROJECT>`
+**Usage:** `orbit project submit [OPTIONS] <PROJECT>`
 
 ## Arguments
 

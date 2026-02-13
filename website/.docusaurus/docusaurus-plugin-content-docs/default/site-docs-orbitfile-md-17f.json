@@ -1,7 +1,7 @@
 {
   "id": "orbitfile",
   "title": "Orbitfile",
-  "description": "Orbitfile is a small TOML config that defines project identity and defaults for build, submit, and retrieval.",
+  "description": "Orbitfile is the single TOML file for project defaults, sync rules, and template-driven submissions in Orbit.",
   "source": "@site/docs/orbitfile.md",
   "sourceDirName": ".",
   "slug": "/orbitfile",
@@ -13,6 +13,6 @@
   "version": "current",
   "frontMatter": {
     "title": "Orbitfile",
-    "description": "Orbitfile is a small TOML config that defines project identity and defaults for build, submit, and retrieval."
+    "description": "Orbitfile is the single TOML file for project defaults, sync rules, and template-driven submissions in Orbit."
   }
 }
