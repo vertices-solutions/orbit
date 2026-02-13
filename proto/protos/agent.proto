@@ -263,6 +263,7 @@ message ListClustersUnitResponse {
   optional string default_base_path = 9;
   bool reachable = 10;
   bool is_default = 11;
+  optional string default_scratch_directory = 12;
 }
 
 message ListJobsRequest {

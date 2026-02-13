@@ -79,6 +79,8 @@ pub trait OrbitdPort: Send + Sync {
         cluster: Option<String>,
         project: Option<String>,
     ) -> AppResult<Vec<ListJobsUnitResponse>>;
+    async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>>;
+    async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>>;
     async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord>;
     async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;
     async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>>;

@@ -20,7 +20,7 @@ pub use project::{
     merge_submit_filters, resolve_orbitfile_sbatch_script, sanitize_project_name,
     template_config_from_json, upsert_orbitfile_project_name, validate_project_name,
 };
-pub use templates::{TemplateValues, resolve_template_values};
+pub use templates::{TemplateSpecialContext, TemplateValues, resolve_template_values};
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_BASE_PATH: &str = "~/runs";

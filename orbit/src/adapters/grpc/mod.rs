@@ -30,13 +30,14 @@ use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, BuildProjectRequest, CancelJobRequest, CancelJobRequestInit,
     CleanupJobRequest, CleanupJobRequestInit, DeleteClusterRequest, DeleteProjectRequest,
-    GetProjectRequest, JobLogsRequest, JobLogsRequestInit, ListClustersRequest, ListJobsRequest,
-    ListProjectsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
-    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit,
-    SetClusterRequest, SubmitJobRequest, SubmitPathFilterRule, SubmitProjectRequest,
-    UpsertProjectRequest, add_cluster_init, add_cluster_request, add_cluster_scratch_selection,
-    resolve_home_dir_request, resolve_home_dir_request_init, set_cluster_request, stream_event,
-    submit_job_request, submit_project_request, submit_stream_event,
+    GetProjectRequest, JobLogsRequest, JobLogsRequestInit, ListAccountsRequest,
+    ListClustersRequest, ListJobsRequest, ListPartitionsRequest, ListProjectsRequest, LsRequest,
+    LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
+    RetrieveJobRequestInit, SetClusterInit, SetClusterRequest, SubmitJobRequest,
+    SubmitPathFilterRule, SubmitProjectRequest, UpsertProjectRequest, add_cluster_init,
+    add_cluster_request, add_cluster_scratch_selection, resolve_home_dir_request,
+    resolve_home_dir_request_init, set_cluster_request, stream_event, submit_job_request,
+    submit_project_request, submit_stream_event,
 };
 use submit_errors::parse_remote_path_failure;
 
@@ -171,6 +172,41 @@ impl OrbitdPort for GrpcOrbitdPort {
                 Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
             };
         Ok(response.jobs)
+    }
+
+    async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>> {
+        let mut client = self.connect().await?;
+        let request = ListPartitionsRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.list_partitions(request)).await
+        {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        Ok(response
+            .partitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect())
+    }
+
+    async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>> {
+        let mut client = self.connect().await?;
+        let request = ListAccountsRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.list_accounts(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        Ok(response
+            .accounts
+            .into_iter()
+            .map(|item| item.name)
+            .collect())
     }
 
     async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord> {

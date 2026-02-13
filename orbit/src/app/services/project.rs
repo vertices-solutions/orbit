@@ -38,6 +38,8 @@ pub struct TemplateConfig {
     pub fields: BTreeMap<String, TemplateField>,
     pub files: Vec<String>,
     pub presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
+    #[serde(default)]
+    pub special_variables: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,6 +479,7 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
         fields,
         files,
         presets,
+        special_variables: Vec::new(),
     }))
 }
 

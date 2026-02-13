@@ -1,0 +1,2 @@
+Number of files: {{ file_count }}
+Hashing algorithm: {{ hash_method }}

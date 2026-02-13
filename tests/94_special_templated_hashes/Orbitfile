@@ -1,0 +1,28 @@
+[project]
+name = "94_special_templated_hashes"
+
+[sync]
+include = []
+exclude = ["/.git/"]
+
+[template.fields.file_count]
+type = "integer"
+default = 10
+description = "Number of random files to generate and hash."
+values = []
+
+[template.fields.hash_method]
+type = "enum"
+description = "Hashing method for generated files."
+values = ["sha256", "sha1", "md5"]
+
+[template.files]
+paths = ["run.sh", "inputs.txt", "submit.sbatch"]
+
+[template.presets.md5_100]
+file_count = 100
+hash_method = "md5"
+
+[template.presets.sha256_20]
+file_count = 20
+hash_method = "sha256"

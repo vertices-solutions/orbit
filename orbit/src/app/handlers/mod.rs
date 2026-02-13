@@ -12,7 +12,7 @@ use crate::app::errors::{
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
-    AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector,
+    AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector, TemplateSpecialContext,
     build_default_orbitfile_contents, discover_project_from_submit_root, load_project_from_root,
     merge_submit_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
     sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
@@ -122,6 +122,12 @@ pub async fn handle_job_submit(
                 ctx.interaction.as_ref(),
                 ctx.output.as_ref(),
                 ctx.ui_mode,
+                TemplateSpecialContext {
+                    cluster_name: &cluster.name,
+                    accounting_available: cluster.accounting_available,
+                    default_scratch_directory: cluster.default_scratch_directory.as_deref(),
+                    orbitd: ctx.orbitd.as_ref(),
+                },
                 true,
             )
             .await?;
@@ -719,6 +725,12 @@ pub async fn handle_project_submit(
             ctx.interaction.as_ref(),
             ctx.output.as_ref(),
             ctx.ui_mode,
+            TemplateSpecialContext {
+                cluster_name: &cluster.name,
+                accounting_available: cluster.accounting_available,
+                default_scratch_directory: cluster.default_scratch_directory.as_deref(),
+                orbitd: ctx.orbitd.as_ref(),
+            },
             false,
         )
         .await?;

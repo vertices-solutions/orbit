@@ -59,6 +59,7 @@ pub fn cluster_status_to_response(status: &ClusterStatus) -> ListClustersUnitRes
         default_base_path: host.default_base_path.to_owned(),
         reachable: status.reachable,
         is_default: host.is_default,
+        default_scratch_directory: host.default_scratch_directory.to_owned(),
     }
 }
 
