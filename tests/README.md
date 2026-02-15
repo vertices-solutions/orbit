@@ -9,7 +9,7 @@ Projects overview:
 - 03_filter_tree: include/exclude sync filters, file tree listing, filter ordering.
 - 04_binary_output: binary artifacts, nested outputs, retrieval of files and directories.
 - 05_cancel_job: long-running job canceled via `orbit job cancel`.
-- project_lifecycle (runner-managed): `project init`/`project list`/`project check`/`project submit`/`project delete`.
+- project_lifecycle (runner-managed): `project init`/`project list`/`project submit`/`project delete`.
 - 91_queued_state: job held in PENDING to exercise queued status.
 - 92_long_running_hashes: ~100 MiB data sync with sequential hashing (manual-only).
 - 06_templated_hashes: templated hashing job with remote data generation (manual-only).

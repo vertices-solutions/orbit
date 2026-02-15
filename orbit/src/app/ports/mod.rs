@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse, SubmitResult, SubmitStatus};
 
-use crate::app::commands::{CommandResult, StreamCapture, SubmitCapture};
+use crate::app::commands::{AddClusterCapture, CommandResult, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -15,9 +15,16 @@ pub enum StreamKind {
 }
 
 pub trait PromptFeedbackPort: Send {
+    fn start_information_gathering(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+    fn stop_information_gathering(&mut self) -> AppResult<()> {
+        Ok(())
+    }
     fn start_validation(&mut self, message: &str) -> AppResult<()>;
+    fn stop_validation(&mut self) -> AppResult<()>;
     fn finish_success(&mut self, message: &str) -> AppResult<()>;
-    fn finish_failure(&mut self) -> AppResult<()>;
+    fn finish_failure(&mut self, message: &str) -> AppResult<()>;
 }
 
 pub struct PromptLine {
@@ -37,6 +44,13 @@ impl PromptLine {
         Ok(())
     }
 
+    pub fn stop_validation(&mut self) -> AppResult<()> {
+        if let Some(feedback) = self.feedback.as_mut() {
+            feedback.stop_validation()?;
+        }
+        Ok(())
+    }
+
     pub fn finish_success(&mut self, message: &str) -> AppResult<()> {
         if let Some(feedback) = self.feedback.as_mut() {
             feedback.finish_success(message)?;
@@ -44,9 +58,9 @@ impl PromptLine {
         Ok(())
     }
 
-    pub fn finish_failure(&mut self) -> AppResult<()> {
+    pub fn finish_failure(&mut self, message: &str) -> AppResult<()> {
         if let Some(feedback) = self.feedback.as_mut() {
-            feedback.finish_failure()?;
+            feedback.finish_failure(message)?;
         }
         Ok(())
     }
@@ -65,11 +79,13 @@ pub trait OrbitdPort: Send + Sync {
         cluster: Option<String>,
         project: Option<String>,
     ) -> AppResult<Vec<ListJobsUnitResponse>>;
+    async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>>;
+    async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>>;
     async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord>;
     async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;
     async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>>;
     async fn delete_project(&self, name: &str) -> AppResult<bool>;
-    async fn delete_cluster(&self, name: &str) -> AppResult<bool>;
+    async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool>;
 
     async fn ls(
         &self,
@@ -162,9 +178,12 @@ pub trait OrbitdPort: Send + Sync {
         identity_path: Option<String>,
         port: u32,
         default_base_path: Option<String>,
+        default_scratch_directory: Option<String>,
+        interactive_scratch_selection: bool,
+        planned_is_default: Option<bool>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<StreamCapture>;
+    ) -> AppResult<AddClusterCapture>;
 
     async fn set_cluster(
         &self,
@@ -220,6 +239,7 @@ pub trait InteractionPort: Send + Sync {
         help: &str,
         default: &str,
     ) -> AppResult<PromptLine>;
+    async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>>;
     async fn select_sbatch(&self, options: &[String]) -> AppResult<Option<String>>;
     async fn select_enum(
         &self,

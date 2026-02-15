@@ -116,11 +116,6 @@
               "sidebar": "docsSidebar"
             },
             {
-              "id": "cli/commands/project/orbit-project-check",
-              "path": "/next/cli/commands/project/orbit-project-check",
-              "sidebar": "docsSidebar"
-            },
-            {
               "id": "cli/commands/project/orbit-project-delete",
               "path": "/next/cli/commands/project/orbit-project-delete",
               "sidebar": "docsSidebar"

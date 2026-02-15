@@ -37,6 +37,9 @@ use crate::app::types::{
 const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
 const CLEANUP_CANCEL_TIMEOUT: TokioDuration = TokioDuration::from_secs(60);
 const ORBITFILE_NAME: &str = "Orbitfile";
+const LIST_PARTITIONS_COMMAND: &str = "scontrol show partition -o";
+const LIST_ACCOUNTS_COMMAND: &str = "sshare -U -P -u $USER --format Account --noheader";
+const TARBALL_HASH_FUNCTION_BLAKE3: &str = "blake3";
 
 #[derive(Clone)]
 pub struct UseCases {
@@ -174,6 +177,186 @@ impl UseCases {
         Ok(jobs)
     }
 
+    pub async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>> {
+        let cluster_name = name.trim();
+        if cluster_name.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+
+        let host = match self.clusters.get_by_name(cluster_name).await? {
+            Some(host) => host,
+            None => {
+                return Err(AppError::with_message(
+                    AppErrorKind::NotFound,
+                    codes::NOT_FOUND,
+                    format!("cluster '{cluster_name}' not found"),
+                ));
+            }
+        };
+
+        let config = self.config_for_host(&host).await?;
+        if self
+            .remote_exec
+            .needs_connect(&config)
+            .await
+            .unwrap_or(true)
+        {
+            let stream = NoopStreamOutput;
+            let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
+            drop(mfa_tx);
+            let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+            self.remote_exec
+                .ensure_connected(&config, &stream, &mut mfa_port)
+                .await
+                .map_err(|err| {
+                    AppError::with_message(
+                        AppErrorKind::Aborted,
+                        codes::REMOTE_ERROR,
+                        format!("failed to connect to cluster '{cluster_name}': {err}"),
+                    )
+                })?;
+        }
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, LIST_PARTITIONS_COMMAND)
+            .await
+            .map_err(|err| {
+                AppError::with_message(
+                    AppErrorKind::Aborted,
+                    codes::REMOTE_ERROR,
+                    format!("failed to enumerate partitions on '{cluster_name}': {err}"),
+                )
+            })?;
+
+        if capture.exit_code != 0 {
+            let stderr = String::from_utf8_lossy(&capture.stderr);
+            let detail = stderr.trim();
+            return Err(AppError::with_message(
+                AppErrorKind::Aborted,
+                codes::REMOTE_ERROR,
+                if detail.is_empty() {
+                    format!(
+                        "partition enumeration command failed on '{cluster_name}' with exit code {}",
+                        capture.exit_code
+                    )
+                } else {
+                    format!(
+                        "partition enumeration command failed on '{cluster_name}' with exit code {}: {}",
+                        capture.exit_code, detail
+                    )
+                },
+            ));
+        }
+
+        let output = String::from_utf8(capture.stdout).map_err(|err| {
+            AppError::with_message(
+                AppErrorKind::Internal,
+                codes::REMOTE_ERROR,
+                format!("failed to decode partition output from '{cluster_name}': {err}"),
+            )
+        })?;
+
+        let parsed = slurm::parse_scontrol_partitions(&output).map_err(|err| {
+            AppError::with_message(
+                AppErrorKind::Internal,
+                codes::REMOTE_ERROR,
+                format!("failed to parse partition output from '{cluster_name}': {err}"),
+            )
+        })?;
+
+        Ok(parsed.into_iter().map(|partition| partition.name).collect())
+    }
+
+    pub async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>> {
+        let cluster_name = name.trim();
+        if cluster_name.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+
+        let host = match self.clusters.get_by_name(cluster_name).await? {
+            Some(host) => host,
+            None => {
+                return Err(AppError::with_message(
+                    AppErrorKind::NotFound,
+                    codes::NOT_FOUND,
+                    format!("cluster '{cluster_name}' not found"),
+                ));
+            }
+        };
+
+        let config = self.config_for_host(&host).await?;
+        if self
+            .remote_exec
+            .needs_connect(&config)
+            .await
+            .unwrap_or(true)
+        {
+            let stream = NoopStreamOutput;
+            let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
+            drop(mfa_tx);
+            let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+            self.remote_exec
+                .ensure_connected(&config, &stream, &mut mfa_port)
+                .await
+                .map_err(|err| {
+                    AppError::with_message(
+                        AppErrorKind::Aborted,
+                        codes::REMOTE_ERROR,
+                        format!("failed to connect to cluster '{cluster_name}': {err}"),
+                    )
+                })?;
+        }
+
+        let capture = self
+            .remote_exec
+            .exec_capture(&config, LIST_ACCOUNTS_COMMAND)
+            .await
+            .map_err(|err| {
+                AppError::with_message(
+                    AppErrorKind::Aborted,
+                    codes::REMOTE_ERROR,
+                    format!("failed to enumerate accounts on '{cluster_name}': {err}"),
+                )
+            })?;
+
+        if capture.exit_code != 0 {
+            let stderr = String::from_utf8_lossy(&capture.stderr);
+            let detail = stderr.trim();
+            return Err(AppError::with_message(
+                AppErrorKind::Aborted,
+                codes::REMOTE_ERROR,
+                if detail.is_empty() {
+                    format!(
+                        "account enumeration command failed on '{cluster_name}' with exit code {}",
+                        capture.exit_code
+                    )
+                } else {
+                    format!(
+                        "account enumeration command failed on '{cluster_name}' with exit code {}: {}",
+                        capture.exit_code, detail
+                    )
+                },
+            ));
+        }
+
+        let output = String::from_utf8(capture.stdout).map_err(|err| {
+            AppError::with_message(
+                AppErrorKind::Internal,
+                codes::REMOTE_ERROR,
+                format!("failed to decode account output from '{cluster_name}': {err}"),
+            )
+        })?;
+
+        Ok(slurm::parse_sshare_accounts(&output))
+    }
+
     pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
         let project = self.projects.upsert_project(name, path).await?;
         self.telemetry.event(
@@ -217,6 +400,7 @@ impl UseCases {
                 codes::INVALID_ARGUMENT,
             ));
         }
+        // If delete_all is true - all (local) project versions will be deleted
         let (base_name, delete_name, delete_all) =
             if let Some((project_name, tag)) = split_project_ref(trimmed) {
                 let base = project_name.to_string();
@@ -247,26 +431,31 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             ));
         }
 
-        let mut tarball_hashes: Vec<String> = Vec::new();
+        let mut tarball_paths: Vec<PathBuf> = Vec::new();
         if delete_all {
+            // Enumerating tarballs for the project
             let projects = self.projects.list_projects().await?;
             for project in projects {
                 if project.name == base_name {
-                    if let Some(hash) = project.tarball_hash.clone() {
-                        tarball_hashes.push(hash);
+                    if let Some(version_tag) = project.version_tag.as_deref() {
+                        let project_ref = format!("{}:{version_tag}", project.name);
+                        tarball_paths.push(tarball_path_for_project_ref(
+                            &self.tarballs_dir,
+                            &project_ref,
+                        ));
                     }
                 }
             }
         } else if !delete_name.is_empty() {
             if let Some(project) = self.projects.get_project_by_name(&delete_name).await? {
-                if let Some(hash) = project.tarball_hash {
-                    tarball_hashes.push(hash);
-                }
+                tarball_paths.push(tarball_path_for_project_record(
+                    &self.tarballs_dir,
+                    &project,
+                )?);
             }
         }
 
-        for hash in tarball_hashes {
-            let tarball_path = self.tarballs_dir.join(format!("{hash}.tar.zst"));
+        for tarball_path in tarball_paths {
             match std::fs::remove_file(&tarball_path) {
                 Ok(()) => {}
                 Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
@@ -343,12 +532,8 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             )));
         }
 
-        let (version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
-
-        let mut hasher = Sha256::new();
-        hasher.update(format!("{project_name}:{version_tag}"));
-        let tarball_hash = format!("{:x}", hasher.finalize());
-        let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
+        let (_version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
+        let tarball_path = tarball_path_for_project_ref(&self.tarballs_dir, &project_ref);
 
         let template_config_json = templates::load_template_config_json(&orbitfile_path)?;
 
@@ -357,11 +542,13 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             .and_then(|name| name.to_str())
             .ok_or_else(|| invalid_argument("project path has no directory name"))?;
         project_building::create_tarball(&project_root, root_name, &tarball_path, package_git)?;
+        let tarball_hash = project_building::blake3_file_hash(&tarball_path)?;
 
         let build = NewProjectBuild {
             name: project_ref,
             path: project_root.display().to_string(),
             tarball_hash,
+            tarball_hash_function: TARBALL_HASH_FUNCTION_BLAKE3.to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
             template_config_json,
             submit_sbatch_script,
@@ -381,7 +568,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(project)
     }
 
-    pub async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
+    pub async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(AppError::new(
@@ -389,12 +576,35 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 codes::INVALID_ARGUMENT,
             ));
         }
+        let Some(host) = self.clusters.get_by_name(trimmed).await? else {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::NOT_FOUND,
+            ));
+        };
+        if !force {
+            let running_jobs = self.jobs.list_running_jobs().await?;
+            if running_jobs.iter().any(|job| job.name == trimmed) {
+                return Err(AppError::with_message(
+                    AppErrorKind::Conflict,
+                    codes::CONFLICT,
+                    format!(
+                        "deleting cluster '{trimmed}' is prohibited because it has running jobs; \
+cancel them with `job cancel` or pass --force"
+                    ),
+                ));
+            }
+        }
         let deleted = self.clusters.delete_by_name(trimmed).await?;
+        //TODO: can this even happen, or this is over-checking?
         if deleted == 0 {
             return Err(AppError::new(
                 AppErrorKind::InvalidArgument,
                 codes::NOT_FOUND,
             ));
+        }
+        if host.is_default {
+            self.promote_last_added_cluster_to_default().await?;
         }
         let _ = self.remote_exec.remove_session(trimmed).await;
         self.telemetry.event(
@@ -405,6 +615,19 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             },
         );
         Ok(true)
+    }
+
+    async fn promote_last_added_cluster_to_default(&self) -> AppResult<()> {
+        let mut remaining_hosts = self.clusters.list_hosts(None).await?;
+        let Some(last_added) = remaining_hosts.pop() else {
+            return Ok(());
+        };
+        if last_added.is_default {
+            return Ok(());
+        }
+        let replacement = host_record_to_new_host(&last_added, true);
+        self.clusters.upsert_host(&replacement).await?;
+        Ok(())
     }
 
     pub async fn resolve_home_dir(
@@ -445,6 +668,152 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             })
             .await;
         Ok(())
+    }
+
+    pub async fn resolve_scratch_directories(
+        &self,
+        input: ResolveScratchDirectoriesInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<Vec<String>> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username.clone(),
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        let username = fetch_remote_username(self.remote_exec.as_ref(), &config)
+            .await
+            .unwrap_or_else(|_| input.username.trim().to_string());
+        let raw_candidates = vec![
+            "~/scratch".to_string(),
+            format!("/scratch/{username}"),
+            format!("/localscratch/{username}"),
+        ];
+        tracing::debug!(
+            "scratch discovery start session={} username={} candidates={:?}",
+            config.session_name.as_deref().unwrap_or("<none>"),
+            username,
+            raw_candidates
+        );
+
+        let mut found = Vec::new();
+        for raw in raw_candidates {
+            let resolved = resolve_default_scratch_directory(Some(raw), &home_dir)?;
+            let Some(normalized) = normalize_default_scratch_directory(resolved)? else {
+                continue;
+            };
+            match validate_scratch_directory_access(self.remote_exec.as_ref(), &config, &normalized)
+                .await
+            {
+                Ok(real_path) => {
+                    tracing::debug!(
+                        "scratch discovery accepted candidate={} resolved={}",
+                        normalized,
+                        real_path
+                    );
+                    if !found.contains(&normalized) {
+                        found.push(normalized);
+                    }
+                }
+                Err(err) => {
+                    if err.kind() != AppErrorKind::InvalidArgument {
+                        return Err(err);
+                    }
+                    tracing::debug!(
+                        "scratch discovery rejected candidate={} reason={}",
+                        normalized,
+                        err.message()
+                    );
+                }
+            }
+        }
+        tracing::debug!(
+            "scratch discovery done session={} found={:?}",
+            config.session_name.as_deref().unwrap_or("<none>"),
+            found
+        );
+        Ok(found)
+    }
+
+    pub async fn validate_scratch_directory(
+        &self,
+        input: ValidateScratchDirectoryInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<String> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username,
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        let resolved = resolve_default_scratch_directory(Some(input.directory), &home_dir)?;
+        let normalized = normalize_default_scratch_directory(resolved)?
+            .ok_or_else(|| invalid_argument("scratch directory cannot be empty"))?;
+        let real_path =
+            validate_scratch_directory_access(self.remote_exec.as_ref(), &config, &normalized)
+                .await?;
+        tracing::info!(
+            "scratch directory validated input={} resolved={}",
+            normalized,
+            real_path
+        );
+        Ok(normalized)
+    }
+
+    pub async fn validate_default_base_path(
+        &self,
+        input: ValidateDefaultBasePathInput,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<String> {
+        let addr = self
+            .network
+            .resolve_host_addr(&input.address, input.port)
+            .await?;
+        let config = build_ssh_config(
+            input.session_name,
+            input.username,
+            &input.address,
+            addr,
+            input.identity_path,
+        );
+
+        self.remote_exec
+            .ensure_connected(&config, stream, mfa)
+            .await?;
+
+        let home_dir = fetch_remote_home_dir(self.remote_exec.as_ref(), &config).await?;
+        let resolved = resolve_default_base_path(Some(input.base_path), &home_dir)?;
+        let normalized = normalize_default_base_path(resolved)?
+            .ok_or_else(|| invalid_argument("default base path cannot be empty"))?;
+        validate_and_prepare_default_base_path(self.remote_exec.as_ref(), &config, &normalized)
+            .await?;
+        tracing::info!("default base path validated resolved={}", normalized);
+        Ok(normalized)
     }
 
     pub async fn ls(
@@ -1546,11 +1915,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     .ok_or_else(|| AppError::new(AppErrorKind::InvalidArgument, codes::NOT_FOUND))?
             };
             input.local_path = project.path.clone();
-            let tarball_hash = project
-                .tarball_hash
-                .clone()
-                .ok_or_else(|| invalid_argument("project tarball is missing; run project build"))?;
-            let tarball_path = self.tarballs_dir.join(format!("{tarball_hash}.tar.zst"));
+            let tarball_path = tarball_path_for_project_record(&self.tarballs_dir, &project)?;
             if !tarball_path.is_file() {
                 return Err(AppError::with_message(
                     AppErrorKind::InvalidArgument,
@@ -1943,6 +2308,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         input: AddClusterInput,
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
+        default_selection: &mut mpsc::Receiver<proto::AddClusterDefaultSelection>,
     ) -> AppResult<()> {
         let cluster_name = input.name.clone();
         let user_name = input.username.clone();
@@ -1955,10 +2321,13 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     port: input.port,
                     identity_path: input.identity_path,
                     default_base_path: input.default_base_path,
+                    default_scratch_directory: input.default_scratch_directory,
+                    is_default: false,
                     emit_progress: true,
                 },
                 stream,
                 mfa,
+                Some(default_selection),
             )
             .await;
         if result.is_ok() {
@@ -2020,6 +2389,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         let default_base_path = input
             .default_base_path
             .or_else(|| existing.default_base_path.clone());
+        let default_scratch_directory = existing.default_scratch_directory.clone();
         let port = input.port.unwrap_or(existing.port);
 
         let cluster_name = input.name.clone();
@@ -2032,10 +2402,13 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                     port,
                     identity_path,
                     default_base_path,
+                    default_scratch_directory,
+                    is_default: existing.is_default,
                     emit_progress: false,
                 },
                 stream,
                 mfa,
+                None,
             )
             .await;
         if result.is_ok() {
@@ -2356,6 +2729,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         input: ClusterUpsertInput,
         stream: &dyn StreamOutputPort,
         mfa: &mut dyn MfaPort,
+        mut default_selection: Option<&mut mpsc::Receiver<proto::AddClusterDefaultSelection>>,
     ) -> AppResult<()> {
         let reachable = self
             .network
@@ -2469,16 +2843,20 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             resolve_default_base_path(input.default_base_path, &home_dir)?;
         let normalized_default_base_path = normalize_default_base_path(resolved_default_base_path)?;
         if let Some(ref dbp) = normalized_default_base_path {
-            let command = format!("mkdir -p {}", dbp);
-            let capture = self
-                .remote_exec
-                .exec_capture(&config, &command)
-                .await
-                .map_err(|_| AppError::new(AppErrorKind::Internal, codes::REMOTE_ERROR))?;
-            if capture.exit_code != 0 {
-                return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
-            }
+            validate_and_prepare_default_base_path(self.remote_exec.as_ref(), &config, dbp).await?;
         }
+        let resolved_default_scratch_directory =
+            resolve_default_scratch_directory(input.default_scratch_directory, &home_dir)?;
+        let normalized_default_scratch_directory =
+            normalize_default_scratch_directory(resolved_default_scratch_directory)?;
+        if let Some(ref path) = normalized_default_scratch_directory {
+            let _ =
+                validate_scratch_directory_access(self.remote_exec.as_ref(), &config, path).await?;
+        }
+        let is_default = match default_selection.as_deref_mut() {
+            Some(selection) => Self::recv_cluster_default_selection(stream, selection).await?,
+            None => input.is_default,
+        };
 
         let new_host = NewHost {
             username: input.username,
@@ -2491,6 +2869,8 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             identity_path: input.identity_path,
             accounting_available: accounting_enabled,
             default_base_path: normalized_default_base_path,
+            default_scratch_directory: normalized_default_scratch_directory,
+            is_default,
         };
 
         if self.clusters.upsert_host(&new_host).await.is_err() {
@@ -2505,6 +2885,25 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
 
         Ok(())
     }
+
+    async fn recv_cluster_default_selection(
+        stream: &dyn StreamOutputPort,
+        selection: &mut mpsc::Receiver<proto::AddClusterDefaultSelection>,
+    ) -> AppResult<bool> {
+        stream
+            .send(StreamEvent {
+                event: Some(stream_event::Event::AddClusterDefaultPrompt(
+                    proto::AddClusterDefaultPrompt {
+                        current_default_name: None,
+                    },
+                )),
+            })
+            .await?;
+        let Some(selected) = selection.recv().await else {
+            return Err(AppError::new(AppErrorKind::Cancelled, codes::CANCELED));
+        };
+        Ok(selected.is_default)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -2514,6 +2913,35 @@ pub struct ResolveHomeDirInput {
     pub port: u16,
     pub identity_path: Option<String>,
     pub session_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolveScratchDirectoriesInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidateScratchDirectoryInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+    pub directory: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct ValidateDefaultBasePathInput {
+    pub username: String,
+    pub address: Address,
+    pub port: u16,
+    pub identity_path: Option<String>,
+    pub session_name: Option<String>,
+    pub base_path: String,
 }
 
 #[derive(Clone, Debug)]
@@ -2601,6 +3029,7 @@ pub struct AddClusterInput {
     pub port: u16,
     pub identity_path: Option<String>,
     pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -2621,6 +3050,8 @@ struct ClusterUpsertInput {
     port: u16,
     identity_path: Option<String>,
     default_base_path: Option<String>,
+    default_scratch_directory: Option<String>,
+    is_default: bool,
     emit_progress: bool,
 }
 
@@ -2675,6 +3106,23 @@ fn build_ssh_config(
     }
 }
 
+fn host_record_to_new_host(host: &HostRecord, is_default: bool) -> NewHost {
+    NewHost {
+        name: host.name.clone(),
+        username: host.username.clone(),
+        address: host.address.clone(),
+        port: host.port,
+        identity_path: host.identity_path.clone(),
+        slurm: host.slurm,
+        distro: host.distro.clone(),
+        kernel_version: host.kernel_version.clone(),
+        accounting_available: host.accounting_available,
+        default_base_path: host.default_base_path.clone(),
+        default_scratch_directory: host.default_scratch_directory.clone(),
+        is_default,
+    }
+}
+
 fn format_address(address: &Address) -> String {
     match address {
         Address::Hostname(host) => host.clone(),
@@ -2704,6 +3152,27 @@ async fn fetch_remote_home_dir(
         return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
     }
     Ok(home.to_string())
+}
+
+async fn fetch_remote_username(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+) -> AppResult<String> {
+    let command = "printf '%s' \"$USER\"";
+    let capture = remote_exec
+        .exec_capture(config, command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    let user_raw = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let user = user_raw.trim();
+    if user.is_empty() {
+        return Err(AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR));
+    }
+    Ok(user.to_string())
 }
 
 fn resolve_default_base_path(
@@ -2759,6 +3228,257 @@ fn normalize_default_base_path(default_base_path: Option<String>) -> AppResult<O
             codes::INVALID_ARGUMENT,
         ))
     }
+}
+
+fn resolve_default_scratch_directory(
+    default_scratch_directory: Option<String>,
+    home_dir: &str,
+) -> AppResult<Option<String>> {
+    let default_scratch_directory = default_scratch_directory.and_then(|value| {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed.to_string())
+        }
+    });
+
+    let Some(raw) = default_scratch_directory else {
+        return Ok(None);
+    };
+
+    if raw == "~" {
+        return Ok(Some(home_dir.to_string()));
+    }
+
+    if let Some(suffix) = raw.strip_prefix("~/") {
+        if suffix.is_empty() {
+            return Ok(Some(home_dir.to_string()));
+        }
+        let expanded = PathBuf::from(home_dir).join(suffix);
+        return Ok(Some(expanded.to_string_lossy().into_owned()));
+    }
+
+    if raw.starts_with('~') {
+        return Err(invalid_argument(
+            "scratch directory must be absolute or start with '~/'",
+        ));
+    }
+
+    Ok(Some(raw))
+}
+
+fn normalize_default_scratch_directory(
+    default_scratch_directory: Option<String>,
+) -> AppResult<Option<String>> {
+    let Some(path) = default_scratch_directory else {
+        return Ok(None);
+    };
+    let normalized = remote_path::normalize_path(path);
+    if normalized.is_absolute() {
+        Ok(Some(normalized.to_string_lossy().into_owned()))
+    } else {
+        Err(invalid_argument(
+            "scratch directory must be absolute or start with '~/'",
+        ))
+    }
+}
+
+async fn validate_scratch_directory_access(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+    directory: &str,
+) -> AppResult<String> {
+    let directory_escaped = shell::sh_escape(directory);
+
+    let exists_command = format!("test -d {directory_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &exists_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} doesn't exist"
+        )));
+    }
+
+    let resolve_command = format!("cd -- {directory_escaped} && pwd -P");
+    let capture = remote_exec
+        .exec_capture(config, &resolve_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't be accessed"
+        )));
+    }
+    let resolved = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let resolved = resolved.trim().to_string();
+    if resolved.is_empty() || !resolved.starts_with('/') {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't be accessed"
+        )));
+    }
+    tracing::debug!(
+        "scratch directory resolved input={} resolved={}",
+        directory,
+        resolved
+    );
+    let resolved_escaped = shell::sh_escape(&resolved);
+
+    let list_command = format!("ls -A -- {resolved_escaped} >/dev/null");
+    let capture = remote_exec
+        .exec_capture(config, &list_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't be listed"
+        )));
+    }
+
+    let probe_file = format!(
+        "{}/.orbit-scratch-probe-{}",
+        resolved.trim_end_matches('/'),
+        random::generate_run_directory_name()
+    );
+    let probe_file_escaped = shell::sh_escape(&probe_file);
+
+    let create_command = format!("touch -- {probe_file_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &create_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "directory {directory} can't create files"
+        )));
+    }
+
+    let write_command = format!("printf 'orbit' > {probe_file_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &write_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        let _ = remote_exec
+            .exec_capture(config, &format!("rm -f -- {probe_file_escaped}"))
+            .await;
+        return Err(invalid_argument(format!(
+            "directory {directory} can't create files"
+        )));
+    }
+
+    let read_command = format!("cat -- {probe_file_escaped} >/dev/null");
+    let capture = remote_exec
+        .exec_capture(config, &read_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        let _ = remote_exec
+            .exec_capture(config, &format!("rm -f -- {probe_file_escaped}"))
+            .await;
+        return Err(invalid_argument(format!(
+            "directory {directory} can't read files"
+        )));
+    }
+
+    let _ = remote_exec
+        .exec_capture(config, &format!("rm -f -- {probe_file_escaped}"))
+        .await;
+    Ok(resolved)
+}
+
+async fn validate_and_prepare_default_base_path(
+    remote_exec: &dyn RemoteExecPort,
+    config: &SshConfig,
+    base_path: &str,
+) -> AppResult<()> {
+    let base_path_escaped = shell::sh_escape(base_path);
+
+    let exists_dir_command = format!("test -d {base_path_escaped}");
+    let capture = remote_exec
+        .exec_capture(config, &exists_dir_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+
+    if capture.exit_code != 0 {
+        let exists_entry_command = format!("test -e {base_path_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &exists_entry_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code == 0 {
+            return Err(invalid_argument(format!(
+                "default base path {base_path} exists but is not a directory"
+            )));
+        }
+
+        let parent = Path::new(base_path)
+            .parent()
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "/".to_string());
+        let parent_escaped = shell::sh_escape(&parent);
+
+        let parent_exists_command = format!("test -d {parent_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &parent_exists_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(invalid_argument(format!(
+                "parent directory {parent} doesn't exist; only one level can be created"
+            )));
+        }
+
+        let parent_permissions_command =
+            format!("test -w {parent_escaped} && test -x {parent_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &parent_permissions_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(invalid_argument(format!(
+                "insufficient permissions to create {base_path} under {parent}"
+            )));
+        }
+
+        // Create only the specified directory. Parent directories must already exist.
+        let create_command = format!("mkdir -- {base_path_escaped}");
+        let capture = remote_exec
+            .exec_capture(config, &create_command)
+            .await
+            .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+        if capture.exit_code != 0 {
+            return Err(invalid_argument(format!(
+                "default base path {base_path} can't be created"
+            )));
+        }
+    }
+
+    let resolve_command = format!("cd -- {base_path_escaped} && pwd -P");
+    let capture = remote_exec
+        .exec_capture(config, &resolve_command)
+        .await
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    if capture.exit_code != 0 {
+        return Err(invalid_argument(format!(
+            "default base path {base_path} can't be accessed"
+        )));
+    }
+
+    let resolved = String::from_utf8(capture.stdout)
+        .map_err(|_| AppError::new(AppErrorKind::Aborted, codes::REMOTE_ERROR))?;
+    let resolved = resolved.trim();
+    if resolved.is_empty() || !resolved.starts_with('/') {
+        return Err(invalid_argument(format!(
+            "default base path {base_path} can't be accessed"
+        )));
+    }
+
+    Ok(())
 }
 
 fn resolve_retrieve_local_target(
@@ -3044,6 +3764,31 @@ fn split_project_ref(value: &str) -> Option<(&str, &str)> {
     }
 }
 
+fn tarball_file_hash_from_project_ref(project_ref: &str) -> String {
+    // project name:project tag ref
+    let mut hasher = Sha256::new();
+    hasher.update(project_ref);
+    format!("{:x}", hasher.finalize())
+}
+
+fn tarball_path_for_project_ref(tarballs_dir: &Path, project_ref: &str) -> PathBuf {
+    // tarball path from project reference (hashes project name:tag, joins tarballs dir to it)
+    let file_hash = tarball_file_hash_from_project_ref(project_ref);
+    tarballs_dir.join(format!("{file_hash}.tar.zst"))
+}
+
+fn tarball_path_for_project_record(
+    tarballs_dir: &Path,
+    project: &ProjectRecord,
+) -> AppResult<PathBuf> {
+    let version_tag = project
+        .version_tag
+        .as_deref()
+        .ok_or_else(|| invalid_argument("project build is missing version tag"))?;
+    let project_ref = format!("{}:{version_tag}", project.name);
+    Ok(tarball_path_for_project_ref(tarballs_dir, &project_ref))
+}
+
 impl UseCases {
     async fn get_latest_project_build(&self, project_name: &str) -> AppResult<ProjectRecord> {
         match self.projects.get_latest_project_build(project_name).await? {
@@ -3115,8 +3860,9 @@ fn normalize_project_filter(project_filter: Option<&str>) -> AppResult<Option<St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
 
     use crate::app::ports::ExecCapture;
     use crate::app::types::{Distro, SlurmVersion};
@@ -3184,6 +3930,226 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct DeleteClusterRemoteExec;
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for DeleteClusterRemoteExec {
+        async fn exec_capture(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+        ) -> AppResult<ExecCapture> {
+            panic!("exec_capture should not be called in delete_cluster tests");
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in delete_cluster tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected should not be called in delete_cluster tests");
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in delete_cluster tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            panic!("needs_connect should not be called in delete_cluster tests");
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in delete_cluster tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in delete_cluster tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            Ok(true)
+        }
+    }
+
+    struct ScriptedRemoteExec {
+        capture: Mutex<Option<AppResult<ExecCapture>>>,
+        needs_connect: bool,
+        ensure_connected_error: Option<AppError>,
+    }
+
+    impl ScriptedRemoteExec {
+        fn new(
+            capture: AppResult<ExecCapture>,
+            needs_connect: bool,
+            ensure_connected_error: Option<AppError>,
+        ) -> Self {
+            Self {
+                capture: Mutex::new(Some(capture)),
+                needs_connect,
+                ensure_connected_error,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for ScriptedRemoteExec {
+        async fn exec_capture(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+        ) -> AppResult<ExecCapture> {
+            self.capture
+                .lock()
+                .expect("capture lock")
+                .take()
+                .expect("capture result should be present")
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in list_partitions tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            if let Some(err) = self.ensure_connected_error.clone() {
+                return Err(err);
+            }
+            Ok(())
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in list_partitions tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            Ok(self.needs_connect)
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in list_partitions tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in list_partitions tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("remove_session should not be called in list_partitions tests");
+        }
+    }
+
+    struct SequencedRemoteExec {
+        captures: Mutex<VecDeque<(String, AppResult<ExecCapture>)>>,
+    }
+
+    impl SequencedRemoteExec {
+        fn new(captures: Vec<(String, AppResult<ExecCapture>)>) -> Self {
+            Self {
+                captures: Mutex::new(VecDeque::from(captures)),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for SequencedRemoteExec {
+        async fn exec_capture(&self, _config: &SshConfig, command: &str) -> AppResult<ExecCapture> {
+            let mut captures = self.captures.lock().expect("captures lock");
+            let Some((expected, result)) = captures.pop_front() else {
+                panic!("unexpected command: {command}");
+            };
+            assert_eq!(command, expected);
+            result
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in base-path validation tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected should not be called in base-path validation tests");
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn SubmitStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in base-path validation tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            panic!("needs_connect should not be called in base-path validation tests");
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in base-path validation tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in base-path validation tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("remove_session should not be called in base-path validation tests");
+        }
+    }
+
+    #[derive(Default)]
     struct NoopFileSync;
 
     #[async_trait::async_trait]
@@ -3230,6 +4196,8 @@ mod tests {
             kernel_version: "6.8.0".to_string(),
             accounting_available: true,
             default_base_path: Some("/home/alice/runs".to_string()),
+            default_scratch_directory: Some("/scratch/alice".to_string()),
+            is_default: false,
         }
     }
 
@@ -3247,7 +4215,13 @@ mod tests {
         }
     }
 
-    async fn build_usecases_for_list_jobs_tests() -> UseCases {
+    fn sample_localhost_host(name: &str) -> NewHost {
+        let mut host = sample_host(name);
+        host.address = Address::Hostname("localhost".to_string());
+        host
+    }
+
+    async fn build_usecases_with_remote_exec(remote_exec: Arc<dyn RemoteExecPort>) -> UseCases {
         let store = crate::adapters::db::HostStore::open_memory()
             .await
             .expect("in-memory host store");
@@ -3255,7 +4229,6 @@ mod tests {
         let clusters: Arc<dyn ClusterStorePort> = db.clone();
         let jobs: Arc<dyn JobStorePort> = db.clone();
         let projects: Arc<dyn ProjectStorePort> = db;
-        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(NoopRemoteExec);
         let file_sync: Arc<dyn FileSyncPort> = Arc::new(NoopFileSync);
         let local_fs: Arc<dyn LocalFilesystemPort> = Arc::new(crate::adapters::fs::LocalFilesystem);
         let network: Arc<dyn NetworkProbePort> = Arc::new(crate::adapters::network::NetworkAdapter);
@@ -3273,6 +4246,11 @@ mod tests {
             telemetry,
             std::env::temp_dir(),
         )
+    }
+
+    async fn build_usecases_for_list_jobs_tests() -> UseCases {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(NoopRemoteExec);
+        build_usecases_with_remote_exec(remote_exec).await
     }
 
     async fn seed_jobs_for_project_filtering(usecases: &UseCases) {
@@ -3342,6 +4320,368 @@ mod tests {
         assert_eq!(jobs[0].project_name.as_deref(), Some("demo-project"));
     }
 
+    #[tokio::test]
+    async fn delete_cluster_rejects_running_jobs_without_force() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+        let job_id = usecases
+            .jobs
+            .insert_job(&sample_job(host_id, "run-a", None))
+            .await
+            .expect("insert job");
+
+        let err = usecases
+            .delete_cluster("cluster-a", false)
+            .await
+            .expect_err("delete should fail");
+
+        assert_eq!(err.kind(), AppErrorKind::Conflict);
+        assert_eq!(err.code(), codes::CONFLICT);
+        assert!(err.message().contains("running jobs"));
+        assert!(err.message().contains("--force"));
+        assert!(
+            usecases
+                .clusters
+                .get_by_name("cluster-a")
+                .await
+                .expect("cluster lookup")
+                .is_some()
+        );
+        assert!(
+            usecases
+                .jobs
+                .get_job_by_job_id(job_id)
+                .await
+                .expect("job lookup")
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_returns_not_found_for_unknown_cluster() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+
+        let err = usecases
+            .delete_cluster("unknown-cluster", false)
+            .await
+            .expect_err("delete should fail");
+
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_force_deletes_cluster_and_associated_jobs() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+        let job_id = usecases
+            .jobs
+            .insert_job(&sample_job(host_id, "run-a", None))
+            .await
+            .expect("insert job");
+
+        let deleted = usecases
+            .delete_cluster("cluster-a", true)
+            .await
+            .expect("delete should succeed");
+
+        assert!(deleted);
+        assert!(
+            usecases
+                .clusters
+                .get_by_name("cluster-a")
+                .await
+                .expect("cluster lookup")
+                .is_none()
+        );
+        assert!(
+            usecases
+                .jobs
+                .get_job_by_job_id(job_id)
+                .await
+                .expect("job lookup")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_cluster_promotes_last_added_when_default_is_removed() {
+        let remote_exec = Arc::new(DeleteClusterRemoteExec);
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+
+        let mut host_a = sample_host("cluster-a");
+        host_a.is_default = true;
+        let host_b = sample_host("cluster-b");
+        let host_c = sample_host("cluster-c");
+
+        usecases
+            .clusters
+            .upsert_host(&host_a)
+            .await
+            .expect("insert default cluster");
+        usecases
+            .clusters
+            .upsert_host(&host_b)
+            .await
+            .expect("insert cluster-b");
+        usecases
+            .clusters
+            .upsert_host(&host_c)
+            .await
+            .expect("insert cluster-c");
+
+        let deleted = usecases
+            .delete_cluster("cluster-a", true)
+            .await
+            .expect("delete should succeed");
+        assert!(deleted);
+
+        let hosts = usecases
+            .clusters
+            .list_hosts(None)
+            .await
+            .expect("list hosts after delete");
+        assert_eq!(hosts.len(), 2);
+        let default_hosts: Vec<_> = hosts.iter().filter(|host| host.is_default).collect();
+        assert_eq!(default_hosts.len(), 1);
+        assert_eq!(default_hosts[0].name, "cluster-c");
+        assert!(hosts.iter().any(|host| host.name == "cluster-b"));
+        assert!(hosts.iter().any(|host| host.name == "cluster-c"));
+    }
+
+    const SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED: &str = concat!(
+        "PartitionName=alpha_interactive AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL ",
+        "AllocNodes=ALL Default=NO QoS=interac DefaultTime=00:15:00 DisableRootJobs=YES ",
+        "ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO MaxNodes=UNLIMITED ",
+        "MaxTime=08:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED ",
+        "MaxCPUsPerSocket=UNLIMITED Nodes=c[1-10] PriorityJobFactor=1 PriorityTier=1 ",
+        "RootOnly=NO ReqResv=NO OverSubscribe=NO OverTimeLimit=NONE PreemptMode=OFF State=UP ",
+        "TotalCPUs=1920 TotalNodes=10 SelectTypeParameters=NONE JobDefaults=(null) ",
+        "DefMemPerCPU=256 MaxMemPerNode=UNLIMITED ",
+        "TRES=cpu=1920,mem=60000G,node=10,billing=15000000 ",
+        "TRESBillingWeights=CPU=1000,Mem=250G\n",
+        "PartitionName=beta_backfill AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL ",
+        "AllocNodes=ALL Default=NO QoS=N/A DefaultTime=00:15:00 DisableRootJobs=YES ",
+        "ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO MaxNodes=UNLIMITED ",
+        "MaxTime=1-00:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED ",
+        "MaxCPUsPerSocket=UNLIMITED Nodes=g[1-5] PriorityJobFactor=12 PriorityTier=1 ",
+        "RootOnly=NO ReqResv=NO OverSubscribe=NO OverTimeLimit=NONE PreemptMode=OFF State=UP ",
+        "TotalCPUs=560 TotalNodes=5 SelectTypeParameters=NONE JobDefaults=(null) ",
+        "DefMemPerCPU=256 MaxMemPerNode=UNLIMITED ",
+        "TRES=cpu=560,mem=10000G,node=5,billing=500000,gres/gpu=80 ",
+        "TRESBillingWeights=CPU=871.43,Mem=47.31G,GRES/gpu:h100=12200\n",
+        "PartitionName=gamma_oversub AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL ",
+        "AllocNodes=ALL Default=NO QoS=N/A DefaultTime=00:15:00 DisableRootJobs=YES ",
+        "ExclusiveUser=NO ExclusiveTopo=NO GraceTime=0 Hidden=NO MaxNodes=UNLIMITED ",
+        "MaxTime=7-00:00:00 MinNodes=1 LLN=NO MaxCPUsPerNode=UNLIMITED ",
+        "MaxCPUsPerSocket=UNLIMITED Nodes=o[1-3] PriorityJobFactor=4 PriorityTier=10 ",
+        "RootOnly=NO ReqResv=NO OverSubscribe=FORCE:8 OverTimeLimit=NONE PreemptMode=OFF ",
+        "State=UP TotalCPUs=132 TotalNodes=3 SelectTypeParameters=NONE JobDefaults=(null) ",
+        "DefMemPerCPU=256 MaxMemPerNode=UNLIMITED ",
+        "TRES=cpu=132,mem=552000M,node=3,billing=115028,gres/gpu=12,gres/gpu:t4=12 ",
+        "TRESBillingWeights=CPU=871.43,Mem=47.31G,GRES/gpu:h100=12200\n"
+    );
+
+    #[tokio::test]
+    async fn list_partitions_returns_partition_names() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED.as_bytes().to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let partitions = usecases
+            .list_partitions("cluster-a")
+            .await
+            .expect("list partitions");
+        assert_eq!(
+            partitions,
+            vec![
+                "alpha_interactive".to_string(),
+                "beta_backfill".to_string(),
+                "gamma_oversub".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_partitions_rejects_empty_cluster_name() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases
+            .list_partitions("   ")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn list_partitions_returns_not_found_for_unknown_cluster() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases
+            .list_partitions("unknown-cluster")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::NotFound);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_partitions_returns_remote_error_when_command_fails() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: b"scontrol: command not found".to_vec(),
+                exit_code: 127,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let err = usecases
+            .list_partitions("cluster-a")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::Aborted);
+        assert_eq!(err.code(), codes::REMOTE_ERROR);
+        assert!(err.message().contains("exit code 127"));
+        assert!(err.message().contains("command not found"));
+    }
+
+    const SAMPLE_ACCOUNTS_OUTPUT: &str =
+        "def-zovoilis-ab_cpu\ndef-zovoilis-ab_gpu\nrrg-zovoilis_cpu\n";
+
+    #[tokio::test]
+    async fn list_accounts_returns_account_names() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: SAMPLE_ACCOUNTS_OUTPUT.as_bytes().to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let accounts = usecases
+            .list_accounts("cluster-a")
+            .await
+            .expect("list accounts");
+        assert_eq!(
+            accounts,
+            vec![
+                "def-zovoilis-ab_cpu".to_string(),
+                "def-zovoilis-ab_gpu".to_string(),
+                "rrg-zovoilis_cpu".to_string(),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn list_accounts_returns_empty_for_empty_output() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let accounts = usecases
+            .list_accounts("cluster-a")
+            .await
+            .expect("list accounts");
+        assert!(accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_accounts_rejects_empty_cluster_name() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases.list_accounts("   ").await.expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::InvalidArgument);
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_returns_not_found_for_unknown_cluster() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let err = usecases
+            .list_accounts("unknown-cluster")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::NotFound);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn list_accounts_returns_remote_error_when_command_fails() {
+        let remote_exec: Arc<dyn RemoteExecPort> = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: b"sshare: command not found".to_vec(),
+                exit_code: 127,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let err = usecases
+            .list_accounts("cluster-a")
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::Aborted);
+        assert_eq!(err.code(), codes::REMOTE_ERROR);
+        assert!(err.message().contains("exit code 127"));
+        assert!(err.message().contains("command not found"));
+    }
+
     #[test]
     fn retrieve_local_target_strips_prefix_for_relative_file() {
         // Ensures relative file paths drop remote prefixes and keep only the final filename.
@@ -3384,6 +4724,123 @@ mod tests {
         assert_eq!(target, base.join("output.log"));
     }
 
+    fn sample_ssh_config_for_validation() -> SshConfig {
+        build_ssh_config(
+            Some("test-session".to_string()),
+            "alice".to_string(),
+            &Address::Hostname("cluster.example.com".to_string()),
+            "127.0.0.1:22".parse().expect("socket addr"),
+            None,
+        )
+    }
+
+    fn ok_capture(exit_code: i32, stdout: &str) -> AppResult<ExecCapture> {
+        Ok(ExecCapture {
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+            exit_code,
+        })
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_creates_only_requested_directory() {
+        let base_path = "/home/alice/runs";
+        let parent = "/home/alice";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let parent_escaped = shell::sh_escape(parent);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -d {parent_escaped}"), ok_capture(0, "")),
+            (
+                format!("test -w {parent_escaped} && test -x {parent_escaped}"),
+                ok_capture(0, ""),
+            ),
+            (format!("mkdir -- {base_path_escaped}"), ok_capture(0, "")),
+            (
+                format!("cd -- {base_path_escaped} && pwd -P"),
+                ok_capture(0, "/home/alice/runs\n"),
+            ),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect("base path should be prepared");
+        assert!(
+            remote_exec
+                .captures
+                .lock()
+                .expect("captures lock")
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_rejects_missing_parent() {
+        let base_path = "/new/root/runs";
+        let parent = "/new/root";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let parent_escaped = shell::sh_escape(parent);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -d {parent_escaped}"), ok_capture(1, "")),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        let err = validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect_err("must reject missing parent");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(
+            err.message().contains("only one level can be created"),
+            "unexpected error: {}",
+            err.message()
+        );
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_rejects_insufficient_parent_permissions() {
+        let base_path = "/home/alice/runs";
+        let parent = "/home/alice";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let parent_escaped = shell::sh_escape(parent);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -d {parent_escaped}"), ok_capture(0, "")),
+            (
+                format!("test -w {parent_escaped} && test -x {parent_escaped}"),
+                ok_capture(1, ""),
+            ),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        let err = validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect_err("must reject insufficient parent permissions");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("insufficient permissions"));
+    }
+
+    #[tokio::test]
+    async fn validate_and_prepare_default_base_path_rejects_existing_non_directory() {
+        let base_path = "/home/alice/runs";
+        let base_path_escaped = shell::sh_escape(base_path);
+        let remote_exec = SequencedRemoteExec::new(vec![
+            (format!("test -d {base_path_escaped}"), ok_capture(1, "")),
+            (format!("test -e {base_path_escaped}"), ok_capture(0, "")),
+        ]);
+
+        let config = sample_ssh_config_for_validation();
+        let err = validate_and_prepare_default_base_path(&remote_exec, &config, base_path)
+            .await
+            .expect_err("must reject existing non-directory");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("exists but is not a directory"));
+    }
+
     #[test]
     fn resolve_default_base_path_expands_home() {
         // Verifies tilde expansion for "~" and "~/runs" into the provided home directory.
@@ -3422,6 +4879,31 @@ mod tests {
     fn normalize_default_base_path_rejects_relative() {
         // Disallows relative default base paths to avoid ambiguous storage roots.
         let err = normalize_default_base_path(Some("relative/path".to_string())).unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn resolve_default_scratch_directory_expands_home_and_preserves_none() {
+        let home = "/home/alice";
+        let resolved = resolve_default_scratch_directory(Some("~/scratch".to_string()), home)
+            .expect("scratch path should resolve");
+        assert_eq!(resolved, Some("/home/alice/scratch".to_string()));
+
+        let resolved = resolve_default_scratch_directory(None, home).expect("none should pass");
+        assert_eq!(resolved, None);
+    }
+
+    #[test]
+    fn resolve_default_scratch_directory_rejects_tilde_prefix() {
+        let err =
+            resolve_default_scratch_directory(Some("~other".to_string()), "/home").unwrap_err();
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn normalize_default_scratch_directory_rejects_relative() {
+        let err =
+            normalize_default_scratch_directory(Some("relative/path".to_string())).unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
     }
 

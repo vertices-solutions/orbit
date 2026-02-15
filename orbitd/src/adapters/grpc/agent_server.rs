@@ -10,10 +10,12 @@ use proto::{
     AddClusterRequest, BuildProjectRequest, BuildProjectResponse, CancelJobRequest,
     CleanupJobRequest, DeleteClusterRequest, DeleteClusterResponse, DeleteProjectRequest,
     DeleteProjectResponse, GetProjectRequest, GetProjectResponse, JobLogsRequest,
-    ListClustersRequest, ListClustersResponse, ListJobsRequest, ListJobsResponse,
-    ListProjectsRequest, ListProjectsResponse, LsRequest, MfaAnswer, PingReply, PingRequest,
-    ResolveHomeDirRequest, RetrieveJobRequest, SetClusterRequest, StreamEvent, SubmitJobRequest,
-    SubmitProjectRequest, SubmitStreamEvent, UpsertProjectRequest, UpsertProjectResponse,
+    ListAccountsRequest, ListAccountsResponse, ListAccountsUnitResponse, ListClustersRequest,
+    ListClustersResponse, ListJobsRequest, ListJobsResponse, ListPartitionsRequest,
+    ListPartitionsResponse, ListPartitionsUnitResponse, ListProjectsRequest, ListProjectsResponse,
+    LsRequest, MfaAnswer, PingReply, PingRequest, ResolveHomeDirRequest, RetrieveJobRequest,
+    SetClusterRequest, StreamEvent, SubmitJobRequest, SubmitProjectRequest, SubmitStreamEvent,
+    UpsertProjectRequest, UpsertProjectResponse, stream_event,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -29,7 +31,8 @@ use crate::app::ports::{MfaPort, StreamOutputPort, SubmitStreamOutputPort};
 use crate::app::types::Address;
 use crate::app::usecases::{
     AddClusterInput, CancelJobInput, CleanupJobInput, JobLogsInput, LsInput, ResolveHomeDirInput,
-    RetrieveJobInput, SetClusterInput, SubmitJobInput, SubmitProjectInput, UseCases,
+    ResolveScratchDirectoriesInput, RetrieveJobInput, SetClusterInput, SubmitJobInput,
+    SubmitProjectInput, UseCases, ValidateDefaultBasePathInput, ValidateScratchDirectoryInput,
 };
 
 pub type OutStream =
@@ -669,14 +672,72 @@ impl Agent for GrpcAgent {
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
-        let name = request.into_inner().name.trim().to_string();
+        let inbound = request.into_inner();
+        let name = inbound.name.trim().to_string();
+        let force = inbound.force;
         let deleted = self
             .usecases
-            .delete_cluster(&name)
+            .delete_cluster(&name, force)
             .await
             .map_err(status_from_app_error)?;
-        tracing::info!("delete_cluster completed remote_addr={remote_addr} name={name}");
+        tracing::info!(
+            "delete_cluster completed remote_addr={remote_addr} name={name} force={force}"
+        );
         Ok(Response::new(DeleteClusterResponse { deleted }))
+    }
+
+    async fn list_partitions(
+        &self,
+        request: Request<ListPartitionsRequest>,
+    ) -> Result<Response<ListPartitionsResponse>, Status> {
+        let span = rpc_span(&request, "ListPartitions");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let name = request.into_inner().name;
+        let partitions = self
+            .usecases
+            .list_partitions(&name)
+            .await
+            .map_err(status_from_app_error)?;
+        let responses = partitions
+            .into_iter()
+            .map(|name| ListPartitionsUnitResponse { name })
+            .collect::<Vec<_>>();
+        tracing::info!(
+            "list_partitions remote_addr={remote_addr} name={name} count={}",
+            responses.len()
+        );
+        Ok(Response::new(ListPartitionsResponse {
+            partitions: responses,
+        }))
+    }
+
+    async fn list_accounts(
+        &self,
+        request: Request<ListAccountsRequest>,
+    ) -> Result<Response<ListAccountsResponse>, Status> {
+        let span = rpc_span(&request, "ListAccounts");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let name = request.into_inner().name;
+        let accounts = self
+            .usecases
+            .list_accounts(&name)
+            .await
+            .map_err(status_from_app_error)?;
+        let responses = accounts
+            .into_iter()
+            .map(|name| ListAccountsUnitResponse { name })
+            .collect::<Vec<_>>();
+        tracing::info!(
+            "list_accounts remote_addr={remote_addr} name={name} count={}",
+            responses.len()
+        );
+        Ok(Response::new(ListAccountsResponse {
+            accounts: responses,
+        }))
     }
 
     async fn submit_job(
@@ -894,7 +955,16 @@ impl Agent for GrpcAgent {
             .map_err(|_| Status::unknown(codes::INTERNAL_ERROR))?
             .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
 
-        let (username, host, name, identity_path, port, default_base_path) = match init.msg {
+        let (
+            username,
+            host,
+            name,
+            identity_path,
+            port,
+            default_base_path,
+            default_scratch_directory,
+            interactive_scratch_selection,
+        ) = match init.msg {
             Some(proto::add_cluster_request::Msg::Init(i)) => (
                 i.username,
                 i.host,
@@ -902,6 +972,8 @@ impl Agent for GrpcAgent {
                 i.identity_path,
                 i.port,
                 i.default_base_path,
+                i.default_scratch_directory,
+                i.interactive_scratch_selection,
             ),
             _ => {
                 return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
@@ -919,27 +991,41 @@ impl Agent for GrpcAgent {
 
         let (evt_tx, evt_rx) = mpsc::channel::<Result<StreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
+        let (base_path_tx, mut base_path_rx) =
+            mpsc::channel::<proto::AddClusterBasePathSelection>(16);
+        let (scratch_tx, mut scratch_rx) = mpsc::channel::<proto::AddClusterScratchSelection>(16);
+        let (default_tx, mut default_rx) = mpsc::channel::<proto::AddClusterDefaultSelection>(16);
         tokio::spawn(
             async move {
                 while let Ok(Some(item)) = inbound.message().await {
-                    if let Some(proto::add_cluster_request::Msg::Mfa(ans)) = item.msg
-                        && mfa_tx.send(ans).await.is_err()
-                    {
-                        break;
+                    match item.msg {
+                        Some(proto::add_cluster_request::Msg::Mfa(ans)) => {
+                            if mfa_tx.send(ans).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(proto::add_cluster_request::Msg::ScratchSelection(selection)) => {
+                            if scratch_tx.send(selection).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(proto::add_cluster_request::Msg::BasePathSelection(selection)) => {
+                            if base_path_tx.send(selection).await.is_err() {
+                                break;
+                            }
+                        }
+                        Some(proto::add_cluster_request::Msg::DefaultSelection(selection)) => {
+                            if default_tx.send(selection).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
             .instrument(current_span.clone()),
         );
 
-        let input = AddClusterInput {
-            name,
-            username,
-            address,
-            port,
-            identity_path,
-            default_base_path,
-        };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
         let stream_output = GrpcStreamOutput {
             sender: evt_tx.clone(),
@@ -947,8 +1033,260 @@ impl Agent for GrpcAgent {
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
+                let mut resolved_default_base_path = default_base_path;
+                let mut resolved_scratch_directory = default_scratch_directory;
+
+                if interactive_scratch_selection && resolved_default_base_path.is_none() {
+                    if stream_output
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::AddClusterBasePathPrompt(
+                                proto::AddClusterBasePathPrompt {
+                                    suggested_path: "~/runs".to_string(),
+                                },
+                            )),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+
+                    loop {
+                        let Some(selection) = base_path_rx.recv().await else {
+                            let _ = evt_tx
+                                .send(Err(Status::cancelled(codes::CANCELED)))
+                                .await;
+                            return;
+                        };
+                        let validate_input = ValidateDefaultBasePathInput {
+                            username: username.clone(),
+                            address: address.clone(),
+                            port,
+                            identity_path: identity_path.clone(),
+                            session_name: Some(name.clone()),
+                            base_path: selection.path,
+                        };
+                        match usecases
+                            .validate_default_base_path(validate_input, &stream_output, &mut mfa_port)
+                            .await
+                        {
+                            Ok(path) => {
+                                resolved_default_base_path = Some(path.clone());
+                                if stream_output
+                                    .send(StreamEvent {
+                                        event: Some(
+                                            stream_event::Event::AddClusterBasePathValidation(
+                                                proto::AddClusterBasePathValidation {
+                                                    accepted: true,
+                                                    path: Some(path),
+                                                    error: None,
+                                                },
+                                            ),
+                                        ),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                break;
+                            }
+                            Err(err) if err.kind() == AppErrorKind::InvalidArgument => {
+                                if stream_output
+                                    .send(StreamEvent {
+                                        event: Some(
+                                            stream_event::Event::AddClusterBasePathValidation(
+                                                proto::AddClusterBasePathValidation {
+                                                    accepted: false,
+                                                    path: None,
+                                                    error: Some(err.message().to_string()),
+                                                },
+                                            ),
+                                        ),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                            }
+                            Err(err) => {
+                                let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                                return;
+                            }
+                        }
+                    }
+                }
+
+                if interactive_scratch_selection && resolved_scratch_directory.is_none() {
+                    let resolve_input = ResolveScratchDirectoriesInput {
+                        username: username.clone(),
+                        address: address.clone(),
+                        port,
+                        identity_path: identity_path.clone(),
+                        session_name: Some(name.clone()),
+                    };
+                    let candidates = match usecases
+                        .resolve_scratch_directories(resolve_input, &stream_output, &mut mfa_port)
+                        .await
+                    {
+                        Ok(found) => found,
+                        Err(err) => {
+                            let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                            return;
+                        }
+                    };
+
+                    if stream_output
+                        .send(StreamEvent {
+                            event: Some(stream_event::Event::AddClusterScratchOptions(
+                                proto::AddClusterScratchOptions {
+                                    directories: candidates,
+                                },
+                            )),
+                        })
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+
+                    loop {
+                        let Some(selection) = scratch_rx.recv().await else {
+                            let _ = evt_tx
+                                .send(Err(Status::cancelled(codes::CANCELED)))
+                                .await;
+                            return;
+                        };
+
+                        let selected = match selection.selection {
+                            Some(proto::add_cluster_scratch_selection::Selection::Directory(
+                                directory,
+                            )) => Some(directory),
+                            Some(proto::add_cluster_scratch_selection::Selection::None(_)) => None,
+                            None => {
+                                if stream_output
+                                    .send(StreamEvent {
+                                        event: Some(stream_event::Event::AddClusterScratchValidation(
+                                            proto::AddClusterScratchValidation {
+                                                accepted: false,
+                                                directory: None,
+                                                error: Some(
+                                                    "scratch directory selection is required"
+                                                        .to_string(),
+                                                ),
+                                            },
+                                        )),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                continue;
+                            }
+                        };
+
+                        match selected {
+                            None => {
+                                resolved_scratch_directory = None;
+                                if stream_output
+                                    .send(StreamEvent {
+                                        event: Some(stream_event::Event::AddClusterScratchValidation(
+                                            proto::AddClusterScratchValidation {
+                                                accepted: true,
+                                                directory: None,
+                                                error: None,
+                                            },
+                                        )),
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    return;
+                                }
+                                break;
+                            }
+                            Some(directory) => {
+                                let validate_input = ValidateScratchDirectoryInput {
+                                    username: username.clone(),
+                                    address: address.clone(),
+                                    port,
+                                    identity_path: identity_path.clone(),
+                                    session_name: Some(name.clone()),
+                                    directory,
+                                };
+                                match usecases
+                                    .validate_scratch_directory(
+                                        validate_input,
+                                        &stream_output,
+                                        &mut mfa_port,
+                                    )
+                                    .await
+                                {
+                                    Ok(path) => {
+                                        resolved_scratch_directory = Some(path.clone());
+                                        if stream_output
+                                            .send(StreamEvent {
+                                                event: Some(
+                                                    stream_event::Event::AddClusterScratchValidation(
+                                                        proto::AddClusterScratchValidation {
+                                                            accepted: true,
+                                                            directory: Some(path),
+                                                            error: None,
+                                                        },
+                                                    ),
+                                                ),
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                        break;
+                                    }
+                                    Err(err) if err.kind() == AppErrorKind::InvalidArgument => {
+                                        if stream_output
+                                            .send(StreamEvent {
+                                                event: Some(
+                                                    stream_event::Event::AddClusterScratchValidation(
+                                                        proto::AddClusterScratchValidation {
+                                                            accepted: false,
+                                                            directory: None,
+                                                            error: Some(
+                                                                err.message().to_string(),
+                                                            ),
+                                                        },
+                                                    ),
+                                                ),
+                                            })
+                                            .await
+                                            .is_err()
+                                        {
+                                            return;
+                                        }
+                                    }
+                                    Err(err) => {
+                                        let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                                        return;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let input = AddClusterInput {
+                    name,
+                    username,
+                    address,
+                    port,
+                    identity_path,
+                    default_base_path: resolved_default_base_path,
+                    default_scratch_directory: resolved_scratch_directory,
+                };
                 if let Err(err) = usecases
-                    .add_cluster(input, &stream_output, &mut mfa_port)
+                    .add_cluster(input, &stream_output, &mut mfa_port, &mut default_rx)
                     .await
                 {
                     let _ = evt_tx.send(Err(status_from_app_error(err))).await;

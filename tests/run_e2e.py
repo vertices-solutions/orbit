@@ -257,12 +257,55 @@ def parse_json_output(result):
     raise RuntimeError("missing JSON output")
 
 
+def parse_orbit_error_output(output):
+    cleaned = output.strip()
+    if not cleaned:
+        raise RuntimeError("missing JSON error output")
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise RuntimeError(f"unable to parse JSON error output:\n{cleaned}")
+    payload = cleaned[start : end + 1]
+    data = json.loads(payload)
+    if not isinstance(data, dict) or data.get("ok") is not False:
+        raise RuntimeError(f"unexpected error payload:\n{cleaned}")
+    return data
+
+
+def parse_submit_result(result):
+    stdout = (result.stdout or "").strip()
+    if stdout:
+        try:
+            data = parse_orbit_json(stdout)
+            if isinstance(data, dict):
+                job_id = data.get("job_id")
+                if job_id is not None:
+                    return int(job_id), data.get("remote_path")
+        except json.JSONDecodeError:
+            pass
+    stderr = (result.stderr or "").strip()
+    if stderr:
+        try:
+            data = parse_orbit_json(stderr)
+            if isinstance(data, dict):
+                job_id = data.get("job_id")
+                if job_id is not None:
+                    return int(job_id), data.get("remote_path")
+        except json.JSONDecodeError:
+            pass
+
+    output = (result.stdout or "") + (result.stderr or "")
+    return parse_job_id(output), parse_remote_path(output)
+
+
 def parse_submit_json(result):
     data = parse_json_output(result)
+    if not isinstance(data, dict):
+        raise RuntimeError("submit JSON should be an object")
     job_id = data.get("job_id")
     if job_id is None:
         raise RuntimeError("submit JSON missing job_id")
-    return job_id, data.get("remote_path")
+    return int(job_id), data.get("remote_path")
 
 
 def combined_stream_text(data):
@@ -276,6 +319,89 @@ def job_status(orbit_cmd, job_id):
     result = run_cmd(cmd + ["job", "get", str(job_id)])
     data = parse_json_output(result)
     return data.get("status"), data.get("terminal_state")
+
+
+def list_jobs_json(orbit_cmd, cluster=None, project=None):
+    cmd = list(orbit_cmd)
+    if "--non-interactive" not in cmd:
+        cmd.append("--non-interactive")
+    cmd.extend(["job", "list"])
+    if cluster:
+        cmd.extend(["--cluster", cluster])
+    if project:
+        cmd.extend(["--project", project])
+    data = parse_json_output(run_cmd(cmd))
+    if not isinstance(data, list):
+        raise RuntimeError("job list JSON should be an array")
+    return data
+
+
+def wait_for_job_list_entry(orbit_cmd, cluster, job_id, timeout_secs, poll_secs):
+    deadline = time.monotonic() + timeout_secs
+    while True:
+        jobs = list_jobs_json(orbit_cmd, cluster=cluster)
+        if any(item.get("job_id") == job_id for item in jobs):
+            return jobs
+        if time.monotonic() >= deadline:
+            raise RuntimeError(f"job {job_id} not found in job list")
+        time.sleep(poll_secs)
+
+
+def validate_cluster_list_flags(orbit_cmd, cluster_name):
+    cmd = list(orbit_cmd)
+    if "--non-interactive" not in cmd:
+        cmd.append("--non-interactive")
+
+    default_result = parse_json_output(run_cmd(cmd + ["cluster", "list"]))
+    if not isinstance(default_result, list):
+        raise RuntimeError("cluster list: expected array output")
+    default_cluster = next(
+        (item for item in default_result if item.get("name") == cluster_name),
+        None,
+    )
+    if default_cluster is None:
+        raise RuntimeError(f"cluster list: cluster '{cluster_name}' is not configured")
+    if "reachable" in default_cluster:
+        raise RuntimeError("cluster list: reachable must be omitted without --check-reachability")
+
+    with_reachability = parse_json_output(
+        run_cmd(cmd + ["cluster", "list", "--check-reachability"])
+    )
+    if not isinstance(with_reachability, list):
+        raise RuntimeError("cluster list --check-reachability: expected array output")
+    checked_cluster = next(
+        (item for item in with_reachability if item.get("name") == cluster_name),
+        None,
+    )
+    if checked_cluster is None:
+        raise RuntimeError(
+            f"cluster list --check-reachability: cluster '{cluster_name}' is not configured"
+        )
+    if "reachable" not in checked_cluster:
+        raise RuntimeError(
+            "cluster list --check-reachability: reachable is missing from response"
+        )
+
+
+def validate_project_job_filter(orbit_cmd, cluster, project_name, expected_job_id):
+    jobs = list_jobs_json(orbit_cmd, cluster=cluster, project=project_name)
+    if not jobs:
+        raise RuntimeError(
+            f"job list --project {project_name}: expected at least one job in response"
+        )
+    if not any(item.get("job_id") == expected_job_id for item in jobs):
+        raise RuntimeError(
+            f"job list --project {project_name}: missing submitted job {expected_job_id}"
+        )
+    mismatched = [
+        item.get("job_id")
+        for item in jobs
+        if item.get("project_name") != project_name
+    ]
+    if mismatched:
+        raise RuntimeError(
+            f"job list --project {project_name}: received mismatched jobs {mismatched}"
+        )
 
 
 def wait_for_job(orbit_cmd, job_id, timeout_secs, poll_secs):
@@ -490,9 +616,9 @@ def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, extra_args=N
     cmd = orbit_cmd + [
         "job",
         "submit",
+        str(project_path),
         "--to",
         cluster,
-        str(project_path),
     ]
     cmd.extend(submit_args)
     if extra_args:
@@ -562,6 +688,8 @@ def main():
             args.poll,
         )
         run_cmd(orbit_cmd + ["ping"])
+        validate_cluster_list_flags(non_interactive_cmd, args.cluster)
+        print("cluster list flags: ok")
 
         projects = [
             {
@@ -636,9 +764,7 @@ def main():
                 project["submit_args"],
             )
             result = run_cmd(submit_cmd)
-            output = result.stdout + result.stderr
-            job_id = parse_job_id(output)
-            remote_path = parse_remote_path(output)
+            job_id, remote_path = parse_submit_result(result)
             job_ids = [job_id]
             job_paths = {job_id: remote_path}
             primary_job_id = job_id
@@ -654,15 +780,29 @@ def main():
                 print(f"{project['id']}: cleanup ok for job {job_id}")
                 continue
             if project["id"] == "01_smoke":
-                conflict_status, conflict_output = run_cmd_status(submit_cmd)
+                conflict_cmd = build_submit_cmd(
+                    non_interactive_cmd,
+                    args.cluster,
+                    project["path"],
+                    project["submit_args"],
+                )
+                conflict_status, conflict_output = run_cmd_status(conflict_cmd)
                 if conflict_status == 0:
                     raise RuntimeError(
                         "submit should fail while a job is running in the same directory"
                     )
-                expected = f"job {job_id} is still running"
-                if expected not in conflict_output:
+                conflict_error = parse_orbit_error_output(conflict_output)
+                error_type = str(conflict_error.get("errorType") or "").lower()
+                if error_type != "conflict":
                     raise RuntimeError(
-                        "submit conflict message missing running job id"
+                        "submit conflict expected errorType=conflict "
+                        f"(actual={conflict_error.get('errorType')})"
+                    )
+                reason = str(conflict_error.get("reason") or "")
+                if not reason:
+                    raise RuntimeError(
+                        "submit conflict message missing reason "
+                        f"(reason={reason})"
                     )
 
                 force_cmd = build_submit_cmd(
@@ -673,9 +813,7 @@ def main():
                     extra_args=["--force"],
                 )
                 force_result = run_cmd(force_cmd)
-                force_output = force_result.stdout + force_result.stderr
-                force_job_id = parse_job_id(force_output)
-                force_remote_path = parse_remote_path(force_output)
+                force_job_id, force_remote_path = parse_submit_result(force_result)
                 if force_remote_path != remote_path:
                     raise RuntimeError(
                         "force submit did not reuse existing remote path"
@@ -691,9 +829,7 @@ def main():
                     extra_args=["--new-directory"],
                 )
                 new_dir_result = run_cmd(new_dir_cmd)
-                new_dir_output = new_dir_result.stdout + new_dir_result.stderr
-                new_dir_job_id = parse_job_id(new_dir_output)
-                new_dir_remote_path = parse_remote_path(new_dir_output)
+                new_dir_job_id, new_dir_remote_path = parse_submit_result(new_dir_result)
                 if new_dir_remote_path == remote_path:
                     raise RuntimeError(
                         "new-directory submit did not create a new remote path"
@@ -705,6 +841,13 @@ def main():
             for active_job_id in job_ids:
                 print(f"{project['id']}: submitted job {active_job_id}")
                 wait_for_job(orbit_cmd, active_job_id, args.timeout, args.poll)
+                wait_for_job_list_entry(
+                    non_interactive_cmd,
+                    args.cluster,
+                    active_job_id,
+                    args.timeout,
+                    args.poll,
+                )
                 print(f"{project['id']}: job {active_job_id} completed")
 
             if project["id"] == "01_smoke":
@@ -794,23 +937,15 @@ def main():
                 f"(expected={expected_project_path}, actual={project_record.get('path')})"
             )
 
-        checked = parse_json_output(
-            run_cmd(non_interactive_cmd + ["project", "check", project_ref])
-        )
-        if checked.get("checked") != 1:
-            raise RuntimeError("project lifecycle: project check did not report checked=1")
-
-        project_submit_cmd = orbit_cmd + [
+        project_submit_cmd = non_interactive_cmd + [
             "project",
             "submit",
-            project_ref,
             "--to",
             args.cluster,
+            project_ref,
         ]
         project_submit = run_cmd(project_submit_cmd)
-        project_submit_output = (project_submit.stdout or "") + (project_submit.stderr or "")
-        project_job_id = parse_job_id(project_submit_output)
-        project_remote_path = parse_remote_path(project_submit_output)
+        project_job_id, project_remote_path = parse_submit_json(project_submit)
         print(f"project lifecycle: submitted job {project_job_id}")
 
         status, terminal_state = job_status(orbit_cmd, project_job_id)
@@ -827,6 +962,13 @@ def main():
                 f"project lifecycle: expected completed status, got {status} "
                 f"(terminal_state={terminal_state})"
             )
+        validate_project_job_filter(
+            non_interactive_cmd,
+            args.cluster,
+            project_name,
+            project_job_id,
+        )
+        print("project lifecycle: job list --project filter ok")
         print(f"project lifecycle: job {project_job_id} completed")
 
         cleanup_job_and_validate(orbit_cmd, args.cluster, project_job_id, project_remote_path)

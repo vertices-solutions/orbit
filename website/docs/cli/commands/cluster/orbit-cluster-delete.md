@@ -16,5 +16,6 @@ Parent command: [`orbit cluster`](./orbit-cluster)
 ## Flags and Options
 
 - `-y, --yes`: Skip the confirmation prompt
+- `--force`: Force delete the cluster even if it has running jobs
 - `--non-interactive`: Run without prompts, fail on MFA, and output JSON only.
 - `-h, --help`: Print help

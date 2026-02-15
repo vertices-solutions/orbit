@@ -45,7 +45,6 @@ impl Dispatcher {
                     handlers::handle_project_submit(&self.ctx, cmd).await
                 }
                 ProjectCommand::List(cmd) => handlers::handle_project_list(&self.ctx, cmd).await,
-                ProjectCommand::Check(cmd) => handlers::handle_project_check(&self.ctx, cmd).await,
                 ProjectCommand::Delete(cmd) => {
                     handlers::handle_project_delete(&self.ctx, cmd).await
                 }

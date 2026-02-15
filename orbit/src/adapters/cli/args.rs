@@ -176,15 +176,6 @@ pub enum ProjectCmd {
     Submit(ProjectSubmitArgs),
     /// List registered projects.
     List(ProjectListArgs),
-    /// Validate one or all registered projects.
-    ///
-    /// `orbit project check` validates local registry entries against project
-    /// roots on disk. For each selected project, it verifies that the
-    /// registered path exists and is a directory, that an Orbitfile exists at
-    /// the project root and can be parsed, that `[project].name` in Orbitfile
-    /// matches the registered project name, and that `[submit].sbatch_script`
-    /// (if set) resolves to a file inside the project root.
-    Check(ProjectCheckArgs),
     /// Delete a project from the local registry.
     Delete(ProjectDeleteArgs),
 }
@@ -211,7 +202,7 @@ pub struct ProjectSubmitArgs {
     pub project: String,
     /// Cluster name.
     #[arg(long = "to", value_name = "CLUSTER")]
-    pub cluster: String,
+    pub cluster: Option<String>,
     /// Path to the sbatch script to submit.
     #[arg(long, value_name = "PATH")]
     pub sbatchscript: Option<String>,
@@ -244,14 +235,6 @@ pub struct ProjectSubmitArgs {
 pub struct ProjectListArgs {}
 
 #[derive(Args, Debug)]
-pub struct ProjectCheckArgs {
-    /// Optional project identifier (`name` or `name:tag`).
-    ///
-    /// If omitted, `orbit project check` validates all registered projects.
-    pub name: Option<String>,
-}
-
-#[derive(Args, Debug)]
 pub struct ProjectDeleteArgs {
     /// Project name or name:tag.
     pub name: String,
@@ -278,19 +261,19 @@ pub enum ClusterCmd {
 
 #[derive(Args, Debug)]
 pub struct ClusterGetArgs {
-    pub name: String,
+    pub name: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct ClusterLsArgs {
-    pub name: String,
+    pub name: Option<String>,
     /// Path to list (absolute or relative to the default base path).
     pub path: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct SetClusterArgs {
-    pub name: String,
+    pub name: Option<String>,
 
     /// Use a remote host (hostname or IP address)
     #[arg(long)]
@@ -316,6 +299,9 @@ pub struct DeleteClusterArgs {
     /// Skip the confirmation prompt.
     #[arg(long, short = 'y')]
     pub yes: bool,
+    /// Force delete the cluster even if it has running jobs.
+    #[arg(long)]
+    pub force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -323,7 +309,7 @@ pub struct SubmitArgs {
     pub local_path: String,
     /// Cluster name.
     #[arg(long = "to", value_name = "CLUSTER")]
-    pub cluster: String,
+    pub cluster: Option<String>,
     /// Path to the sbatch script to submit.
     #[arg(long, value_name = "PATH")]
     pub sbatchscript: Option<String>,
@@ -382,6 +368,10 @@ pub struct AddClusterArgs {
 
     #[arg(long)]
     pub default_base_path: Option<String>,
+
+    /// Mark this cluster as the default cluster.
+    #[arg(long = "default")]
+    pub is_default: bool,
 }
 
 #[cfg(test)]
@@ -526,6 +516,36 @@ mod tests {
     }
 
     #[test]
+    fn cluster_delete_force_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "cluster", "delete", "cluster-a"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Delete(delete) => {
+                    assert_eq!(delete.name, "cluster-a");
+                    assert!(!delete.force);
+                }
+                _ => panic!("expected cluster delete command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_delete_force_sets_true() {
+        let args = Cli::parse_from(["orbit", "cluster", "delete", "cluster-a", "--force"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Delete(delete) => {
+                    assert_eq!(delete.name, "cluster-a");
+                    assert!(delete.force);
+                }
+                _ => panic!("expected cluster delete command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
     fn cluster_list_check_reachability_defaults_to_false() {
         let args = Cli::parse_from(["orbit", "cluster", "list"]);
         match args.cmd {
@@ -544,6 +564,93 @@ mod tests {
             Cmd::Cluster(cluster) => match cluster.cmd {
                 ClusterCmd::List(list) => assert!(list.check_reachability),
                 _ => panic!("expected cluster list command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_get_name_is_optional() {
+        let args = Cli::parse_from(["orbit", "cluster", "get"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Get(get) => assert!(get.name.is_none()),
+                _ => panic!("expected cluster get command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_ls_name_is_optional() {
+        let args = Cli::parse_from(["orbit", "cluster", "ls"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Ls(listing) => {
+                    assert!(listing.name.is_none());
+                    assert!(listing.path.is_none());
+                }
+                _ => panic!("expected cluster ls command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_ls_parses_name_and_path() {
+        let args = Cli::parse_from(["orbit", "cluster", "ls", "cluster-a", "/tmp"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Ls(listing) => {
+                    assert_eq!(listing.name.as_deref(), Some("cluster-a"));
+                    assert_eq!(listing.path.as_deref(), Some("/tmp"));
+                }
+                _ => panic!("expected cluster ls command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_set_name_is_optional() {
+        let args = Cli::parse_from(["orbit", "cluster", "set", "--host", "node"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Set(set) => {
+                    assert!(set.name.is_none());
+                    assert_eq!(set.host.as_deref(), Some("node"));
+                }
+                _ => panic!("expected cluster set command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_delete_requires_name() {
+        let args = Cli::try_parse_from(["orbit", "cluster", "delete", "--force"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn cluster_add_default_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "cluster", "add", "alice@node"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Add(add) => assert!(!add.is_default),
+                _ => panic!("expected cluster add command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_add_default_sets_true() {
+        let args = Cli::parse_from(["orbit", "cluster", "add", "alice@node", "--default"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Add(add) => assert!(add.is_default),
+                _ => panic!("expected cluster add command"),
             },
             _ => panic!("expected cluster command"),
         }
@@ -579,7 +686,7 @@ mod tests {
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
                 JobCmd::Submit(submit) => {
-                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(submit.cluster.as_deref(), Some("winery"));
                     assert_eq!(submit.local_path, ".");
                 }
                 _ => panic!("expected job submit command"),
@@ -603,7 +710,7 @@ mod tests {
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
                 JobCmd::Submit(submit) => {
-                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(submit.cluster.as_deref(), Some("winery"));
                     assert_eq!(
                         submit.sbatchscript.as_deref(),
                         Some("scripts/submit.sbatch")
@@ -617,9 +724,18 @@ mod tests {
     }
 
     #[test]
-    fn job_submit_requires_to_flag() {
-        let args = Cli::try_parse_from(["orbit", "job", "submit", "winery", "."]);
-        assert!(args.is_err());
+    fn job_submit_to_flag_is_optional() {
+        let args = Cli::parse_from(["orbit", "job", "submit", "."]);
+        match args.cmd {
+            Cmd::Job(job) => match job.cmd {
+                JobCmd::Submit(submit) => {
+                    assert!(submit.cluster.is_none());
+                    assert_eq!(submit.local_path, ".");
+                }
+                _ => panic!("expected job submit command"),
+            },
+            _ => panic!("expected job command"),
+        }
     }
 
     #[test]
@@ -636,7 +752,7 @@ mod tests {
             Cmd::Project(project) => match project.cmd {
                 ProjectCmd::Submit(submit) => {
                     assert_eq!(submit.project, "demo:latest");
-                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(submit.cluster.as_deref(), Some("winery"));
                 }
                 _ => panic!("expected project submit command"),
             },
@@ -660,7 +776,7 @@ mod tests {
             Cmd::Project(project) => match project.cmd {
                 ProjectCmd::Submit(submit) => {
                     assert_eq!(submit.project, "demo:latest");
-                    assert_eq!(submit.cluster, "winery");
+                    assert_eq!(submit.cluster.as_deref(), Some("winery"));
                     assert_eq!(submit.sbatchscript.as_deref(), Some("submit.sbatch"));
                 }
                 _ => panic!("expected project submit command"),
@@ -670,8 +786,17 @@ mod tests {
     }
 
     #[test]
-    fn project_submit_requires_to_flag() {
-        let args = Cli::try_parse_from(["orbit", "project", "submit", "demo:latest"]);
-        assert!(args.is_err());
+    fn project_submit_to_flag_is_optional() {
+        let args = Cli::parse_from(["orbit", "project", "submit", "demo:latest"]);
+        match args.cmd {
+            Cmd::Project(project) => match project.cmd {
+                ProjectCmd::Submit(submit) => {
+                    assert_eq!(submit.project, "demo:latest");
+                    assert!(submit.cluster.is_none());
+                }
+                _ => panic!("expected project submit command"),
+            },
+            _ => panic!("expected project command"),
+        }
     }
 }

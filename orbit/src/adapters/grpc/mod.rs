@@ -4,7 +4,14 @@
 mod submit_errors;
 
 use std::future::Future;
+use std::io::{IsTerminal, Write};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+use std::thread::JoinHandle;
+use std::time::Duration as StdDuration;
 
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -12,20 +19,23 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Status};
 
-use crate::app::commands::{StreamCapture, SubmitCapture};
+use crate::app::commands::{AddClusterCapture, StreamCapture, SubmitCapture};
 use crate::app::errors::{
     AppError, AppResult, ErrorType, describe_error_code, format_server_error,
 };
-use crate::app::ports::{InteractionPort, OrbitdPort, StreamOutputPort};
+use crate::app::ports::{
+    InteractionPort, OrbitdPort, PromptFeedbackPort, PromptLine, StreamOutputPort,
+};
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, BuildProjectRequest, CancelJobRequest, CancelJobRequestInit,
     CleanupJobRequest, CleanupJobRequestInit, DeleteClusterRequest, DeleteProjectRequest,
-    GetProjectRequest, JobLogsRequest, JobLogsRequestInit, ListClustersRequest, ListJobsRequest,
-    ListProjectsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
-    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, SetClusterInit,
-    SetClusterRequest, SubmitJobRequest, SubmitPathFilterRule, SubmitProjectRequest,
-    UpsertProjectRequest, add_cluster_init, add_cluster_request, resolve_home_dir_request,
+    GetProjectRequest, JobLogsRequest, JobLogsRequestInit, ListAccountsRequest,
+    ListClustersRequest, ListJobsRequest, ListPartitionsRequest, ListProjectsRequest, LsRequest,
+    LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
+    RetrieveJobRequestInit, SetClusterInit, SetClusterRequest, SubmitJobRequest,
+    SubmitPathFilterRule, SubmitProjectRequest, UpsertProjectRequest, add_cluster_init,
+    add_cluster_request, add_cluster_scratch_selection, resolve_home_dir_request,
     resolve_home_dir_request_init, set_cluster_request, stream_event, submit_job_request,
     submit_project_request, submit_stream_event,
 };
@@ -33,6 +43,57 @@ use submit_errors::parse_remote_path_failure;
 
 pub struct GrpcOrbitdPort {
     endpoint: String,
+}
+
+struct InlineSpinner {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl InlineSpinner {
+    fn start(message: &str) -> Option<Self> {
+        if !std::io::stderr().is_terminal() {
+            return None;
+        }
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_signal = Arc::clone(&stop);
+        let message = message.to_string();
+        let handle = std::thread::spawn(move || {
+            let frames = ['⠾', '⠷', '⠯', '⠟', '⠻', '⠽'];
+            let mut idx = 0usize;
+            while !stop_signal.load(Ordering::Relaxed) {
+                let frame = frames[idx % frames.len()];
+                let line = format!("\r{} {}", frame, message);
+                let mut stderr = std::io::stderr();
+                let _ = stderr.write_all(line.as_bytes());
+                let _ = stderr.flush();
+                std::thread::sleep(StdDuration::from_millis(120));
+                idx = idx.wrapping_add(1);
+            }
+            let clear_width = message.len() + 2;
+            let clear = format!("\r{}{}\r", " ".repeat(clear_width), " ");
+            let mut stderr = std::io::stderr();
+            let _ = stderr.write_all(clear.as_bytes());
+            let _ = stderr.flush();
+        });
+        Some(Self {
+            stop,
+            handle: Some(handle),
+        })
+    }
+
+    fn stop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+impl Drop for InlineSpinner {
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 impl GrpcOrbitdPort {
@@ -113,6 +174,41 @@ impl OrbitdPort for GrpcOrbitdPort {
         Ok(response.jobs)
     }
 
+    async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>> {
+        let mut client = self.connect().await?;
+        let request = ListPartitionsRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.list_partitions(request)).await
+        {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        Ok(response
+            .partitions
+            .into_iter()
+            .map(|item| item.name)
+            .collect())
+    }
+
+    async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>> {
+        let mut client = self.connect().await?;
+        let request = ListAccountsRequest {
+            name: name.to_string(),
+        };
+        let response = match timeout(Duration::from_secs(5), client.list_accounts(request)).await {
+            Ok(Ok(res)) => res.into_inner(),
+            Ok(Err(status)) => return Err(app_error_from_status(status)),
+            Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
+        };
+        Ok(response
+            .accounts
+            .into_iter()
+            .map(|item| item.name)
+            .collect())
+    }
+
     async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord> {
         let mut client = self.connect().await?;
         let request = UpsertProjectRequest {
@@ -185,10 +281,11 @@ impl OrbitdPort for GrpcOrbitdPort {
             .ok_or_else(|| AppError::remote_error("missing project in response"))
     }
 
-    async fn delete_cluster(&self, name: &str) -> AppResult<bool> {
+    async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool> {
         let mut client = self.connect().await?;
         let delete_request = DeleteClusterRequest {
             name: name.to_string(),
+            force,
         };
         let response = match timeout(
             Duration::from_secs(5),
@@ -616,9 +713,12 @@ impl OrbitdPort for GrpcOrbitdPort {
         identity_path: Option<String>,
         port: u32,
         default_base_path: Option<String>,
+        default_scratch_directory: Option<String>,
+        interactive_scratch_selection: bool,
+        planned_is_default: Option<bool>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<StreamCapture> {
+    ) -> AppResult<AddClusterCapture> {
         let mut client = self.connect().await?;
         let (tx_ans, rx_ans) = mpsc::channel::<AddClusterRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
@@ -641,13 +741,20 @@ impl OrbitdPort for GrpcOrbitdPort {
             ),
             None => None,
         };
+        let init_default_base_path = if interactive_scratch_selection {
+            None
+        } else {
+            default_base_path.clone()
+        };
         let init = AddClusterInit {
             name,
             username,
             host: Some(host),
             identity_path: identity_path_expanded,
             port,
-            default_base_path,
+            default_base_path: init_default_base_path,
+            default_scratch_directory: default_scratch_directory.clone(),
+            interactive_scratch_selection,
         };
         let acr = AddClusterRequest {
             msg: Some(add_cluster_request::Msg::Init(init)),
@@ -660,27 +767,341 @@ impl OrbitdPort for GrpcOrbitdPort {
             .add_cluster(Request::new(outbound))
             .await
             .map_err(app_error_from_status)?;
-        let inbound = response.into_inner();
-        handle_stream(
-            inbound,
-            output,
-            interaction,
-            move |answers| {
-                let tx_ans = tx_ans.clone();
-                async move {
-                    tx_ans
-                        .send(AddClusterRequest {
-                            msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
-                        })
-                        .await
-                        .map_err(|_| {
-                            AppError::remote_error("server closed while sending MFA answers")
-                        })
+        let mut inbound = response.into_inner();
+        let mut selected_default_base_path = default_base_path.clone();
+        let mut provided_base_path = if interactive_scratch_selection {
+            default_base_path.clone()
+        } else {
+            None
+        };
+        let mut base_path_default = default_base_path.clone();
+        let mut pending_base_path_prompt: Option<PromptLine> = None;
+        let mut pending_base_path_input: Option<String> = None;
+        let mut selected_scratch_directory = default_scratch_directory;
+        let mut selected_is_default = planned_is_default;
+        let mut scratch_options: Vec<String> = Vec::new();
+        let gathering_spinner_message = "Gathering additional cluster information...";
+        let mut gathering_feedback: Option<Box<dyn PromptFeedbackPort>> =
+            if interactive_scratch_selection && selected_scratch_directory.is_none() {
+                Some(interaction.prompt_feedback().await?)
+            } else {
+                None
+            };
+        let mut gathering_active = false;
+        let mut active_validation_spinner_message: Option<String> = None;
+        let mut pending_validation_path: Option<String> = None;
+        let mut validation_spinner: Option<InlineSpinner> = None;
+        while let Some(item) = inbound.next().await {
+            match item {
+                Ok(proto::StreamEvent { event: Some(ev) }) => match ev {
+                    stream_event::Event::Stdout(bytes) => {
+                        output.on_stdout(&bytes).await?;
+                    }
+                    stream_event::Event::Stderr(bytes) => {
+                        output.on_stderr(&bytes).await?;
+                    }
+                    stream_event::Event::ExitCode(code) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        if gathering_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.stop_information_gathering()?;
+                            }
+                            gathering_active = false;
+                        }
+                        output.on_exit_code(code).await?;
+                        break;
+                    }
+                    stream_event::Event::Mfa(mfa) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        let validation_spinner_active_message =
+                            active_validation_spinner_message.clone();
+                        let gathering_was_active = gathering_active;
+                        if gathering_was_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.stop_information_gathering()?;
+                            }
+                        }
+                        let base_path_validation_active =
+                            if let Some(base_path_prompt) = pending_base_path_prompt.as_mut() {
+                                base_path_prompt.stop_validation()?;
+                                true
+                            } else {
+                                false
+                            };
+                        let (answers, mfa_lines) = interaction.prompt_mfa_transient(&mfa).await?;
+                        tx_ans
+                            .send(AddClusterRequest {
+                                msg: Some(proto::add_cluster_request::Msg::Mfa(answers)),
+                            })
+                            .await
+                            .map_err(|_| {
+                                AppError::remote_error("server closed while sending MFA answers")
+                            })?;
+                        if mfa_lines > 0 {
+                            interaction.clear_transient(mfa_lines).await?;
+                        }
+                        if base_path_validation_active {
+                            if let Some(base_path_prompt) = pending_base_path_prompt.as_mut() {
+                                base_path_prompt
+                                    .start_validation("Validating default base path...")?;
+                            }
+                        } else if let Some(message) = validation_spinner_active_message.as_deref() {
+                            validation_spinner = InlineSpinner::start(message);
+                        }
+                        if gathering_was_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.start_information_gathering(gathering_spinner_message)?;
+                            }
+                        }
+                    }
+                    stream_event::Event::Error(err) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        if gathering_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.stop_information_gathering()?;
+                            }
+                            gathering_active = false;
+                        }
+                        output.on_error(&err).await?;
+                        output.on_exit_code(1).await?;
+                        break;
+                    }
+                    stream_event::Event::AddClusterScratchOptions(options) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        if gathering_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.stop_information_gathering()?;
+                            }
+                            gathering_active = false;
+                        }
+                        scratch_options = options.directories;
+                        let selection =
+                            prompt_add_cluster_scratch_selection(interaction, &scratch_options)
+                                .await?;
+                        pending_validation_path = selection.clone();
+                        if let Some(path) = selection.as_deref() {
+                            let message = format!("Validating {path}...");
+                            active_validation_spinner_message = Some(message.clone());
+                            validation_spinner = InlineSpinner::start(&message);
+                        } else {
+                            active_validation_spinner_message = None;
+                        }
+                        send_add_cluster_scratch_selection(&tx_ans, selection).await?;
+                    }
+                    stream_event::Event::AddClusterScratchValidation(validation) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        active_validation_spinner_message = None;
+                        if validation.accepted {
+                            selected_scratch_directory = validation.directory;
+                            let scratch_label =
+                                selected_scratch_directory.as_deref().unwrap_or("none");
+                            let message = format!("✓ Scratch directory: {scratch_label}\n");
+                            output.on_stderr(message.as_bytes()).await?;
+                            pending_validation_path = None;
+                        } else {
+                            let failed_path = pending_validation_path
+                                .as_deref()
+                                .unwrap_or("<scratch directory>");
+                            let failure_reason = validation
+                                .error
+                                .as_deref()
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or("validation failed");
+                            let failure_line =
+                                format!("✗ Validation of {failed_path} failed: {failure_reason}\n");
+                            output.on_stderr(failure_line.as_bytes()).await?;
+                            let selection =
+                                prompt_add_cluster_scratch_selection(interaction, &scratch_options)
+                                    .await?;
+                            pending_validation_path = selection.clone();
+                            if let Some(path) = selection.as_deref() {
+                                let message = format!("Validating {path}...");
+                                active_validation_spinner_message = Some(message.clone());
+                                validation_spinner = InlineSpinner::start(&message);
+                            } else {
+                                active_validation_spinner_message = None;
+                            }
+                            send_add_cluster_scratch_selection(&tx_ans, selection).await?;
+                        }
+                    }
+                    stream_event::Event::AddClusterBasePathPrompt(prompt) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        let suggested_default = prompt.suggested_path.trim();
+                        let prompt_default = if suggested_default.is_empty() {
+                            base_path_default
+                                .clone()
+                                .unwrap_or_else(|| "~/runs".to_string())
+                        } else {
+                            suggested_default.to_string()
+                        };
+                        base_path_default = Some(prompt_default.clone());
+                        if let Some(path) = provided_base_path.take() {
+                            let base_path = path.trim().to_string();
+                            let message = "Validating default base path...".to_string();
+                            active_validation_spinner_message = Some(message.clone());
+                            validation_spinner = InlineSpinner::start(&message);
+                            pending_base_path_input = Some(base_path.clone());
+                            send_add_cluster_base_path_selection(&tx_ans, base_path).await?;
+                            continue;
+                        }
+                        let mut base_path_prompt =
+                            prompt_add_cluster_default_base_path(interaction, &prompt_default)
+                                .await?;
+                        let base_path = base_path_prompt.input.trim().to_string();
+                        base_path_prompt.start_validation("Validating default base path...")?;
+                        pending_base_path_input = Some(base_path.clone());
+                        pending_base_path_prompt = Some(base_path_prompt);
+                        send_add_cluster_base_path_selection(&tx_ans, base_path).await?;
+                    }
+                    stream_event::Event::AddClusterBasePathValidation(validation) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        active_validation_spinner_message = None;
+                        let mut prompt = pending_base_path_prompt.take();
+                        if validation.accepted {
+                            let validated_path = validation
+                                .path
+                                .clone()
+                                .or_else(|| pending_base_path_input.clone())
+                                .unwrap_or_else(|| "<default base path>".to_string());
+                            if let Some(active_prompt) = prompt.as_mut() {
+                                active_prompt.finish_success(&format!(
+                                    "Default base path: {validated_path}"
+                                ))?;
+                            } else {
+                                output
+                                    .on_stderr(
+                                        format!("✓ Default base path: {validated_path}\n")
+                                            .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            selected_default_base_path = Some(validated_path);
+                            pending_base_path_input = None;
+                            if !gathering_active {
+                                if let Some(feedback) = gathering_feedback.as_mut() {
+                                    feedback
+                                        .start_information_gathering(gathering_spinner_message)?;
+                                    gathering_active = true;
+                                }
+                            }
+                        } else {
+                            let failure_reason = validation
+                                .error
+                                .as_deref()
+                                .filter(|value| !value.trim().is_empty())
+                                .unwrap_or("validation failed");
+                            if let Some(active_prompt) = prompt.as_mut() {
+                                active_prompt.finish_failure(failure_reason)?;
+                            } else {
+                                let failed_path = pending_base_path_input
+                                    .as_deref()
+                                    .unwrap_or("<default base path>");
+                                output
+                                    .on_stderr(
+                                        format!(
+                                            "✗ Validation of {failed_path} failed: {failure_reason}\n"
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .await?;
+                            }
+                            let next_default =
+                                base_path_default.as_deref().unwrap_or("~/runs").to_string();
+                            let mut next_prompt =
+                                prompt_add_cluster_default_base_path(interaction, &next_default)
+                                    .await?;
+                            let next_path = next_prompt.input.trim().to_string();
+                            next_prompt.start_validation("Validating default base path...")?;
+                            pending_base_path_input = Some(next_path.clone());
+                            pending_base_path_prompt = Some(next_prompt);
+                            send_add_cluster_base_path_selection(&tx_ans, next_path).await?;
+                        }
+                    }
+                    stream_event::Event::AddClusterDefaultPrompt(_prompt) => {
+                        if let Some(mut active_spinner) = validation_spinner.take() {
+                            active_spinner.stop();
+                        }
+                        let gathering_was_active = gathering_active;
+                        if gathering_was_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.stop_information_gathering()?;
+                            }
+                            gathering_active = false;
+                        }
+
+                        let make_default = if let Some(value) = planned_is_default {
+                            value
+                        } else {
+                            interaction
+                                .confirm(
+                                    "Set this cluster as the default? (yes/no): ",
+                                    "Type yes to confirm, no to cancel.",
+                                )
+                                .await?
+                        };
+                        selected_is_default = Some(make_default);
+                        send_add_cluster_default_selection(&tx_ans, make_default).await?;
+                        let label = if make_default { "yes" } else { "no" };
+                        output
+                            .on_stderr(format!("✓ Default cluster: {label}\n").as_bytes())
+                            .await?;
+
+                        if gathering_was_active {
+                            if let Some(feedback) = gathering_feedback.as_mut() {
+                                feedback.start_information_gathering(gathering_spinner_message)?;
+                                gathering_active = true;
+                            }
+                        }
+                    }
+                },
+                Ok(proto::StreamEvent { event: None }) => {}
+                Err(status) => {
+                    if let Some(mut active_spinner) = validation_spinner.take() {
+                        active_spinner.stop();
+                    }
+                    if gathering_active {
+                        if let Some(feedback) = gathering_feedback.as_mut() {
+                            feedback.stop_information_gathering()?;
+                        }
+                        gathering_active = false;
+                    }
+                    output
+                        .on_error(remote_code_for_status(status.code()))
+                        .await?;
+                    output.on_exit_code(1).await?;
+                    break;
                 }
-            },
-            |_| 1,
-        )
-        .await
+            }
+        }
+        if let Some(mut active_spinner) = validation_spinner.take() {
+            active_spinner.stop();
+        }
+        if gathering_active {
+            if let Some(feedback) = gathering_feedback.as_mut() {
+                feedback.stop_information_gathering()?;
+            }
+        }
+
+        Ok(AddClusterCapture {
+            stream: output.take_stream_capture(),
+            default_base_path: selected_default_base_path,
+            default_scratch_directory: selected_scratch_directory,
+            is_default: selected_is_default,
+        })
     }
 
     async fn set_cluster(
@@ -833,6 +1254,7 @@ impl OrbitdPort for GrpcOrbitdPort {
                     Some(stream_event::Event::Error(err)) => {
                         return Err(AppError::remote_error(format_server_error(&err)));
                     }
+                    Some(_) => {}
                     None => {}
                 },
                 Err(status) => {
@@ -865,6 +1287,99 @@ impl OrbitdPort for GrpcOrbitdPort {
         }
         Ok(home.to_string())
     }
+}
+
+async fn prompt_add_cluster_scratch_selection(
+    interaction: &dyn InteractionPort,
+    discovered: &[String],
+) -> AppResult<Option<String>> {
+    let mut options = discovered.to_vec();
+    options.push("other".to_string());
+    options.push("none".to_string());
+    let default = discovered.first().map(String::as_str).or(Some("none"));
+    let help = "Choose a scratch directory, enter a custom path, or select none.";
+
+    loop {
+        let selected = interaction
+            .select_enum("scratch directory", &options, default, help)
+            .await?;
+        if selected == "none" {
+            return Ok(None);
+        }
+        if selected == "other" {
+            let value = interaction
+                .prompt_line(
+                    "Scratch directory: ",
+                    "Remote scratch directory path (leave empty to keep none).",
+                )
+                .await?;
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            return Ok(Some(trimmed.to_string()));
+        }
+        return Ok(Some(selected));
+    }
+}
+
+async fn prompt_add_cluster_default_base_path(
+    interaction: &dyn InteractionPort,
+    default: &str,
+) -> AppResult<PromptLine> {
+    interaction
+        .prompt_line_with_default_confirmable(
+            "Default base path: ",
+            "Remote base folder for projects.",
+            default,
+        )
+        .await
+}
+
+async fn send_add_cluster_base_path_selection(
+    sender: &mpsc::Sender<AddClusterRequest>,
+    path: String,
+) -> AppResult<()> {
+    sender
+        .send(AddClusterRequest {
+            msg: Some(add_cluster_request::Msg::BasePathSelection(
+                proto::AddClusterBasePathSelection { path },
+            )),
+        })
+        .await
+        .map_err(|_| AppError::remote_error("server closed while sending default base path"))
+}
+
+async fn send_add_cluster_scratch_selection(
+    sender: &mpsc::Sender<AddClusterRequest>,
+    selection: Option<String>,
+) -> AppResult<()> {
+    let selection = match selection {
+        Some(path) => Some(add_cluster_scratch_selection::Selection::Directory(path)),
+        None => Some(add_cluster_scratch_selection::Selection::None(true)),
+    };
+    sender
+        .send(AddClusterRequest {
+            msg: Some(add_cluster_request::Msg::ScratchSelection(
+                proto::AddClusterScratchSelection { selection },
+            )),
+        })
+        .await
+        .map_err(|_| AppError::remote_error("server closed while sending scratch selection"))
+}
+
+async fn send_add_cluster_default_selection(
+    sender: &mpsc::Sender<AddClusterRequest>,
+    is_default: bool,
+) -> AppResult<()> {
+    sender
+        .send(AddClusterRequest {
+            msg: Some(add_cluster_request::Msg::DefaultSelection(
+                proto::AddClusterDefaultSelection { is_default },
+            )),
+        })
+        .await
+        .map_err(|_| AppError::remote_error("server closed while sending default selection"))
 }
 
 fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
@@ -942,12 +1457,11 @@ where
                     output.on_exit_code(map_error_code(&err)).await?;
                     break;
                 }
+                _ => {}
             },
             Ok(proto::StreamEvent { event: None }) => {}
             Err(status) => {
-                let message = format_status_error(&status);
                 let remote_code = remote_code_for_status(status.code());
-                output.on_stderr(message.as_bytes()).await?;
                 output.on_error(remote_code).await?;
                 output.on_exit_code(map_error_code(remote_code)).await?;
                 break;
@@ -1001,8 +1515,6 @@ where
             },
             Ok(proto::SubmitStreamEvent { event: None }) => {}
             Err(status) => {
-                let message = format_status_error(&status);
-                output.on_stderr(message.as_bytes()).await?;
                 output
                     .on_error(remote_code_for_status(status.code()))
                     .await?;

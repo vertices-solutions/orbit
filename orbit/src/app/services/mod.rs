@@ -10,19 +10,17 @@ use rand::prelude::IndexedRandom;
 use crate::app::UiMode;
 use crate::app::commands::AddClusterCommand;
 use crate::app::errors::{AppError, AppResult};
-use crate::app::ports::{FilesystemPort, InteractionPort, NetworkPort, OutputPort, PromptLine};
+use crate::app::ports::{FilesystemPort, InteractionPort, NetworkPort};
 
 mod project;
 mod templates;
 pub use project::{
-    CheckedProjectStatus, OrbitfileProjectConfig, ProjectCheckFailure, ProjectCheckStatus,
-    ProjectRuleSet, TemplateConfig, TemplateField, TemplateFieldType,
-    build_default_orbitfile_contents, check_registered_project, discover_project_from_submit_root,
-    load_project_from_root, merge_submit_filters, resolve_orbitfile_sbatch_script,
-    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
-    validate_project_name,
+    OrbitfileProjectConfig, ProjectRuleSet, TemplateConfig, TemplateField, TemplateFieldType,
+    build_default_orbitfile_contents, discover_project_from_submit_root, load_project_from_root,
+    merge_submit_filters, resolve_orbitfile_sbatch_script, sanitize_project_name,
+    template_config_from_json, upsert_orbitfile_project_name, validate_project_name,
 };
-pub use templates::{TemplateValues, resolve_template_values};
+pub use templates::{TemplateSpecialContext, TemplateValues, resolve_template_values};
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_BASE_PATH: &str = "~/runs";
@@ -36,13 +34,13 @@ pub struct ResolvedAddCluster {
     pub port: u32,
     pub identity_path: String,
     pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
 }
 
 pub struct AddClusterResolver<'a> {
     interaction: &'a dyn InteractionPort,
     fs: &'a dyn FilesystemPort,
     network: &'a dyn NetworkPort,
-    output: &'a dyn OutputPort,
     ui_mode: UiMode,
 }
 
@@ -51,14 +49,12 @@ impl<'a> AddClusterResolver<'a> {
         interaction: &'a dyn InteractionPort,
         fs: &'a dyn FilesystemPort,
         network: &'a dyn NetworkPort,
-        output: &'a dyn OutputPort,
         ui_mode: UiMode,
     ) -> Self {
         Self {
             interaction,
             fs,
             network,
-            output,
             ui_mode,
         }
     }
@@ -70,15 +66,13 @@ impl<'a> AddClusterResolver<'a> {
     ) -> AppResult<ResolvedAddCluster> {
         let non_interactive = !self.ui_mode.is_interactive();
         let destination = normalize_option(args.destination);
-        let name = normalize_option(args.name);
-        let identity_path = normalize_option(args.identity_path);
-        let default_base_path = normalize_option(args.default_base_path);
+        let name_arg = normalize_option(args.name);
+        let identity_path_arg = normalize_option(args.identity_path);
+        let default_base_path_arg = normalize_option(args.default_base_path);
 
         let parsed_destination = if let Some(value) = destination.as_deref() {
             let parsed = parse_destination(value)?;
-            if let Err(err) = self.validate_destination(&parsed).await {
-                return Err(err);
-            }
+            self.validate_destination(&parsed)?;
             parsed
         } else {
             if non_interactive {
@@ -86,35 +80,21 @@ impl<'a> AddClusterResolver<'a> {
                     "destination is required in non-interactive mode",
                 ));
             }
-            loop {
-                let mut prompt = self
-                    .interaction
-                    .prompt_line_confirmable(
-                        "Destination: ",
-                        "SSH destination in user@host[:port] form.",
-                    )
-                    .await?;
-                let input = prompt.input.trim().to_string();
-                let parsed = match parse_destination(&input) {
-                    Ok(parsed) => parsed,
-                    Err(_) => {
-                        self.output
-                            .warn("Please, provide a valid connection string")
-                            .await?;
-                        continue;
-                    }
-                };
-                prompt.start_validation("Validating destination...")?;
-                if let Err(_) = self.validate_destination(&parsed).await {
-                    prompt.finish_failure()?;
-                    self.output
-                        .warn("Please, provide a valid connection string")
-                        .await?;
-                    continue;
-                }
-                prompt.finish_success(&format!("Destination: {input}"))?;
-                break parsed;
-            }
+            let (parsed, _) = self
+                .prompt_and_validate(
+                    "Destination: ",
+                    "SSH destination in user@host[:port] form.",
+                    None,
+                    "Validating destination...",
+                    |input| {
+                        let parsed = parse_destination(input)?;
+                        self.validate_destination(&parsed)?;
+                        Ok((parsed, input.to_string()))
+                    },
+                    |(_, input)| format!("Destination: {input}"),
+                )
+                .await?;
+            parsed
         };
 
         let (hostname, ip) = if parsed_destination.host.parse::<IpAddr>().is_ok() {
@@ -132,98 +112,51 @@ impl<'a> AddClusterResolver<'a> {
             }
         };
 
-        let mut name_prompt: Option<PromptLine> = None;
-        let mut name = match name {
-            Some(value) => value,
+        let mut name = match name_arg.as_deref() {
+            Some(value) => value.to_string(),
             None => {
                 if non_interactive {
                     default_name_for_host(hostname.as_deref(), ip.as_deref())?
                 } else {
                     let default_name = generate_random_name();
-                    let prompt = self
-                        .interaction
-                        .prompt_line_with_default_confirmable(
-                            "Name: ",
-                            "Friendly name used in other commands (e.g. gpu01).",
-                            &default_name,
-                        )
-                        .await?;
-                    let value = prompt.input.trim().to_string();
-                    name_prompt = Some(prompt);
-                    value
+                    self.prompt_name(existing_names, &default_name).await?
                 }
             }
         };
 
-        loop {
-            if let Some(mut prompt) = name_prompt.take() {
-                prompt.start_validation("Validating name...")?;
-                match validate_name(&name, existing_names) {
-                    Ok(()) => {
-                        prompt.finish_success(&format!("Name: {name}"))?;
-                        break;
-                    }
-                    Err(err) => {
-                        if non_interactive {
-                            return Err(err);
-                        }
-                        prompt.finish_failure()?;
-                        self.output
-                            .warn(&format!(
-                                "Name '{name}' is already taken. Please choose another name."
-                            ))
-                            .await?;
-                        let default_name = generate_random_name();
-                        let prompt = self
-                            .interaction
-                            .prompt_line_with_default_confirmable(
-                                "Name: ",
-                                "Friendly name used in other commands (e.g. gpu01).",
-                                &default_name,
-                            )
-                            .await?;
-                        name = prompt.input.trim().to_string();
-                        name_prompt = Some(prompt);
-                    }
+        if non_interactive {
+            validate_name(&name, existing_names)?;
+        } else if name_arg.is_some() {
+            match self
+                .validate_with_feedback(
+                    &name,
+                    "Validating name...",
+                    |input| {
+                        validate_name(input, existing_names)?;
+                        Ok(input.to_string())
+                    },
+                    |validated_name| format!("Name: {validated_name}"),
+                )
+                .await
+            {
+                Ok(validated_name) => {
+                    name = validated_name;
                 }
-            } else {
-                match validate_name(&name, existing_names) {
-                    Ok(()) => break,
-                    Err(err) => {
-                        if non_interactive {
-                            return Err(err);
-                        }
-                        self.output
-                            .warn(&format!(
-                                "Name '{name}' is already taken. Please choose another name."
-                            ))
-                            .await?;
-                        let default_name = generate_random_name();
-                        let prompt = self
-                            .interaction
-                            .prompt_line_with_default_confirmable(
-                                "Name: ",
-                                "Friendly name used in other commands (e.g. gpu01).",
-                                &default_name,
-                            )
-                            .await?;
-                        name = prompt.input.trim().to_string();
-                        name_prompt = Some(prompt);
-                    }
+                Err(_) => {
+                    name = self.prompt_name(existing_names, &name).await?;
                 }
             }
         }
 
         let port = parsed_destination.port.unwrap_or(DEFAULT_SSH_PORT);
 
-        let mut identity_prompt: Option<PromptLine> = None;
-        let mut identity_path = match identity_path {
+        let discovered_identity = find_preferred_identity_path(self.fs);
+        let identity_path = match identity_path_arg {
             Some(value) => value,
             None => {
-                let discovered = find_preferred_identity_path(self.fs);
                 if non_interactive {
-                    match discovered {
-                        Some(value) => value,
+                    match discovered_identity.as_deref() {
+                        Some(value) => value.to_string(),
                         None => {
                             return Err(AppError::invalid_argument(
                                 "identity path is required in non-interactive mode",
@@ -231,117 +164,30 @@ impl<'a> AddClusterResolver<'a> {
                         }
                     }
                 } else {
-                    let hint = discovered.as_deref().unwrap_or("<none>").to_string();
-                    let help = format!("{} - SSH private key path used for authentication.", hint);
-                    let default = discovered.as_deref();
-                    match default {
-                        Some(value) => {
-                            let prompt = self
-                                .interaction
-                                .prompt_line_with_default_confirmable(
-                                    "Identity path: ",
-                                    &help,
-                                    value,
-                                )
-                                .await?;
-                            let value = prompt.input.trim().to_string();
-                            identity_prompt = Some(prompt);
-                            value
-                        }
-                        None => {
-                            let prompt = self
-                                .interaction
-                                .prompt_line_confirmable("Identity path: ", &help)
-                                .await?;
-                            let value = prompt.input.trim().to_string();
-                            identity_prompt = Some(prompt);
-                            value
-                        }
-                    }
+                    self.prompt_identity_path(discovered_identity.as_deref())
+                        .await?
                 }
             }
         };
 
-        loop {
-            if identity_path.trim().is_empty() {
+        let identity_path = match validate_identity_path(self.fs, &identity_path) {
+            Ok(()) => identity_path,
+            Err(err) => {
                 if non_interactive {
-                    return Err(AppError::invalid_argument(
-                        "identity path is required in non-interactive mode",
-                    ));
+                    return Err(err);
                 }
-                if let Some(mut prompt) = identity_prompt.take() {
-                    prompt.finish_failure()?;
-                }
-                self.output.warn("Identity path cannot be empty.").await?;
-                let prompt = self
-                    .interaction
-                    .prompt_line_confirmable(
-                        "Identity path: ",
-                        "SSH private key path used for authentication.",
-                    )
-                    .await?;
-                identity_path = prompt.input.trim().to_string();
-                identity_prompt = Some(prompt);
-                continue;
+                self.prompt_identity_path(Some(identity_path.as_str()))
+                    .await?
             }
-            if let Some(mut prompt) = identity_prompt.take() {
-                prompt.start_validation("Validating identity path...")?;
-                match validate_identity_path(self.fs, &identity_path) {
-                    Ok(()) => {
-                        prompt.finish_success(&format!("Identity path: {identity_path}"))?;
-                        break;
-                    }
-                    Err(err) => {
-                        if non_interactive {
-                            return Err(err);
-                        }
-                        prompt.finish_failure()?;
-                        self.output
-                            .warn(&format!(
-                                "Identity path '{}' is invalid: {}",
-                                identity_path, err.message
-                            ))
-                            .await?;
-                        let prompt = self
-                            .interaction
-                            .prompt_line_confirmable(
-                                "Identity path: ",
-                                "SSH private key path used for authentication.",
-                            )
-                            .await?;
-                        identity_path = prompt.input.trim().to_string();
-                        identity_prompt = Some(prompt);
-                    }
-                }
-            } else {
-                match validate_identity_path(self.fs, &identity_path) {
-                    Ok(()) => break,
-                    Err(err) => {
-                        if non_interactive {
-                            return Err(err);
-                        }
-                        self.output
-                            .warn(&format!(
-                                "Identity path '{}' is invalid: {}",
-                                identity_path, err.message
-                            ))
-                            .await?;
-                        let prompt = self
-                            .interaction
-                            .prompt_line_confirmable(
-                                "Identity path: ",
-                                "SSH private key path used for authentication.",
-                            )
-                            .await?;
-                        identity_path = prompt.input.trim().to_string();
-                        identity_prompt = Some(prompt);
-                    }
-                }
-            }
-        }
+        };
 
-        let default_base_path = match default_base_path {
-            Some(value) => Some(value),
+        let default_base_path = match default_base_path_arg {
+            Some(value) => {
+                if non_interactive {
+                    local_validate_default_base_path(&value)?;
+                }
+                Some(value)
+            }
             None => {
                 if non_interactive {
                     Some(DEFAULT_BASE_PATH.to_string())
@@ -359,13 +205,135 @@ impl<'a> AddClusterResolver<'a> {
             port,
             identity_path,
             default_base_path,
+            default_scratch_directory: None,
         })
     }
 
-    async fn validate_destination(&self, destination: &ParsedDestination) -> AppResult<()> {
+    fn validate_destination(&self, destination: &ParsedDestination) -> AppResult<()> {
         let port = resolve_destination_port(destination.port)?;
         self.network.check_reachable(&destination.host, port)?;
         Ok(())
+    }
+
+    async fn prompt_name(
+        &self,
+        existing_names: &HashSet<String>,
+        default: &str,
+    ) -> AppResult<String> {
+        self.prompt_and_validate(
+            "Name: ",
+            "Friendly name used in other commands (e.g. gpu01).",
+            Some(default),
+            "Validating name...",
+            |input| {
+                validate_name(input, existing_names)?;
+                Ok(input.to_string())
+            },
+            |name| format!("Name: {name}"),
+        )
+        .await
+    }
+
+    async fn prompt_identity_path(&self, default: Option<&str>) -> AppResult<String> {
+        let hint = default.unwrap_or("<none>");
+        let help = format!("{hint} - SSH private key path used for authentication.");
+        self.prompt_and_validate(
+            "Identity path: ",
+            &help,
+            default,
+            "Validating identity path...",
+            |input| {
+                if input.is_empty() {
+                    return Err(AppError::invalid_argument(
+                        "identity path is required in interactive mode",
+                    ));
+                }
+                validate_identity_path(self.fs, input)?;
+                Ok(input.to_string())
+            },
+            |path| format!("Identity path: {path}"),
+        )
+        .await
+    }
+
+    async fn validate_with_feedback<T, V, S>(
+        &self,
+        input: &str,
+        validation_message: &str,
+        mut validate: V,
+        mut success_message: S,
+    ) -> AppResult<T>
+    where
+        V: FnMut(&str) -> AppResult<T>,
+        S: FnMut(&T) -> String,
+    {
+        let mut feedback = self.interaction.prompt_feedback().await?;
+        feedback.start_validation(validation_message)?;
+        match validate(input) {
+            Ok(value) => {
+                let message = success_message(&value);
+                feedback.finish_success(&message)?;
+                Ok(value)
+            }
+            Err(err) => {
+                feedback.finish_failure(&validation_error_message(&err))?;
+                Err(err)
+            }
+        }
+    }
+
+    async fn prompt_and_validate<T, V, S>(
+        &self,
+        prompt: &str,
+        help: &str,
+        default: Option<&str>,
+        validation_message: &str,
+        mut validate: V,
+        mut success_message: S,
+    ) -> AppResult<T>
+    where
+        V: FnMut(&str) -> AppResult<T>,
+        S: FnMut(&T) -> String,
+    {
+        loop {
+            let mut prompt_line = match default {
+                Some(default) => {
+                    self.interaction
+                        .prompt_line_with_default_confirmable(prompt, help, default)
+                        .await?
+                }
+                None => {
+                    self.interaction
+                        .prompt_line_confirmable(prompt, help)
+                        .await?
+                }
+            };
+            let input = prompt_line.input.trim().to_string();
+            prompt_line.start_validation(validation_message)?;
+            match validate(&input) {
+                Ok(value) => {
+                    let message = success_message(&value);
+                    prompt_line.finish_success(&message)?;
+                    return Ok(value);
+                }
+                Err(err) => {
+                    let message = if err.message.trim().is_empty() {
+                        "validation failed".to_string()
+                    } else {
+                        err.message.clone()
+                    };
+                    prompt_line.finish_failure(&message)?;
+                }
+            }
+        }
+    }
+}
+
+fn validation_error_message(err: &AppError) -> String {
+    if err.message.trim().is_empty() {
+        "validation failed".to_string()
+    } else {
+        err.message.clone()
     }
 }
 
@@ -643,6 +611,20 @@ fn generate_random_name() -> String {
 }
 
 fn validate_name(name: &str, existing_names: &HashSet<String>) -> AppResult<()> {
+    if name.is_empty() {
+        return Err(AppError::invalid_argument("name cannot be empty"));
+    }
+    if name.chars().any(char::is_whitespace) {
+        return Err(AppError::invalid_argument("name cannot contain whitespace"));
+    }
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.')
+    {
+        return Err(AppError::invalid_argument(
+            "name may only contain letters, numbers, '.', '-', and '_'",
+        ));
+    }
     if existing_names.contains(name) {
         return Err(AppError::invalid_argument("name already exists"));
     }
@@ -784,7 +766,6 @@ const SCIENTISTS: &[&str] = &[
 mod tests {
     use super::*;
     use crate::app::errors::ErrorType;
-    use crate::app::ports::StreamOutputPort;
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::net::TcpListener;
@@ -827,6 +808,12 @@ mod tests {
             Err(AppError::internal_error("unexpected prompt"))
         }
 
+        async fn prompt_feedback(
+            &self,
+        ) -> AppResult<Box<dyn crate::app::ports::PromptFeedbackPort>> {
+            Err(AppError::internal_error("unexpected prompt"))
+        }
+
         async fn select_sbatch(&self, _options: &[String]) -> AppResult<Option<String>> {
             Err(AppError::internal_error("unexpected selection"))
         }
@@ -854,73 +841,6 @@ mod tests {
 
         async fn clear_transient(&self, _lines: usize) -> AppResult<()> {
             Ok(())
-        }
-    }
-
-    struct TestOutput;
-
-    #[tonic::async_trait]
-    impl OutputPort for TestOutput {
-        async fn render(&self, _result: &crate::app::commands::CommandResult) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn render_error(&self, _error: &AppError) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn info(&self, _message: &str) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn warn(&self, _message: &str) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn success(&self, _message: &str) -> AppResult<()> {
-            Ok(())
-        }
-
-        fn stream_output(&self, _kind: crate::app::ports::StreamKind) -> Box<dyn StreamOutputPort> {
-            Box::new(TestStreamOutput::default())
-        }
-    }
-
-    #[derive(Default)]
-    struct TestStreamOutput;
-
-    #[tonic::async_trait]
-    impl StreamOutputPort for TestStreamOutput {
-        async fn on_stdout(&mut self, _bytes: &[u8]) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn on_stderr(&mut self, _bytes: &[u8]) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn on_exit_code(&mut self, _code: i32) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn on_error(&mut self, _code: &str) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn on_submit_status(&mut self, _status: &proto::SubmitStatus) -> AppResult<()> {
-            Ok(())
-        }
-
-        async fn on_submit_result(&mut self, _result: &proto::SubmitResult) -> AppResult<()> {
-            Ok(())
-        }
-
-        fn take_stream_capture(&mut self) -> crate::app::commands::StreamCapture {
-            crate::app::commands::StreamCapture::default()
-        }
-
-        fn take_submit_capture(&mut self) -> crate::app::commands::SubmitCapture {
-            crate::app::commands::SubmitCapture::default()
         }
     }
 
@@ -1010,13 +930,13 @@ mod tests {
             name: None,
             identity_path: Some(identity_path.clone()),
             default_base_path: None,
+            is_default: false,
         };
 
         let resolver = AddClusterResolver::new(
             &TestInteraction,
             &StdFilesystem,
             &StdNetwork,
-            &TestOutput,
             UiMode::NonInteractive,
         );
         let resolved = resolver.resolve(args, &HashSet::new()).await.unwrap();
@@ -1037,13 +957,13 @@ mod tests {
             name: None,
             identity_path: Some("~/.ssh/id_rsa".into()),
             default_base_path: None,
+            is_default: false,
         };
 
         let resolver = AddClusterResolver::new(
             &TestInteraction,
             &StdFilesystem,
             &StdNetwork,
-            &TestOutput,
             UiMode::NonInteractive,
         );
         let err = resolver.resolve(args, &HashSet::new()).await.unwrap_err();
@@ -1090,13 +1010,13 @@ mod tests {
             name: Some("local".into()),
             identity_path: Some(identity_path),
             default_base_path: None,
+            is_default: false,
         };
 
         let resolver = AddClusterResolver::new(
             &TestInteraction,
             &StdFilesystem,
             &StdNetwork,
-            &TestOutput,
             UiMode::NonInteractive,
         );
         let resolved = resolver.resolve(args, &HashSet::new()).await.unwrap();
@@ -1113,6 +1033,17 @@ mod tests {
         let scientist = parts.next().unwrap_or_default();
         assert!(ADJECTIVES.contains(&adjective));
         assert!(SCIENTISTS.contains(&scientist));
+    }
+
+    #[test]
+    fn validate_name_rejects_whitespace() {
+        let err = validate_name("bad name", &HashSet::new()).unwrap_err();
+        assert!(err.message.contains("whitespace"));
+    }
+
+    #[test]
+    fn validate_name_accepts_hostname_style() {
+        assert!(validate_name("gpu.cluster-01", &HashSet::new()).is_ok());
     }
 
     fn temp_dir() -> PathBuf {

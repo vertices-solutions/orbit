@@ -20,11 +20,25 @@ pub(super) fn print_with_green_check_stdout(message: &str) -> Result<()> {
     write_stdout_with_green_ticks(line.as_bytes())
 }
 
+pub(super) fn print_with_red_cross_stdout(message: &str) -> Result<()> {
+    let mut line = String::from("✗ ");
+    line.push_str(message);
+    line.push('\n');
+    write_stdout_with_green_ticks(line.as_bytes())
+}
+
 pub(super) fn print_with_green_check_stderr(message: &str) -> Result<()> {
     let mut line = String::from("✓ ");
     line.push_str(message);
     line.push('\n');
-    write_stderr_with_green_ticks(line.as_bytes())
+    write_stderr_with_colored_symbols(line.as_bytes())
+}
+
+pub(super) fn print_with_red_cross_stderr(message: &str) -> Result<()> {
+    let mut line = String::from("✗ ");
+    line.push_str(message);
+    line.push('\n');
+    write_stderr_with_colored_symbols(line.as_bytes())
 }
 
 fn write_stdout_with_green_ticks(bytes: &[u8]) -> Result<()> {
@@ -36,7 +50,7 @@ fn write_stdout_with_green_ticks(bytes: &[u8]) -> Result<()> {
         Ok(v) => v,
         Err(_) => return write_all(&mut stdout, bytes),
     };
-    if !text.contains('✓') {
+    if !text.contains('✓') && !text.contains('✗') {
         return write_all(&mut stdout, bytes);
     }
     for line in text.split_inclusive('\n') {
@@ -48,6 +62,14 @@ fn write_stdout_with_green_ticks(bytes: &[u8]) -> Result<()> {
                 ResetColor,
                 Print(rest)
             )?;
+        } else if let Some(rest) = line.strip_prefix('✗') {
+            execute!(
+                stdout,
+                SetForegroundColor(Color::Red),
+                Print("✗"),
+                ResetColor,
+                Print(rest)
+            )?;
         } else {
             write_all(&mut stdout, line.as_bytes())?;
         }
@@ -55,7 +77,7 @@ fn write_stdout_with_green_ticks(bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn write_stderr_with_green_ticks(bytes: &[u8]) -> Result<()> {
+fn write_stderr_with_colored_symbols(bytes: &[u8]) -> Result<()> {
     let mut stderr = std::io::stderr();
     if !stderr.is_terminal() {
         return write_all(&mut stderr, bytes);
@@ -64,7 +86,7 @@ fn write_stderr_with_green_ticks(bytes: &[u8]) -> Result<()> {
         Ok(v) => v,
         Err(_) => return write_all(&mut stderr, bytes),
     };
-    if !text.contains('✓') {
+    if !text.contains('✓') && !text.contains('✗') {
         return write_all(&mut stderr, bytes);
     }
     for line in text.split_inclusive('\n') {
@@ -73,6 +95,14 @@ fn write_stderr_with_green_ticks(bytes: &[u8]) -> Result<()> {
                 stderr,
                 SetForegroundColor(Color::Green),
                 Print("✓"),
+                ResetColor,
+                Print(rest)
+            )?;
+        } else if let Some(rest) = line.strip_prefix('✗') {
+            execute!(
+                stderr,
+                SetForegroundColor(Color::Red),
+                Print("✗"),
                 ResetColor,
                 Print(rest)
             )?;

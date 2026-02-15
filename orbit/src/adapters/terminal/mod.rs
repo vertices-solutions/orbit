@@ -19,6 +19,7 @@ use crate::app::ports::{
 };
 use console::{
     Spinner, SpinnerTarget, print_with_green_check_stderr, print_with_green_check_stdout,
+    print_with_red_cross_stderr,
 };
 use enum_picker::pick_enum_value;
 use format::{
@@ -125,9 +126,6 @@ impl OutputPort for TerminalOutput {
                     print!("{}", format_projects_table(projects));
                 }
             }
-            CommandResult::ProjectCheck { checked } => {
-                println!("{checked} PASSED");
-            }
             CommandResult::ProjectDelete { name } => {
                 println!("Project '{}' deleted.", name);
             }
@@ -172,9 +170,26 @@ struct TerminalPromptFeedback {
 }
 
 impl PromptFeedbackPort for TerminalPromptFeedback {
+    fn start_information_gathering(&mut self, message: &str) -> AppResult<()> {
+        self.inner
+            .start_information_gathering(message)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    fn stop_information_gathering(&mut self) -> AppResult<()> {
+        self.inner.stop_information_gathering();
+        Ok(())
+    }
+
     fn start_validation(&mut self, message: &str) -> AppResult<()> {
         self.inner
             .start_validation(message)
+            .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    fn stop_validation(&mut self) -> AppResult<()> {
+        self.inner
+            .stop_validation()
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
@@ -184,9 +199,9 @@ impl PromptFeedbackPort for TerminalPromptFeedback {
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 
-    fn finish_failure(&mut self) -> AppResult<()> {
+    fn finish_failure(&mut self, message: &str) -> AppResult<()> {
         self.inner
-            .finish_failure()
+            .finish_failure(message)
             .map_err(|err| AppError::local_error(err.to_string()))
     }
 }
@@ -236,6 +251,12 @@ impl InteractionPort for TerminalInteraction {
                 )
             })
             .map_err(|err| AppError::local_error(err.to_string()))
+    }
+
+    async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>> {
+        Ok(Box::new(TerminalPromptFeedback {
+            inner: prompt::PromptFeedback::for_inline(),
+        }))
     }
 
     async fn select_sbatch(&self, options: &[String]) -> AppResult<Option<String>> {
@@ -333,6 +354,26 @@ fn is_submit_conflict_message(text: &str) -> bool {
     !path.trim().is_empty()
 }
 
+enum StderrStatusLine<'a> {
+    GreenCheck(&'a str),
+    RedCross(&'a str),
+}
+
+fn parse_stderr_status_line(bytes: &[u8]) -> Option<StderrStatusLine<'_>> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let line = text.strip_suffix('\n')?;
+    if line.contains('\n') {
+        return None;
+    }
+    if let Some(message) = line.strip_prefix("✓ ") {
+        return Some(StderrStatusLine::GreenCheck(message));
+    }
+    if let Some(message) = line.strip_prefix("✗ ") {
+        return Some(StderrStatusLine::RedCross(message));
+    }
+    None
+}
+
 #[tonic::async_trait]
 impl StreamOutputPort for TerminalStreamOutput {
     async fn on_stdout(&mut self, bytes: &[u8]) -> AppResult<()> {
@@ -361,10 +402,22 @@ impl StreamOutputPort for TerminalStreamOutput {
             }
         }
         if printed {
-            std::io::stderr()
-                .write_all(bytes)
-                .and_then(|_| std::io::stderr().flush())
-                .map_err(|err| AppError::local_error(err.to_string()))?;
+            match parse_stderr_status_line(bytes) {
+                Some(StderrStatusLine::GreenCheck(message)) => {
+                    print_with_green_check_stderr(message)
+                        .map_err(|err| AppError::local_error(err.to_string()))?;
+                }
+                Some(StderrStatusLine::RedCross(message)) => {
+                    print_with_red_cross_stderr(message)
+                        .map_err(|err| AppError::local_error(err.to_string()))?;
+                }
+                None => {
+                    std::io::stderr()
+                        .write_all(bytes)
+                        .and_then(|_| std::io::stderr().flush())
+                        .map_err(|err| AppError::local_error(err.to_string()))?;
+                }
+            }
         }
         self.stream.stderr.extend_from_slice(bytes);
         self.record_submit(|capture| capture.stderr.extend_from_slice(bytes));

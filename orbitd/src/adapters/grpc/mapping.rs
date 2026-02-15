@@ -58,6 +58,8 @@ pub fn cluster_status_to_response(status: &ClusterStatus) -> ListClustersUnitRes
         accounting_available: host.accounting_available,
         default_base_path: host.default_base_path.to_owned(),
         reachable: status.reachable,
+        is_default: host.is_default,
+        default_scratch_directory: host.default_scratch_directory.to_owned(),
     }
 }
 
@@ -86,6 +88,7 @@ pub fn project_record_to_response(project: &ProjectRecord) -> proto::ProjectReco
         updated_at: project.updated_at.clone(),
         version_tag: project.version_tag.clone(),
         tarball_hash: project.tarball_hash.clone(),
+        tarball_hash_function: project.tarball_hash_function.clone(),
         tool_version: project.tool_version.clone(),
         template_config_json: project.template_config_json.clone(),
         submit_sbatch_script: project.submit_sbatch_script.clone(),
@@ -169,6 +172,7 @@ mod tests {
         assert_eq!(response.name, "cluster-a");
         assert_eq!(response.connected, true);
         assert_eq!(response.reachable, false);
+        assert!(!response.is_default);
         assert_eq!(
             response.default_base_path.as_deref(),
             Some("/home/alice/jobs")
@@ -245,6 +249,7 @@ mod tests {
             updated_at: "2026-02-07T01:00:00Z".to_string(),
             version_tag: Some("v1".to_string()),
             tarball_hash: Some("abc123".to_string()),
+            tarball_hash_function: Some("blake3".to_string()),
             tool_version: Some("1.0.0".to_string()),
             template_config_json: Some("{\"key\":\"value\"}".to_string()),
             submit_sbatch_script: Some("submit.sbatch".to_string()),
@@ -261,6 +266,7 @@ mod tests {
         assert_eq!(response.updated_at, "2026-02-07T01:00:00Z");
         assert_eq!(response.version_tag.as_deref(), Some("v1"));
         assert_eq!(response.tarball_hash.as_deref(), Some("abc123"));
+        assert_eq!(response.tarball_hash_function.as_deref(), Some("blake3"));
         assert_eq!(response.tool_version.as_deref(), Some("1.0.0"));
         assert_eq!(
             response.template_config_json.as_deref(),
@@ -301,6 +307,8 @@ mod tests {
             updated_at: "2026-02-07T00:00:00Z".to_string(),
             accounting_available: true,
             default_base_path: Some("/home/alice/jobs".to_string()),
+            default_scratch_directory: Some("/scratch/alice".to_string()),
+            is_default: false,
         }
     }
 }

@@ -21,7 +21,7 @@
     "permalink": "/next/cli/commands/project/orbit-project"
   },
   "next": {
-    "title": "orbit project check",
-    "permalink": "/next/cli/commands/project/orbit-project-check"
+    "title": "orbit project delete",
+    "permalink": "/next/cli/commands/project/orbit-project-delete"
   }
 }

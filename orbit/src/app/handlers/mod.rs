@@ -2,7 +2,6 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
-use serde_json::json;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
@@ -13,9 +12,8 @@ use crate::app::errors::{
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
-    AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector,
-    build_default_orbitfile_contents, check_registered_project, default_base_path_from_home,
-    discover_project_from_submit_root, load_project_from_root, local_validate_default_base_path,
+    AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector, TemplateSpecialContext,
+    build_default_orbitfile_contents, discover_project_from_submit_root, load_project_from_root,
     merge_submit_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
     sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
     validate_project_name,
@@ -73,16 +71,7 @@ pub async fn handle_job_submit(
     cmd: SubmitJobCommand,
 ) -> AppResult<CommandResult> {
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.cluster)
-        .cloned()
-        .ok_or_else(|| {
-            AppError::cluster_not_found(format!(
-                "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.cluster
-            ))
-        })?;
+    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--to")?;
 
     validate_cluster_live(ctx, &cluster).await?;
 
@@ -115,6 +104,7 @@ pub async fn handle_job_submit(
     let mut project_name = None;
     let mut default_retrieve_path = None;
     let mut template_values_json = None;
+
     if let Some(project) = discovered_project {
         validate_project_name(&project.name)?;
         filters = merge_submit_filters(filters, &project.rules);
@@ -132,6 +122,12 @@ pub async fn handle_job_submit(
                 ctx.interaction.as_ref(),
                 ctx.output.as_ref(),
                 ctx.ui_mode,
+                TemplateSpecialContext {
+                    cluster_name: &cluster.name,
+                    accounting_available: cluster.accounting_available,
+                    default_scratch_directory: cluster.default_scratch_directory.as_deref(),
+                    orbitd: ctx.orbitd.as_ref(),
+                },
                 true,
             )
             .await?;
@@ -166,7 +162,7 @@ pub async fn handle_job_submit(
     let capture = ctx
         .orbitd
         .submit_job(
-            cmd.cluster.clone(),
+            cluster.name.clone(),
             resolved_local_path_display.clone(),
             cmd.remote_path,
             cmd.new_directory,
@@ -186,7 +182,7 @@ pub async fn handle_job_submit(
     }
 
     Ok(CommandResult::JobSubmit {
-        cluster: cmd.cluster,
+        cluster: cluster.name,
         local_path: resolved_local_path_display,
         sbatchscript,
         capture,
@@ -369,11 +365,8 @@ pub async fn handle_cluster_get(
     cmd: ClusterGetCommand,
 ) -> AppResult<CommandResult> {
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.name)
-        .cloned()
-        .ok_or_else(|| AppError::cluster_not_found(format!("cluster '{}' not found", cmd.name)))?;
+    let cluster =
+        resolve_cluster_by_name_or_default(&clusters, cmd.name.as_deref(), "'cluster get <name>'")?;
     Ok(CommandResult::ClusterDetails { cluster })
 }
 
@@ -381,11 +374,17 @@ pub async fn handle_cluster_ls(
     ctx: &AppContext,
     cmd: ClusterLsCommand,
 ) -> AppResult<CommandResult> {
+    let clusters = ctx.orbitd.list_clusters("", true).await?;
+    let cluster = resolve_cluster_by_name_or_default(
+        &clusters,
+        cmd.name.as_deref(),
+        "'cluster ls <name> [path]'",
+    )?;
     let mut stream_output = ctx.output.stream_output(StreamKind::Generic);
     let capture = ctx
         .orbitd
         .ls(
-            cmd.name,
+            cluster.name,
             None,
             cmd.path,
             &mut *stream_output,
@@ -407,7 +406,15 @@ pub async fn handle_cluster_add(
     cmd: AddClusterCommand,
 ) -> AppResult<CommandResult> {
     ctx.output.info("Adding new cluster...").await?;
+    let force_default = cmd.is_default;
     let clusters = ctx.orbitd.list_clusters("", true).await?;
+    let planned_is_default = if clusters.is_empty() || force_default {
+        Some(true)
+    } else if ctx.ui_mode.is_interactive() {
+        None
+    } else {
+        Some(false)
+    };
     let existing_names = clusters
         .iter()
         .map(|cluster| cluster.name.clone())
@@ -416,10 +423,9 @@ pub async fn handle_cluster_add(
         ctx.interaction.as_ref(),
         ctx.fs.as_ref(),
         ctx.network.as_ref(),
-        ctx.output.as_ref(),
         ctx.ui_mode,
     );
-    let mut resolved = resolver.resolve(cmd, &existing_names).await?;
+    let resolved = resolver.resolve(cmd, &existing_names).await?;
     if let Some(host) = resolved.hostname.as_deref().or(resolved.ip.as_deref()) {
         if let Some(existing) = clusters.iter().find(|cluster| {
             cluster.username == resolved.username
@@ -433,68 +439,8 @@ pub async fn handle_cluster_add(
         }
     }
 
-    let mut needs_base_path_prompt = resolved.default_base_path.is_none();
-    if let Some(ref value) = resolved.default_base_path {
-        if let Err(err) = local_validate_default_base_path(value) {
-            if !ctx.ui_mode.is_interactive() {
-                return Err(err);
-            }
-            ctx.output
-                .warn(&format!(
-                    "Default base path '{}' is invalid: {}",
-                    value, err.message
-                ))
-                .await?;
-            needs_base_path_prompt = true;
-        }
-    }
-
-    if needs_base_path_prompt {
-        let home_dir = ctx
-            .orbitd
-            .resolve_home_dir(
-                Some(resolved.name.clone()),
-                resolved.username.clone(),
-                resolved.hostname.clone(),
-                resolved.ip.clone(),
-                Some(resolved.identity_path.clone()),
-                resolved.port,
-                ctx.interaction.as_ref(),
-            )
-            .await?;
-        loop {
-            let default_path = default_base_path_from_home(&home_dir);
-            let mut prompt = ctx
-                .interaction
-                .prompt_line_with_default_confirmable(
-                    "Default base path: ",
-                    "Remote base folder for projects.",
-                    &default_path,
-                )
-                .await?;
-            let base_path = prompt.input.trim().to_string();
-            prompt.start_validation("Validating default base path...")?;
-            match local_validate_default_base_path(&base_path) {
-                Ok(()) => {
-                    prompt.finish_success(&format!("Default base path: {base_path}"))?;
-                    resolved.default_base_path = Some(base_path);
-                    break;
-                }
-                Err(err) => {
-                    prompt.finish_failure()?;
-                    ctx.output
-                        .warn(&format!(
-                            "Default base path '{}' is invalid: {}",
-                            base_path, err.message
-                        ))
-                        .await?;
-                }
-            }
-        }
-    }
-
     let mut stream_output = ctx.output.stream_output(StreamKind::Generic);
-    let capture = ctx
+    let add_cluster = ctx
         .orbitd
         .add_cluster(
             resolved.name.clone(),
@@ -504,17 +450,30 @@ pub async fn handle_cluster_add(
             Some(resolved.identity_path.clone()),
             resolved.port,
             resolved.default_base_path.clone(),
+            resolved.default_scratch_directory.clone(),
+            ctx.ui_mode.is_interactive(),
+            planned_is_default,
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
         .await?;
-    if capture.exit_code.unwrap_or(0) != 0 {
+    if add_cluster.stream.exit_code.unwrap_or(0) != 0 {
         return Err(stream_error(
-            &capture,
+            &add_cluster.stream,
             ErrorContext::Cluster,
             "command failed",
         ));
     }
+
+    let default_base_path = add_cluster
+        .default_base_path
+        .clone()
+        .or(resolved.default_base_path.clone());
+    let default_scratch_directory = add_cluster.default_scratch_directory;
+    let is_default = add_cluster
+        .is_default
+        .or(planned_is_default)
+        .unwrap_or(false);
 
     Ok(CommandResult::ClusterAdd {
         name: resolved.name,
@@ -523,7 +482,9 @@ pub async fn handle_cluster_add(
         ip: resolved.ip,
         port: resolved.port,
         identity_path: resolved.identity_path,
-        default_base_path: resolved.default_base_path,
+        default_base_path,
+        default_scratch_directory,
+        is_default,
     })
 }
 
@@ -557,21 +518,16 @@ pub async fn handle_cluster_set(
     }
 
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.name)
-        .cloned()
-        .ok_or_else(|| {
-            AppError::cluster_not_found(format!(
-                "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.name
-            ))
-        })?;
+    let cluster = resolve_cluster_by_name_or_default(
+        &clusters,
+        cmd.name.as_deref(),
+        "'cluster set <name> ...'",
+    )?;
 
     if cmd.host.is_none() && cluster.host.is_none() {
         return Err(AppError::invalid_argument(format!(
             "cluster '{}' has no address; pass --host to update it",
-            cmd.name
+            cluster.name
         )));
     }
 
@@ -632,7 +588,7 @@ pub async fn handle_cluster_delete(
         }
     }
 
-    let deleted = ctx.orbitd.delete_cluster(&cmd.name).await?;
+    let deleted = ctx.orbitd.delete_cluster(&cmd.name, cmd.force).await?;
     if !deleted {
         return Err(AppError::cluster_not_found(format!(
             "cluster name '{}' is not known",
@@ -734,16 +690,7 @@ pub async fn handle_project_submit(
 ) -> AppResult<CommandResult> {
     let (project_name, project_tag) = parse_project_ref(&cmd.project)?;
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = clusters
-        .iter()
-        .find(|cluster| cluster.name == cmd.cluster)
-        .cloned()
-        .ok_or_else(|| {
-            AppError::cluster_not_found(format!(
-                "cluster '{}' not found; use 'cluster add' to create it",
-                cmd.cluster
-            ))
-        })?;
+    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--to")?;
     validate_cluster_live(ctx, &cluster).await?;
 
     let project = ctx.orbitd.get_project(&cmd.project).await?;
@@ -778,6 +725,12 @@ pub async fn handle_project_submit(
             ctx.interaction.as_ref(),
             ctx.output.as_ref(),
             ctx.ui_mode,
+            TemplateSpecialContext {
+                cluster_name: &cluster.name,
+                accounting_available: cluster.accounting_available,
+                default_scratch_directory: cluster.default_scratch_directory.as_deref(),
+                orbitd: ctx.orbitd.as_ref(),
+            },
             false,
         )
         .await?;
@@ -804,7 +757,7 @@ pub async fn handle_project_submit(
         .submit_project(
             project_name,
             project_tag,
-            cmd.cluster.clone(),
+            cluster.name.clone(),
             cmd.remote_path,
             cmd.new_directory,
             cmd.force,
@@ -822,7 +775,7 @@ pub async fn handle_project_submit(
     }
 
     Ok(CommandResult::JobSubmit {
-        cluster: cmd.cluster,
+        cluster: cluster.name,
         local_path: project.path.clone(),
         sbatchscript,
         capture,
@@ -838,95 +791,6 @@ pub async fn handle_project_list(
     Ok(CommandResult::ProjectList {
         projects: summarized,
     })
-}
-
-pub async fn handle_project_check(
-    ctx: &AppContext,
-    cmd: ProjectCheckCommand,
-) -> AppResult<CommandResult> {
-    if ctx.ui_mode.is_interactive() {
-        let scope = if cmd.name.is_some() {
-            "the selected project"
-        } else {
-            "all registered projects"
-        };
-        ctx.output
-            .info(&format!(
-                "`orbit project check` validates {scope}: project path exists, Orbitfile exists and parses, [project].name matches the registry entry, and [submit].sbatch_script (if set) resolves to a file inside the project root."
-            ))
-            .await?;
-    }
-
-    let projects = match cmd.name {
-        Some(name) => vec![ctx.orbitd.get_project(&name).await?],
-        None => ctx.orbitd.list_projects().await?,
-    };
-
-    let mut statuses = Vec::with_capacity(projects.len());
-    for project in projects {
-        if ctx.ui_mode.is_interactive() {
-            ctx.output
-                .info(&format!("checking {}...", project.name))
-                .await?;
-        }
-        let status = check_registered_project(
-            ctx.fs.as_ref(),
-            &project.name,
-            &PathBuf::from(&project.path),
-        );
-        if ctx.ui_mode.is_interactive() {
-            if status.ok {
-                ctx.output
-                    .success(&format!("{} healthy", status.name))
-                    .await?;
-            } else if let Some(reason) = status.reason.as_deref() {
-                ctx.output
-                    .warn(&format!("✗ {} failed check: {}", status.name, reason))
-                    .await?;
-            } else {
-                ctx.output
-                    .warn(&format!("✗ {} failed check", status.name))
-                    .await?;
-            }
-        }
-        statuses.push(status);
-    }
-
-    let checked = statuses.len();
-    let failed = statuses.iter().filter(|status| !status.ok).count();
-    let passed = checked.saturating_sub(failed);
-    if failed > 0 {
-        if ctx.ui_mode.is_interactive() {
-            ctx.output
-                .warn(&format!(
-                    "{checked} CHECKED, {failed} FAILED, {passed} PASSED"
-                ))
-                .await?;
-        }
-        let details = statuses
-            .iter()
-            .map(|status| {
-                if status.ok {
-                    json!({
-                        "name": status.name,
-                        "ok": true
-                    })
-                } else {
-                    json!({
-                        "name": status.name,
-                        "ok": false,
-                        "reason": status.reason.clone().unwrap_or_else(|| "unknown failure".to_string())
-                    })
-                }
-            })
-            .collect::<Vec<_>>();
-        return Err(
-            AppError::project_check_failed("One or more projects failed checks.")
-                .with_details(json!(details)),
-        );
-    }
-
-    Ok(CommandResult::ProjectCheck { checked })
 }
 
 pub async fn handle_project_delete(
@@ -973,6 +837,42 @@ pub async fn handle_project_delete(
 
 fn bytes_to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).to_string()
+}
+
+fn resolve_cluster_by_name_or_default(
+    clusters: &[ListClustersUnitResponse],
+    requested_name: Option<&str>,
+    explicit_hint: &str,
+) -> AppResult<ListClustersUnitResponse> {
+    if let Some(name) = requested_name {
+        return clusters
+            .iter()
+            .find(|cluster| cluster.name == name)
+            .cloned()
+            .ok_or_else(|| {
+                AppError::cluster_not_found(format!(
+                    "cluster '{}' not found; use 'cluster add' to create it",
+                    name
+                ))
+            });
+    }
+
+    if clusters.is_empty() {
+        return Err(AppError::cluster_not_found(
+            "no clusters configured; use 'cluster add' to create one",
+        ));
+    }
+
+    clusters
+        .iter()
+        .find(|cluster| cluster.is_default)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::cluster_not_found(format!(
+                "no default cluster configured; specify a cluster with {}",
+                explicit_hint
+            ))
+        })
 }
 
 fn resolve_project_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {

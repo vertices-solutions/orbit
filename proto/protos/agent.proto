@@ -28,6 +28,11 @@ message StreamEvent {
     int32 exit_code = 3; // Exit code (emitted once when known)
     MfaPrompt mfa = 4; // MFA prompt round
     string error = 5; // Fatal error (connection/auth/exec)
+    AddClusterScratchOptions add_cluster_scratch_options = 6; // AddCluster scratch candidates
+    AddClusterScratchValidation add_cluster_scratch_validation = 7; // AddCluster scratch validation result
+    AddClusterBasePathPrompt add_cluster_base_path_prompt = 8; // AddCluster default base path prompt
+    AddClusterBasePathValidation add_cluster_base_path_validation = 9; // AddCluster default base path validation result
+    AddClusterDefaultPrompt add_cluster_default_prompt = 10; // AddCluster default cluster prompt
   }
 }
 
@@ -179,6 +184,47 @@ message AddClusterInit {
   optional string identity_path = 5;
   uint32 port = 6;
   optional string default_base_path = 7;
+  optional string default_scratch_directory = 8;
+  bool interactive_scratch_selection = 9;
+}
+
+message AddClusterScratchOptions {
+  repeated string directories = 1;
+}
+
+message AddClusterScratchSelection {
+  oneof selection {
+    string directory = 1;
+    bool none = 2;
+  }
+}
+
+message AddClusterScratchValidation {
+  bool accepted = 1;
+  optional string directory = 2;
+  optional string error = 3;
+}
+
+message AddClusterBasePathPrompt {
+  string suggested_path = 1;
+}
+
+message AddClusterBasePathSelection {
+  string path = 1;
+}
+
+message AddClusterBasePathValidation {
+  bool accepted = 1;
+  optional string path = 2;
+  optional string error = 3;
+}
+
+message AddClusterDefaultPrompt {
+  optional string current_default_name = 1; // optional context for client-facing prompt text
+}
+
+message AddClusterDefaultSelection {
+  bool is_default = 1;
 }
 
 message ResolveHomeDirRequestInit {
@@ -216,6 +262,8 @@ message ListClustersUnitResponse {
   bool accounting_available = 8;
   optional string default_base_path = 9;
   bool reachable = 10;
+  bool is_default = 11;
+  optional string default_scratch_directory = 12;
 }
 
 message ListJobsRequest {
@@ -227,8 +275,33 @@ message ListClustersResponse {
   repeated ListClustersUnitResponse clusters = 1;
 }
 
+message ListPartitionsRequest {
+  string name = 1; // Accepts cluster name as input
+}
+
+message ListPartitionsUnitResponse {
+  string name = 1; // Partition name
+}
+
+message ListPartitionsResponse {
+  repeated ListPartitionsUnitResponse partitions = 1; // List of partition names
+}
+
+message ListAccountsRequest {
+  string name = 1; // Accepts cluster name as input
+}
+
+message ListAccountsUnitResponse {
+  string name = 1; // Account name
+}
+
+message ListAccountsResponse {
+  repeated ListAccountsUnitResponse accounts = 1; // List of account names
+}
+
 message DeleteClusterRequest {
   string name = 1;
+  bool force = 2; // allow deleting cluster even if it has running jobs
 }
 
 message DeleteClusterResponse {
@@ -285,6 +358,7 @@ message ProjectRecord {
   optional string default_retrieve_path = 12;
   repeated string sync_include = 13;
   repeated string sync_exclude = 14;
+  optional string tarball_hash_function = 15;
 }
 
 message BuildProjectRequest {
@@ -347,6 +421,9 @@ message AddClusterRequest {
   oneof msg {
     AddClusterInit init = 1;
     MfaAnswer mfa = 2;
+    AddClusterScratchSelection scratch_selection = 3;
+    AddClusterBasePathSelection base_path_selection = 4;
+    AddClusterDefaultSelection default_selection = 5; // final default choice, sent at the end
   }
 }
 
@@ -371,6 +448,8 @@ service Agent {
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ResolveHomeDir(stream ResolveHomeDirRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
+  rpc ListPartitions(ListPartitionsRequest) returns (ListPartitionsResponse); // Helper endpoint for listing partitions
+  rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse); // Helper endpoint for listing accounts
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);

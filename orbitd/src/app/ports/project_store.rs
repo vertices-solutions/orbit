@@ -16,6 +16,7 @@ pub trait ProjectStorePort: Send + Sync {
         &self,
         project_name: &str,
     ) -> AppResult<Option<ProjectRecord>>;
+    // This returns a unique record for each project-record pair.
     async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>>;
     async fn delete_project_by_name(&self, name: &str) -> AppResult<usize>;
     async fn delete_projects_by_base_name(&self, name: &str) -> AppResult<usize>;

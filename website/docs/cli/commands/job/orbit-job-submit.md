@@ -7,7 +7,7 @@ Submit a project to a cluster
 
 Parent command: [`orbit job`](./orbit-job)
 
-**Usage:** `orbit job submit [OPTIONS] --to <CLUSTER> <LOCAL_PATH>`
+**Usage:** `orbit job submit [OPTIONS] <LOCAL_PATH>`
 
 ## Arguments
 

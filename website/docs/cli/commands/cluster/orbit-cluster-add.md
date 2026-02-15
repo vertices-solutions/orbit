@@ -19,4 +19,5 @@ Parent command: [`orbit cluster`](./orbit-cluster)
 - `--identity-path <IDENTITY_PATH>`: Defaults to ~/.ssh/id_ed25519
 - `--non-interactive`: Run without prompts, fail on MFA, and output JSON only.
 - `--default-base-path <DEFAULT_BASE_PATH>`
+- `--default`: Mark this cluster as the default cluster
 - `-h, --help`: Print help

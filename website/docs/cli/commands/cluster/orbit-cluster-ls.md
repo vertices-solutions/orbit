@@ -7,11 +7,11 @@ List files on a cluster
 
 Parent command: [`orbit cluster`](./orbit-cluster)
 
-**Usage:** `orbit cluster ls [OPTIONS] <NAME> [PATH]`
+**Usage:** `orbit cluster ls [OPTIONS] [NAME] [PATH]`
 
 ## Arguments
 
-- `<NAME>`
+- `[NAME]`
 - `[PATH]`: Path to list (absolute or relative to the default base path)
 
 ## Flags and Options

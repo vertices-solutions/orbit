@@ -7,11 +7,11 @@ Update cluster parameters
 
 Parent command: [`orbit cluster`](./orbit-cluster)
 
-**Usage:** `orbit cluster set [OPTIONS] <NAME>`
+**Usage:** `orbit cluster set [OPTIONS] [NAME]`
 
 ## Arguments
 
-- `<NAME>`
+- `[NAME]`
 
 ## Flags and Options
 

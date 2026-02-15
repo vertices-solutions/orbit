@@ -55,6 +55,8 @@ mod tests {
             name: "cluster-a".to_string(),
             accounting_available: false,
             default_base_path: None,
+            is_default: false,
+            default_scratch_directory: None,
         }
     }
 

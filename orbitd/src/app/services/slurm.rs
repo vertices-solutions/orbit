@@ -166,6 +166,15 @@ pub fn parse_accounting_enabled_from_scontrol(config: &str) -> Option<bool> {
     None
 }
 
+pub fn parse_sshare_accounts(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
 pub fn parse_sacct_states(output: &str) -> Vec<String> {
     output
         .lines()
@@ -418,6 +427,28 @@ PartitionName=gpu_bynode_q5 AllowGroups=ALL AllowAccounts=ALL AllowQos=ALL Alloc
             Some(false)
         );
         assert_eq!(parse_accounting_enabled_from_scontrol(""), None);
+    }
+
+    #[test]
+    fn parse_sshare_accounts_returns_account_names() {
+        let output = "def-alex-ab_cpu\ndef-alex-ab_gpu\nrrg-alex_cpu\n";
+        assert_eq!(
+            parse_sshare_accounts(output),
+            vec![
+                "def-alex-ab_cpu".to_string(),
+                "def-alex-ab_gpu".to_string(),
+                "rrg-alex_cpu".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_sshare_accounts_ignores_blank_lines() {
+        let output = "account-a\n\n  \naccount-b \n";
+        assert_eq!(
+            parse_sshare_accounts(output),
+            vec!["account-a".to_string(), "account-b".to_string()]
+        );
     }
 
     #[test]

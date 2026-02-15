@@ -7,12 +7,16 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tempfile::TempDir;
-use tera::Context;
+use tera::{Context, Template, ast};
 use walkdir::WalkDir;
 
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 
 const ORBITFILE_NAME: &str = "Orbitfile";
+const SPECIAL_VARIABLE_PREFIX: &str = "ORBIT_";
+const SPECIAL_SLURM_PARTITION: &str = "ORBIT_SLURM_PARTITION";
+const SPECIAL_SLURM_ACCOUNT: &str = "ORBIT_SLURM_ACCOUNT";
+const SPECIAL_SCRATCH_DIRECTORY: &str = "ORBIT_SCRATCH_DIRECTORY";
 
 #[derive(Debug)]
 pub struct PreparedTemplate {
@@ -26,6 +30,8 @@ struct TemplateConfig {
     fields: BTreeMap<String, TemplateField>,
     files: Vec<String>,
     presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
+    #[serde(default)]
+    special_variables: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -125,14 +131,17 @@ pub fn prepare_template_submission(
         return Ok(None);
     };
 
-    let resolved_values =
-        resolve_template_values(&template_config, template_values_json, &project_root)?;
-    let staged = stage_project(
-        submit_root,
-        &project_root,
+    let templated_files =
+        resolve_templated_files(submit_root, &project_root, &template_config.files)?;
+    let special_variables =
+        validate_template_field_references(&project_root, &templated_files, &template_config)?;
+    let resolved_values = resolve_template_values(
         &template_config,
-        &resolved_values.values,
+        template_values_json,
+        &project_root,
+        &special_variables,
     )?;
+    let staged = stage_project(submit_root, &templated_files, &resolved_values.values)?;
 
     Ok(Some(PreparedTemplate {
         temp_dir: staged.temp_dir,
@@ -172,9 +181,20 @@ fn load_template_config(orbitfile_path: &Path) -> AppResult<Option<TemplateConfi
 }
 
 pub fn load_template_config_json(orbitfile_path: &Path) -> AppResult<Option<String>> {
-    let Some(config) = load_template_config(orbitfile_path)? else {
+    let Some(mut config) = load_template_config(orbitfile_path)? else {
         return Ok(None);
     };
+    let project_root = orbitfile_path.parent().ok_or_else(|| {
+        local_error(format!(
+            "failed to resolve Orbitfile parent directory for {}",
+            orbitfile_path.display()
+        ))
+    })?;
+    // Build-time validation should fail early when configured template targets are invalid.
+    let templated_files = resolve_templated_files(project_root, project_root, &config.files)?;
+    let special_variables =
+        validate_template_field_references(project_root, &templated_files, &config)?;
+    config.special_variables = special_variables.into_iter().collect();
     let json = serde_json::to_string(&config)
         .map_err(|err| local_error(format!("failed to serialize template config: {err}")))?;
     Ok(Some(json))
@@ -269,6 +289,7 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
         fields,
         files,
         presets,
+        special_variables: Vec::new(),
     }))
 }
 
@@ -276,11 +297,20 @@ fn resolve_template_values(
     config: &TemplateConfig,
     template_values_json: Option<&str>,
     project_root: &Path,
+    required_special_variables: &BTreeSet<String>,
 ) -> AppResult<ResolvedTemplateValues> {
     let mut values: BTreeMap<String, JsonValue> = BTreeMap::new();
     for (name, field) in &config.fields {
         if let Some(default) = field.default.as_ref() {
             values.insert(name.clone(), default.clone());
+        }
+    }
+
+    for name in required_special_variables {
+        if !is_known_special_variable(name) {
+            return Err(invalid_argument(format!(
+                "unknown special template variable '{name}'",
+            )));
         }
     }
 
@@ -295,15 +325,30 @@ fn resolve_template_values(
             return Err(invalid_argument("template values JSON must be an object"));
         };
         for (name, value) in map {
-            let Some(field) = config.fields.get(name) else {
+            if let Some(field) = config.fields.get(name) {
+                validate_json_value(field, value).map_err(|err| {
+                    invalid_argument(format!("template field '{name}' is invalid: {err}"))
+                })?;
+                values.insert(name.clone(), value.clone());
+                continue;
+            }
+            if is_known_special_variable(name) {
+                if value.as_str().is_none() {
+                    return Err(invalid_argument(format!(
+                        "special template variable '{name}' must be a string",
+                    )));
+                }
+                values.insert(name.clone(), value.clone());
+                continue;
+            }
+            if is_special_variable_name(name) {
                 return Err(invalid_argument(format!(
-                    "template field '{name}' was not found",
+                    "unknown special template variable '{name}'",
                 )));
-            };
-            validate_json_value(field, value).map_err(|err| {
-                invalid_argument(format!("template field '{name}' is invalid: {err}"))
-            })?;
-            values.insert(name.clone(), value.clone());
+            }
+            return Err(invalid_argument(format!(
+                "template field '{name}' was not found",
+            )));
         }
     }
 
@@ -317,6 +362,26 @@ fn resolve_template_values(
         return Err(invalid_argument(format!(
             "missing required template fields: {}",
             missing.join(", ")
+        )));
+    }
+
+    let mut missing_special = Vec::new();
+    for name in required_special_variables {
+        match values.get(name) {
+            Some(value) => {
+                if value.as_str().is_none() {
+                    return Err(invalid_argument(format!(
+                        "special template variable '{name}' must be a string",
+                    )));
+                }
+            }
+            None => missing_special.push(name.clone()),
+        }
+    }
+    if !missing_special.is_empty() {
+        return Err(invalid_argument(format!(
+            "missing required special template variables: {}",
+            missing_special.join(", ")
         )));
     }
 
@@ -370,11 +435,9 @@ fn resolve_template_values(
 
 fn stage_project(
     submit_root: &Path,
-    project_root: &Path,
-    config: &TemplateConfig,
+    templated_files: &BTreeSet<PathBuf>,
     values: &BTreeMap<String, JsonValue>,
 ) -> AppResult<StagedProject> {
-    let templated_files = resolve_templated_files(submit_root, project_root, &config.files)?;
     let temp_dir = TempDir::new()
         .map_err(|err| local_error(format!("failed to create staging directory: {err}")))?;
     let staging_root = temp_dir.path().to_path_buf();
@@ -449,6 +512,510 @@ fn resolve_templated_files(
         out.insert(rel.to_path_buf());
     }
     Ok(out)
+}
+
+fn validate_template_field_references(
+    project_root: &Path,
+    templated_files: &BTreeSet<PathBuf>,
+    config: &TemplateConfig,
+) -> AppResult<BTreeSet<String>> {
+    // Build-time field validation works in three broad steps:
+    // 1) Parse each configured template file into a Tera AST so we can inspect every expression.
+    // 2) Walk the AST and collect root identifiers that are referenced but not declared as fields.
+    // 3) Fail fast with a file-specific error when any undefined field is referenced.
+    //
+    // We intentionally perform this statically instead of rendering to catch issues in branches that
+    // might not execute with a particular set of runtime values.
+    let declared_fields: BTreeSet<String> = config.fields.keys().cloned().collect();
+    let mut referenced_special_variables = BTreeSet::new();
+    for rel_path in templated_files {
+        let abs_path = project_root.join(rel_path);
+        let content = std::fs::read_to_string(&abs_path).map_err(|err| {
+            local_error(format!(
+                "failed to read template {}: {err}",
+                abs_path.display()
+            ))
+        })?;
+        let template_name = rel_path.to_string_lossy().to_string();
+        let template = Template::new(
+            &template_name,
+            Some(abs_path.display().to_string()),
+            &content,
+        )
+        .map_err(|err| {
+            invalid_argument(format!(
+                "invalid template syntax in {}: {err}",
+                abs_path.display()
+            ))
+        })?;
+
+        let mut unknown = BTreeSet::new();
+        let mut unknown_special = BTreeSet::new();
+        let mut scopes = vec![BTreeSet::new()];
+        collect_unknown_fields_from_nodes(
+            &template.ast,
+            &declared_fields,
+            &mut scopes,
+            &mut unknown,
+            &mut referenced_special_variables,
+            &mut unknown_special,
+        );
+        if !unknown_special.is_empty() {
+            let names = unknown_special.into_iter().collect::<Vec<_>>().join(", ");
+            return Err(invalid_argument(format!(
+                "template file '{}' references unknown special template variables: {}",
+                abs_path.display(),
+                names
+            )));
+        }
+        if !unknown.is_empty() {
+            let names = unknown.into_iter().collect::<Vec<_>>().join(", ");
+            return Err(invalid_argument(format!(
+                "template file '{}' references undefined template fields: {}",
+                abs_path.display(),
+                names
+            )));
+        }
+    }
+    Ok(referenced_special_variables)
+}
+
+fn collect_unknown_fields_from_nodes(
+    nodes: &[ast::Node],
+    declared_fields: &BTreeSet<String>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    unknown: &mut BTreeSet<String>,
+    referenced_special: &mut BTreeSet<String>,
+    unknown_special: &mut BTreeSet<String>,
+) {
+    // This is the recursive AST walker used by build-time validation.
+    // It traverses every node, delegates expression analysis to helper functions, and maintains a
+    // scope stack for locals introduced by template constructs (for example: macro args, `set`
+    // bindings, loop variables, and `loop`) so those names are not mistaken for Orbitfile fields.
+    for node in nodes {
+        match node {
+            ast::Node::VariableBlock(_, expr) => {
+                collect_unknown_fields_from_expr(
+                    expr,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+            }
+            ast::Node::MacroDefinition(_, definition, _) => {
+                scopes.push(BTreeSet::new());
+                if let Some(scope) = scopes.last_mut() {
+                    for argument in definition.args.keys() {
+                        scope.insert(argument.clone());
+                    }
+                }
+                for default in definition.args.values().flatten() {
+                    collect_unknown_fields_from_expr(
+                        default,
+                        declared_fields,
+                        scopes,
+                        unknown,
+                        referenced_special,
+                        unknown_special,
+                    );
+                }
+                collect_unknown_fields_from_nodes(
+                    &definition.body,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                scopes.pop();
+            }
+            ast::Node::Set(_, set) => {
+                collect_unknown_fields_from_expr(
+                    &set.value,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                register_scope_symbol(scopes, &set.key, set.global);
+            }
+            ast::Node::FilterSection(_, section, _) => {
+                collect_unknown_fields_from_function_call(
+                    &section.filter,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                scopes.push(BTreeSet::new());
+                collect_unknown_fields_from_nodes(
+                    &section.body,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                scopes.pop();
+            }
+            ast::Node::Block(_, block, _) => {
+                scopes.push(BTreeSet::new());
+                collect_unknown_fields_from_nodes(
+                    &block.body,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                scopes.pop();
+            }
+            ast::Node::Forloop(_, forloop, _) => {
+                collect_unknown_fields_from_expr(
+                    &forloop.container,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                scopes.push(BTreeSet::new());
+                register_scope_symbol(scopes, &forloop.value, false);
+                if let Some(key) = &forloop.key {
+                    register_scope_symbol(scopes, key, false);
+                }
+                register_scope_symbol(scopes, "loop", false);
+                collect_unknown_fields_from_nodes(
+                    &forloop.body,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+                scopes.pop();
+
+                if let Some(empty_body) = &forloop.empty_body {
+                    scopes.push(BTreeSet::new());
+                    collect_unknown_fields_from_nodes(
+                        empty_body,
+                        declared_fields,
+                        scopes,
+                        unknown,
+                        referenced_special,
+                        unknown_special,
+                    );
+                    scopes.pop();
+                }
+            }
+            ast::Node::If(if_node, _) => {
+                for (_, expr, body) in &if_node.conditions {
+                    collect_unknown_fields_from_expr(
+                        expr,
+                        declared_fields,
+                        scopes,
+                        unknown,
+                        referenced_special,
+                        unknown_special,
+                    );
+                    scopes.push(BTreeSet::new());
+                    collect_unknown_fields_from_nodes(
+                        body,
+                        declared_fields,
+                        scopes,
+                        unknown,
+                        referenced_special,
+                        unknown_special,
+                    );
+                    scopes.pop();
+                }
+                if let Some((_, body)) = &if_node.otherwise {
+                    scopes.push(BTreeSet::new());
+                    collect_unknown_fields_from_nodes(
+                        body,
+                        declared_fields,
+                        scopes,
+                        unknown,
+                        referenced_special,
+                        unknown_special,
+                    );
+                    scopes.pop();
+                }
+            }
+            ast::Node::Super
+            | ast::Node::Text(_)
+            | ast::Node::Extends(_, _)
+            | ast::Node::Include(_, _, _)
+            | ast::Node::ImportMacro(_, _, _)
+            | ast::Node::Raw(_, _, _)
+            | ast::Node::Break(_)
+            | ast::Node::Continue(_)
+            | ast::Node::Comment(_, _) => {}
+        }
+    }
+}
+
+fn collect_unknown_fields_from_expr(
+    expr: &ast::Expr,
+    declared_fields: &BTreeSet<String>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    unknown: &mut BTreeSet<String>,
+    referenced_special: &mut BTreeSet<String>,
+    unknown_special: &mut BTreeSet<String>,
+) {
+    collect_unknown_fields_from_expr_val(
+        &expr.val,
+        declared_fields,
+        scopes,
+        unknown,
+        referenced_special,
+        unknown_special,
+    );
+    for filter in &expr.filters {
+        collect_unknown_fields_from_function_call(
+            filter,
+            declared_fields,
+            scopes,
+            unknown,
+            referenced_special,
+            unknown_special,
+        );
+    }
+}
+
+fn collect_unknown_fields_from_function_call(
+    function_call: &ast::FunctionCall,
+    declared_fields: &BTreeSet<String>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    unknown: &mut BTreeSet<String>,
+    referenced_special: &mut BTreeSet<String>,
+    unknown_special: &mut BTreeSet<String>,
+) {
+    for argument in function_call.args.values() {
+        collect_unknown_fields_from_expr(
+            argument,
+            declared_fields,
+            scopes,
+            unknown,
+            referenced_special,
+            unknown_special,
+        );
+    }
+}
+
+fn collect_unknown_fields_from_expr_val(
+    value: &ast::ExprVal,
+    declared_fields: &BTreeSet<String>,
+    scopes: &mut Vec<BTreeSet<String>>,
+    unknown: &mut BTreeSet<String>,
+    referenced_special: &mut BTreeSet<String>,
+    unknown_special: &mut BTreeSet<String>,
+) {
+    match value {
+        ast::ExprVal::Ident(ident) => {
+            maybe_add_unknown_field(
+                ident,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+        }
+        ast::ExprVal::Math(math_expr) => {
+            collect_unknown_fields_from_expr(
+                &math_expr.lhs,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+            collect_unknown_fields_from_expr(
+                &math_expr.rhs,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+        }
+        ast::ExprVal::Logic(logic_expr) => {
+            collect_unknown_fields_from_expr(
+                &logic_expr.lhs,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+            collect_unknown_fields_from_expr(
+                &logic_expr.rhs,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+        }
+        ast::ExprVal::Test(test) => {
+            maybe_add_unknown_field(
+                &test.ident,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+            for argument in &test.args {
+                collect_unknown_fields_from_expr(
+                    argument,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+            }
+        }
+        ast::ExprVal::MacroCall(macro_call) => {
+            for argument in macro_call.args.values() {
+                collect_unknown_fields_from_expr(
+                    argument,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+            }
+        }
+        ast::ExprVal::FunctionCall(function_call) => {
+            collect_unknown_fields_from_function_call(
+                function_call,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+        }
+        ast::ExprVal::Array(items) => {
+            for item in items {
+                collect_unknown_fields_from_expr(
+                    item,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+            }
+        }
+        ast::ExprVal::StringConcat(concat) => {
+            for item in &concat.values {
+                collect_unknown_fields_from_expr_val(
+                    item,
+                    declared_fields,
+                    scopes,
+                    unknown,
+                    referenced_special,
+                    unknown_special,
+                );
+            }
+        }
+        ast::ExprVal::In(expr_in) => {
+            collect_unknown_fields_from_expr(
+                &expr_in.lhs,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+            collect_unknown_fields_from_expr(
+                &expr_in.rhs,
+                declared_fields,
+                scopes,
+                unknown,
+                referenced_special,
+                unknown_special,
+            );
+        }
+        ast::ExprVal::String(_)
+        | ast::ExprVal::Int(_)
+        | ast::ExprVal::Float(_)
+        | ast::ExprVal::Bool(_) => {}
+    }
+}
+
+fn maybe_add_unknown_field(
+    ident: &str,
+    declared_fields: &BTreeSet<String>,
+    scopes: &[BTreeSet<String>],
+    unknown: &mut BTreeSet<String>,
+    referenced_special: &mut BTreeSet<String>,
+    unknown_special: &mut BTreeSet<String>,
+) {
+    let Some(root) = ident_root(ident) else {
+        return;
+    };
+    if is_known_special_variable(root) {
+        referenced_special.insert(root.to_string());
+        return;
+    }
+    if is_special_variable_name(root) {
+        unknown_special.insert(root.to_string());
+        return;
+    }
+    if declared_fields.contains(root) || scopes.iter().rev().any(|scope| scope.contains(root)) {
+        return;
+    }
+    unknown.insert(root.to_string());
+}
+
+fn ident_root(ident: &str) -> Option<&str> {
+    let trimmed = ident.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let split_idx = trimmed
+        .find(|ch: char| ch == '.' || ch == '[')
+        .unwrap_or(trimmed.len());
+    if split_idx == 0 {
+        None
+    } else {
+        Some(&trimmed[..split_idx])
+    }
+}
+
+fn register_scope_symbol(scopes: &mut [BTreeSet<String>], symbol: &str, global: bool) {
+    let trimmed = symbol.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if global {
+        if let Some(root_scope) = scopes.first_mut() {
+            root_scope.insert(trimmed.to_string());
+        }
+    } else if let Some(current_scope) = scopes.last_mut() {
+        current_scope.insert(trimmed.to_string());
+    }
+}
+
+fn is_special_variable_name(name: &str) -> bool {
+    name.trim_start().starts_with(SPECIAL_VARIABLE_PREFIX)
+}
+
+fn is_known_special_variable(name: &str) -> bool {
+    matches!(
+        name,
+        SPECIAL_SLURM_PARTITION | SPECIAL_SLURM_ACCOUNT | SPECIAL_SCRATCH_DIRECTORY
+    )
 }
 
 fn render_template_file(source: &Path, dest: &Path, context: &Context) -> AppResult<()> {
@@ -774,5 +1341,247 @@ mod tests {
         let rendered =
             std::fs::read_to_string(prepared.staging_root.join("config.txt")).expect("rendered");
         assert_eq!(rendered, "hello Ada");
+    }
+
+    #[test]
+    fn load_template_config_json_rejects_missing_template_file() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+
+        let err = load_template_config_json(&orbitfile_path).expect_err("missing file should fail");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("template file"));
+        assert!(err.message().contains("does not exist"));
+    }
+
+    #[test]
+    fn load_template_config_json_accepts_existing_template_file() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(root.path().join("config.txt"), "hello").expect("template file");
+
+        let json = load_template_config_json(&orbitfile_path)
+            .expect("load config")
+            .expect("template config");
+        assert!(json.contains("\"files\":[\"config.txt\"]"));
+    }
+
+    #[test]
+    fn load_template_config_json_rejects_undeclared_template_variables() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.fields.name]
+            type = "string"
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "hello {{ name }} {{ cluster.name }}",
+        )
+        .expect("template file");
+
+        let err =
+            load_template_config_json(&orbitfile_path).expect_err("undeclared field should fail");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("undefined template fields"));
+        assert!(err.message().contains("cluster"));
+    }
+
+    #[test]
+    fn load_template_config_json_allows_local_set_and_loop_variables() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.fields.name]
+            type = "string"
+
+            [template.fields.items]
+            type = "json"
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            r#"{% set greeting = "hello" %}{{ greeting }} {{ name }}{% for item in items %} {{ item }}{% endfor %}"#,
+        )
+        .expect("template file");
+
+        let json = load_template_config_json(&orbitfile_path)
+            .expect("load config")
+            .expect("template config");
+        assert!(json.contains("\"name\""));
+        assert!(json.contains("\"items\""));
+    }
+
+    #[test]
+    fn load_template_config_json_checks_all_branches_for_undeclared_variables() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "{% if false %}{{ missing_field }}{% endif %}",
+        )
+        .expect("template file");
+
+        let err =
+            load_template_config_json(&orbitfile_path).expect_err("missing field should fail");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("missing_field"));
+    }
+
+    #[test]
+    fn load_template_config_json_tracks_known_special_variables() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "partition={{ ORBIT_SLURM_PARTITION }} scratch={{ ORBIT_SCRATCH_DIRECTORY }}",
+        )
+        .expect("template file");
+
+        let json = load_template_config_json(&orbitfile_path)
+            .expect("load config")
+            .expect("template config");
+        assert!(json.contains("ORBIT_SLURM_PARTITION"));
+        assert!(json.contains("ORBIT_SCRATCH_DIRECTORY"));
+    }
+
+    #[test]
+    fn load_template_config_json_rejects_unknown_special_variables() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "account={{ ORBIT_UNKNOWN }}",
+        )
+        .expect("template file");
+
+        let err =
+            load_template_config_json(&orbitfile_path).expect_err("unknown special should fail");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("unknown special template variables"));
+        assert!(err.message().contains("ORBIT_UNKNOWN"));
+    }
+
+    #[test]
+    fn load_template_config_json_rejects_orbit_nonexistent_variable() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "value={{ ORBIT_NONEXISTENT }} another_value={{ORBIT_DEFAULT_PARTITION}}",
+        )
+        .expect("template file");
+
+        let err = load_template_config_json(&orbitfile_path)
+            .expect_err("ORBIT_NONEXISTENT should be rejected");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(err.message().contains("unknown special template variables"));
+        assert!(err.message().contains("ORBIT_NONEXISTENT"));
+    }
+
+    #[test]
+    fn prepare_template_submission_requires_referenced_special_values() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        std::fs::write(root.path().join("Orbitfile"), orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "partition={{ ORBIT_SLURM_PARTITION }}",
+        )
+        .expect("template file");
+
+        let err = prepare_template_submission(root.path(), Some("{}"))
+            .expect_err("missing special value should fail");
+        assert_eq!(err.code(), codes::INVALID_ARGUMENT);
+        assert!(
+            err.message()
+                .contains("missing required special template variables")
+        );
+        assert!(err.message().contains("ORBIT_SLURM_PARTITION"));
+    }
+
+    #[test]
+    fn prepare_template_submission_renders_referenced_special_values() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.files]
+            paths = ["config.txt"]
+        "#;
+        std::fs::write(root.path().join("Orbitfile"), orbitfile).expect("orbitfile");
+        std::fs::write(
+            root.path().join("config.txt"),
+            "partition={{ ORBIT_SLURM_PARTITION }}",
+        )
+        .expect("template file");
+
+        let prepared = prepare_template_submission(
+            root.path(),
+            Some(r#"{ "ORBIT_SLURM_PARTITION": "compute" }"#),
+        )
+        .expect("prepare")
+        .expect("template");
+        let rendered =
+            std::fs::read_to_string(prepared.staging_root.join("config.txt")).expect("rendered");
+        assert_eq!(rendered, "partition=compute");
     }
 }

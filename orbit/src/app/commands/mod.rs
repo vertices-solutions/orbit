@@ -8,8 +8,8 @@ use proto::SubmitPathFilterRule;
 mod results;
 
 pub use results::{
-    CommandResult, InitActionStatus, ProjectInitAction, ProjectListItem, StreamCapture,
-    SubmitCapture,
+    AddClusterCapture, CommandResult, InitActionStatus, ProjectInitAction, ProjectListItem,
+    StreamCapture, SubmitCapture,
 };
 
 #[derive(Debug, Clone)]
@@ -37,7 +37,7 @@ pub enum JobCommand {
 
 #[derive(Debug, Clone)]
 pub struct SubmitJobCommand {
-    pub cluster: String,
+    pub cluster: Option<String>,
     pub local_path: String,
     pub sbatchscript: Option<String>,
     pub remote_path: Option<String>,
@@ -114,12 +114,12 @@ pub struct ListClustersCommand {
 
 #[derive(Debug, Clone)]
 pub struct ClusterGetCommand {
-    pub name: String,
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ClusterLsCommand {
-    pub name: String,
+    pub name: Option<String>,
     pub path: Option<String>,
 }
 
@@ -129,11 +129,12 @@ pub struct AddClusterCommand {
     pub name: Option<String>,
     pub identity_path: Option<String>,
     pub default_base_path: Option<String>,
+    pub is_default: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct SetClusterCommand {
-    pub name: String,
+    pub name: Option<String>,
     pub host: Option<String>,
     pub username: Option<String>,
     pub port: Option<u32>,
@@ -145,6 +146,7 @@ pub struct SetClusterCommand {
 pub struct DeleteClusterCommand {
     pub name: String,
     pub yes: bool,
+    pub force: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -153,7 +155,6 @@ pub enum ProjectCommand {
     Build(ProjectBuildCommand),
     Submit(ProjectSubmitCommand),
     List(ProjectListCommand),
-    Check(ProjectCheckCommand),
     Delete(ProjectDeleteCommand),
 }
 
@@ -172,7 +173,7 @@ pub struct ProjectBuildCommand {
 #[derive(Debug, Clone)]
 pub struct ProjectSubmitCommand {
     pub project: String,
-    pub cluster: String,
+    pub cluster: Option<String>,
     pub sbatchscript: Option<String>,
     pub remote_path: Option<String>,
     pub new_directory: bool,
@@ -185,11 +186,6 @@ pub struct ProjectSubmitCommand {
 
 #[derive(Debug, Clone)]
 pub struct ProjectListCommand;
-
-#[derive(Debug, Clone)]
-pub struct ProjectCheckCommand {
-    pub name: Option<String>,
-}
 
 #[derive(Debug, Clone)]
 pub struct ProjectDeleteCommand {

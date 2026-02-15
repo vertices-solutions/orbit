@@ -114,6 +114,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 name: args.name,
                 identity_path: args.identity_path,
                 default_base_path: args.default_base_path,
+                is_default: args.is_default,
             }),
             ClusterCmd::Set(args) => ClusterCommand::Set(SetClusterCommand {
                 name: args.name,
@@ -126,6 +127,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             ClusterCmd::Delete(args) => ClusterCommand::Delete(DeleteClusterCommand {
                 name: args.name,
                 yes: args.yes,
+                force: args.force,
             }),
         }),
         Cmd::Project(project_args) => Command::Project(match project_args.cmd {
@@ -153,9 +155,6 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 })
             }
             ProjectCmd::List(_args) => ProjectCommand::List(ProjectListCommand),
-            ProjectCmd::Check(args) => {
-                ProjectCommand::Check(ProjectCheckCommand { name: args.name })
-            }
             ProjectCmd::Delete(args) => ProjectCommand::Delete(ProjectDeleteCommand {
                 name: args.name,
                 yes: args.yes,

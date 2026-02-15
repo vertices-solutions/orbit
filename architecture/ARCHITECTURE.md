@@ -19,9 +19,9 @@ Projects are a first-class concept in the CLI + daemon contract:
   (e.g., gRPC, terminal UI, JSON output, filesystem).
 - Command: a request object representing a single user intent, suffixed with `Command`
   (e.g., `SubmitJobCommand`, `AddClusterCommand`).
-- Handler / Use case: the application logic that executes a command via ports and services. Handlers are
+- Services: various data handling helpers. These should become adapters once the appropriate ports for them are established and a critical mass of code is accumulated.
+- Handler / Use Case: the application logic that executes a command via ports and services. Handlers are
   named with `handle_*` functions in `app/handlers`.
-- Services: various data handling helpers. These should become adapters once the appropriate ports for them are established.
 - Dispatcher: the router that maps a `Command` request to its handler.
 - OutputPort: transforms command result data into user-facing output (tables, JSON).
 - StreamOutput: a stream of output events (stdout/stderr/progress/exit) from long-running operations; 
@@ -62,7 +62,7 @@ by adapters.
   multiple candidates exist; used in `handle_job_submit`. It can also select from
   stored project metadata during `project submit`.
 - `project` service module: Orbitfile discovery/parsing, project name validation, submit filter merge,
-  Orbitfile sbatch resolution, template config JSON parsing, and local project check helpers.
+  Orbitfile sbatch resolution, and template config JSON parsing.
   - `local_validate_default_base_path`: validates base path rules for clusters; used in
     `handle_cluster_add` during default base path checks.
   - `default_base_path_from_home`: derives the default base path from a home directory;
@@ -114,7 +114,6 @@ Ports live in `app/ports`, adapters in `adapters/`:
 - `project init` creates/updates Orbitfile only (no registry write).
 - `project build` packages a tarball, validates sbatch availability, and writes build metadata to the registry.
 - `project submit` is tarball-only and does not require local paths; it uses stored build metadata.
-- `project check` validates registry path, Orbitfile parse/fields, and configured sbatch script path.
 - `project delete` removes a project from the local registry and deletes associated tarballs (with confirmation unless `--yes`).
 - `validate_cluster_live` performs a reachability check and a lightweight `ls` RPC
   to confirm connectivity before submit.
@@ -183,7 +182,7 @@ Outbound adapters:
   accessed only through store ports.
 - `projects` rows persist build metadata:
   - `name` + `version_tag` (split from `name`)
-  - `tarball_hash` + tool version
+  - `tarball_hash` (content hash) + `tarball_hash_function` + tool version
   - `template_config_json`
   - `[submit].sbatch_script` (resolved at build time) and discovered `.sbatch` candidates
   - `[sync]` include/exclude and `[retrieve].default_path`
@@ -198,7 +197,8 @@ Outbound adapters:
 - Build (`project build`):
   - Resolves project root (nearest `Orbitfile`), parses metadata, validates project name.
   - Ensures at least one sbatch script is resolvable (Orbitfile default or discovered `.sbatch` files).
-  - Creates a deterministic tarball (`.tar.zst`) stored under `tarballs_dir` and registers metadata in SQLite.
+  - Creates a deterministic tarball (`.tar.zst`) stored under `tarballs_dir`; tarball filename is derived from hash(`name:tag`) while persisted `tarball_hash` stores the container content hash.
+  - Registers build metadata (including `tarball_hash_function`) in SQLite.
   - Rejects builds when `tarballs_dir` is inside the project root (self-archive guard).
 - Submit (`project submit`):
   - Resolves the project record by name:tag (or `latest`).

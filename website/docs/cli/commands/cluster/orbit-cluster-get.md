@@ -7,11 +7,11 @@ Show cluster details
 
 Parent command: [`orbit cluster`](./orbit-cluster)
 
-**Usage:** `orbit cluster get [OPTIONS] <NAME>`
+**Usage:** `orbit cluster get [OPTIONS] [NAME]`
 
 ## Arguments
 
-- `<NAME>`
+- `[NAME]`
 
 ## Flags and Options
 

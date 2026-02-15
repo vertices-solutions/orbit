@@ -33,6 +33,7 @@ pub(super) fn cluster_to_json(
         "default_base_path".into(),
         json!(item.default_base_path.as_deref()),
     );
+    out.insert("is_default".into(), json!(item.is_default));
     Value::Object(out)
 }
 
@@ -72,6 +73,8 @@ mod tests {
             name: "cluster-a".to_string(),
             accounting_available: false,
             default_base_path: None,
+            is_default: false,
+            default_scratch_directory: None,
         }
     }
 
@@ -109,6 +112,7 @@ mod tests {
         assert_eq!(json["status"], "connected");
         assert_eq!(json["name"], "cluster-a");
         assert_eq!(json["address"], "node");
+        assert_eq!(json["is_default"], false);
     }
 
     #[test]

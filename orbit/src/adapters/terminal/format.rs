@@ -15,8 +15,15 @@ pub(super) fn format_clusters_table(
     }
 
     if show_reachability {
-        let headers = ["name", "destination", "status", "reachable", "accounting"];
-        let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
+        let headers = [
+            "name",
+            "destination",
+            "status",
+            "default",
+            "reachable",
+            "accounting",
+        ];
+        let mut rows: Vec<(String, String, String, String, String, String)> = Vec::new();
 
         for item in clusters.iter() {
             let ssh_str = cluster_ssh_string(item);
@@ -32,21 +39,27 @@ pub(super) fn format_clusters_table(
                 true => "enabled",
                 false => "disabled",
             };
+            let default_str = match item.is_default {
+                true => "yes",
+                false => "no",
+            };
             rows.push((
                 item.name.clone(),
                 ssh_str,
                 connected_str.to_string(),
+                default_str.to_string(),
                 reachable_str.to_string(),
                 accounting_str.to_string(),
             ));
         }
 
-        let mut widths: [usize; 5] = [
+        let mut widths: [usize; 6] = [
             str_width(headers[0]),
             str_width(headers[1]),
             str_width(headers[2]),
             str_width(headers[3]),
             str_width(headers[4]),
+            str_width(headers[5]),
         ];
         for row in rows.iter() {
             widths[0] = widths[0].max(str_width(&row.0));
@@ -54,44 +67,49 @@ pub(super) fn format_clusters_table(
             widths[2] = widths[2].max(str_width(&row.2));
             widths[3] = widths[3].max(str_width(&row.3));
             widths[4] = widths[4].max(str_width(&row.4));
+            widths[5] = widths[5].max(str_width(&row.5));
         }
 
         let mut output = String::new();
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}\n",
             headers[0],
             headers[1],
             headers[2],
             headers[3],
             headers[4],
+            headers[5],
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
             w3 = widths[3],
             w4 = widths[4],
+            w5 = widths[5],
         ));
 
         for row in rows {
             output.push_str(&format!(
-                "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}\n",
+                "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}  {:<w5$}\n",
                 row.0,
                 row.1,
                 row.2,
                 row.3,
                 row.4,
+                row.5,
                 w0 = widths[0],
                 w1 = widths[1],
                 w2 = widths[2],
                 w3 = widths[3],
                 w4 = widths[4],
+                w5 = widths[5],
             ));
         }
 
         return output;
     }
 
-    let headers = ["name", "destination", "status", "accounting"];
-    let mut rows: Vec<(String, String, String, String)> = Vec::new();
+    let headers = ["name", "destination", "status", "default", "accounting"];
+    let mut rows: Vec<(String, String, String, String, String)> = Vec::new();
 
     for item in clusters.iter() {
         let ssh_str = cluster_ssh_string(item);
@@ -103,51 +121,62 @@ pub(super) fn format_clusters_table(
             true => "enabled",
             false => "disabled",
         };
+        let default_str = match item.is_default {
+            true => "yes",
+            false => "no",
+        };
         rows.push((
             item.name.clone(),
             ssh_str,
             connected_str.to_string(),
+            default_str.to_string(),
             accounting_str.to_string(),
         ));
     }
 
-    let mut widths: [usize; 4] = [
+    let mut widths: [usize; 5] = [
         str_width(headers[0]),
         str_width(headers[1]),
         str_width(headers[2]),
         str_width(headers[3]),
+        str_width(headers[4]),
     ];
     for row in rows.iter() {
         widths[0] = widths[0].max(str_width(&row.0));
         widths[1] = widths[1].max(str_width(&row.1));
         widths[2] = widths[2].max(str_width(&row.2));
         widths[3] = widths[3].max(str_width(&row.3));
+        widths[4] = widths[4].max(str_width(&row.4));
     }
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
+        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}\n",
         headers[0],
         headers[1],
         headers[2],
         headers[3],
+        headers[4],
         w0 = widths[0],
         w1 = widths[1],
         w2 = widths[2],
         w3 = widths[3],
+        w4 = widths[4],
     ));
 
     for row in rows {
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}  {:<w4$}\n",
             row.0,
             row.1,
             row.2,
             row.3,
+            row.4,
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
             w3 = widths[3],
+            w4 = widths[4],
         ));
     }
 
@@ -164,13 +193,18 @@ pub(super) fn format_cluster_details(item: &ListClustersUnitResponse) -> String 
         true => "enabled",
         false => "disabled",
     };
+    let default_str = match item.is_default {
+        true => "yes",
+        false => "no",
+    };
     format!(
-        "name: {}\nusername: {}\naddress: {}\nport: {}\nstatus: {}\naccounting: {}\nidentity_path: {}\ndefault_base_path: {}\n",
+        "name: {}\nusername: {}\naddress: {}\nport: {}\nstatus: {}\ndefault: {}\naccounting: {}\nidentity_path: {}\ndefault_base_path: {}\n",
         item.name,
         item.username,
         host_str,
         item.port,
         connected_str,
+        default_str,
         accounting_str,
         item.identity_path.as_deref().unwrap_or("-"),
         item.default_base_path.as_deref().unwrap_or("-")
@@ -381,6 +415,8 @@ mod tests {
             name: "cluster-a".to_string(),
             accounting_available: false,
             default_base_path: None,
+            is_default: false,
+            default_scratch_directory: None,
         }
     }
 

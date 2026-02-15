@@ -7,7 +7,9 @@ use serde_json::{Value, json};
 
 use crate::app::commands::{CommandResult, InitActionStatus, StreamCapture, SubmitCapture};
 use crate::app::errors::{AppError, AppResult};
-use crate::app::ports::{InteractionPort, OutputPort, PromptLine, StreamKind, StreamOutputPort};
+use crate::app::ports::{
+    InteractionPort, OutputPort, PromptFeedbackPort, PromptLine, StreamKind, StreamOutputPort,
+};
 use format::{cluster_to_json, job_to_json};
 
 pub struct JsonOutput;
@@ -71,6 +73,26 @@ impl NonInteractiveInteraction {
     }
 }
 
+struct NoopPromptFeedback;
+
+impl PromptFeedbackPort for NoopPromptFeedback {
+    fn start_validation(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn stop_validation(&mut self) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn finish_success(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn finish_failure(&mut self, _message: &str) -> AppResult<()> {
+        Ok(())
+    }
+}
+
 #[tonic::async_trait]
 impl InteractionPort for NonInteractiveInteraction {
     async fn confirm(&self, _prompt: &str, _help: &str) -> AppResult<bool> {
@@ -111,6 +133,10 @@ impl InteractionPort for NonInteractiveInteraction {
         Err(AppError::invalid_argument(
             "input required; rerun without --non-interactive",
         ))
+    }
+
+    async fn prompt_feedback(&self) -> AppResult<Box<dyn PromptFeedbackPort>> {
+        Ok(Box::new(NoopPromptFeedback))
     }
 
     async fn select_sbatch(&self, _options: &[String]) -> AppResult<Option<String>> {
@@ -345,6 +371,8 @@ fn result_to_json(result: &CommandResult) -> Value {
             port,
             identity_path,
             default_base_path,
+            default_scratch_directory,
+            is_default,
         } => json!({
             "name": name,
             "username": username,
@@ -353,6 +381,8 @@ fn result_to_json(result: &CommandResult) -> Value {
             "port": port,
             "identity_path": identity_path,
             "default_base_path": default_base_path,
+            "default_scratch_directory": default_scratch_directory,
+            "is_default": is_default,
             "status": "added",
         }),
         CommandResult::ClusterSet { name, .. } => json!({
@@ -395,6 +425,7 @@ fn result_to_json(result: &CommandResult) -> Value {
             "versionTag": project.version_tag,
             "path": project.path,
             "tarballHash": project.tarball_hash,
+            "tarballHashFunction": project.tarball_hash_function,
             "toolVersion": project.tool_version,
             "templateConfig": project.template_config_json,
             "submitSbatchScript": project.submit_sbatch_script,
@@ -421,9 +452,6 @@ fn result_to_json(result: &CommandResult) -> Value {
                 .collect::<Vec<_>>();
             json!({ "projects": items })
         }
-        CommandResult::ProjectCheck { checked } => json!({
-            "checked": checked,
-        }),
         CommandResult::ProjectDelete { name } => json!({
             "name": name,
             "status": "deleted",

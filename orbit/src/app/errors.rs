@@ -17,7 +17,6 @@ pub enum ErrorType {
     ClusterNotFound,
     JobNotFound,
     Conflict,
-    ProjectCheckFailed,
     DaemonUnavailable,
     NetworkError,
     RemoteError,
@@ -35,7 +34,6 @@ impl ErrorType {
             ErrorType::ClusterNotFound => "CLUSTER_NOT_FOUND",
             ErrorType::JobNotFound => "JOB_NOT_FOUND",
             ErrorType::Conflict => "CONFLICT",
-            ErrorType::ProjectCheckFailed => "PROJECT_CHECK_FAILED",
             ErrorType::DaemonUnavailable => "DAEMON_UNAVAILABLE",
             ErrorType::NetworkError => "NETWORK_ERROR",
             ErrorType::RemoteError => "REMOTE_ERROR",
@@ -108,10 +106,6 @@ impl AppError {
 
     pub fn conflict(message: impl Into<String>) -> Self {
         Self::new(ErrorType::Conflict, message)
-    }
-
-    pub fn project_check_failed(message: impl Into<String>) -> Self {
-        Self::new(ErrorType::ProjectCheckFailed, message)
     }
 
     pub fn daemon_unavailable(message: impl Into<String>) -> Self {

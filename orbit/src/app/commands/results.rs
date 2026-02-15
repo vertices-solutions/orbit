@@ -24,6 +24,14 @@ pub struct SubmitCapture {
     pub error_code: Option<String>,
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct AddClusterCapture {
+    pub stream: StreamCapture,
+    pub default_base_path: Option<String>,
+    pub default_scratch_directory: Option<String>,
+    pub is_default: Option<bool>,
+}
+
 #[derive(Debug, Clone)]
 pub enum InitActionStatus {
     Success,
@@ -105,6 +113,8 @@ pub enum CommandResult {
         port: u32,
         identity_path: String,
         default_base_path: Option<String>,
+        default_scratch_directory: Option<String>,
+        is_default: bool,
     },
     ClusterSet {
         name: String,
@@ -125,9 +135,6 @@ pub enum CommandResult {
     },
     ProjectList {
         projects: Vec<ProjectListItem>,
-    },
-    ProjectCheck {
-        checked: usize,
     },
     ProjectDelete {
         name: String,
