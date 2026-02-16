@@ -23,7 +23,6 @@ Parent command: [`orbit blueprint`](./orbit-blueprint)
 - `--fill-defaults`: Accept default template values without prompting (interactive mode only)
 - `--remote-path <REMOTE_PATH>`
 - `--new-directory`: Always create a new remote directory, even if this local path was run before
-- `--force`: Allow running into a remote directory even if another job is running there
 - `--include <PATTERN>`: Include paths matching PATTERN
 - `--exclude <PATTERN>`: Exclude paths matching PATTERN
 - `-h, --help`: Print help

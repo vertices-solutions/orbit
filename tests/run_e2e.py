@@ -816,22 +816,6 @@ def main():
                         f"(reason={reason})"
                     )
 
-                force_cmd = build_run_cmd(
-                    orbit_cmd,
-                    args.cluster,
-                    scenario["path"],
-                    scenario["run_args"],
-                    extra_args=["--force"],
-                )
-                force_result = run_cmd(force_cmd)
-                force_job_id, force_remote_path = parse_run_result(force_result)
-                if force_remote_path != remote_path:
-                    raise RuntimeError(
-                        "force run did not reuse existing remote path"
-                    )
-                job_ids.append(force_job_id)
-                job_paths[force_job_id] = force_remote_path
-
                 new_dir_cmd = build_run_cmd(
                     orbit_cmd,
                     args.cluster,

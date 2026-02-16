@@ -25,6 +25,24 @@ pub trait JobStorePort: Send + Sync {
         host_name: &str,
         remote_path: &str,
     ) -> AppResult<Option<i64>>;
+    async fn latest_remote_path_for_blueprint(
+        &self,
+        host_name: &str,
+        blueprint_name: &str,
+        template_values: Option<&str>,
+    ) -> AppResult<Option<String>>;
+    async fn running_job_id_for_local_path(
+        &self,
+        host_name: &str,
+        local_path: &str,
+        template_values: Option<&str>,
+    ) -> AppResult<Option<i64>>;
+    async fn running_job_id_for_blueprint(
+        &self,
+        host_name: &str,
+        blueprint_name: &str,
+        template_values: Option<&str>,
+    ) -> AppResult<Option<i64>>;
     async fn get_job_by_job_id(&self, id: i64) -> AppResult<Option<JobRecord>>;
     async fn mark_job_completed(&self, id: i64, terminal_state: Option<&str>) -> AppResult<()>;
     async fn delete_job_by_job_id(&self, id: i64) -> AppResult<bool>;

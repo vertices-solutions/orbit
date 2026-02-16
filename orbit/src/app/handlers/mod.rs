@@ -38,7 +38,6 @@ pub async fn handle_run(ctx: &AppContext, cmd: RunCommand) -> AppResult<CommandR
                     sbatchscript: cmd.sbatchscript,
                     remote_path: cmd.remote_path,
                     new_directory: cmd.new_directory,
-                    force: cmd.force,
                     filters: cmd.filters,
                     template_preset: cmd.template_preset,
                     template_fields: cmd.template_fields,
@@ -57,7 +56,6 @@ pub async fn handle_run(ctx: &AppContext, cmd: RunCommand) -> AppResult<CommandR
             sbatchscript: cmd.sbatchscript,
             remote_path: cmd.remote_path,
             new_directory: cmd.new_directory,
-            force: cmd.force,
             filters: cmd.filters,
             template_preset: cmd.template_preset,
             template_fields: cmd.template_fields,
@@ -197,7 +195,6 @@ pub async fn handle_job_run(ctx: &AppContext, cmd: JobRunCommand) -> AppResult<C
             resolved_local_path_display.clone(),
             cmd.remote_path,
             cmd.new_directory,
-            cmd.force,
             sbatchscript.clone(),
             filters,
             None,
@@ -791,7 +788,6 @@ pub async fn handle_blueprint_run(
             cluster.name.clone(),
             cmd.remote_path,
             cmd.new_directory,
-            cmd.force,
             sbatchscript.clone(),
             filters,
             blueprint.default_retrieve_path.clone(),
@@ -1137,15 +1133,19 @@ fn normalize_run_conflict_message(message: &str) -> Option<String> {
         return None;
     }
     let infix = " is still running in ";
-    let suffix = "; use --force to run anyway";
     let (job_prefix, rest) = trimmed.split_once(infix)?;
-    let (remote_path, _) = rest.split_once(suffix)?;
+    let suffix =
+        "; cancel it first or run in a new directory with --new-directory or --remote-path";
+    let legacy_suffix = "; use --force to run anyway";
+    let (remote_path, _) = rest
+        .split_once(suffix)
+        .or_else(|| rest.split_once(legacy_suffix))?;
     let remote_path = remote_path.trim();
     if remote_path.is_empty() {
         return None;
     }
     Some(format!(
-        "Error: {job_prefix}{infix}{remote_path}: use --force to run anyway"
+        "Error: {job_prefix}{infix}{remote_path}: cancel it first or run in a new directory with --new-directory or --remote-path"
     ))
 }
 

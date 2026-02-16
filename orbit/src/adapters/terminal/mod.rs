@@ -344,11 +344,16 @@ fn is_run_conflict_message(text: &str) -> bool {
         return false;
     }
     let infix = " is still running in ";
-    let suffix = "; use --force to run anyway";
+    let suffix =
+        "; cancel it first or run in a new directory with --new-directory or --remote-path";
+    let legacy_suffix = "; use --force to run anyway";
     let Some((_, rest)) = trimmed.split_once(infix) else {
         return false;
     };
-    let Some((path, _)) = rest.split_once(suffix) else {
+    let Some((path, _)) = rest
+        .split_once(suffix)
+        .or_else(|| rest.split_once(legacy_suffix))
+    else {
         return false;
     };
     !path.trim().is_empty()

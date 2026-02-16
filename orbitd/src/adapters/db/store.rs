@@ -181,6 +181,7 @@ impl HostStore {
                 .execute(&self.pool)
                 .await?;
         }
+
         sqlx::query(
             r#"
             CREATE UNIQUE INDEX IF NOT EXISTS idx_hosts_single_default
@@ -257,6 +258,7 @@ impl HostStore {
     }
 
     async fn ensure_blueprints_table(&self) -> Result<()> {
+        // Important: blueprint name also contains version. it's stored as name:tag.
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS blueprints (
@@ -264,59 +266,21 @@ impl HostStore {
               path TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-              tarball_hash_function TEXT NOT NULL DEFAULT 'blake3'
+              tarball_hash TEXT,
+              tarball_hash_function TEXT NOT NULL DEFAULT 'blake3',
+              tool_version TEXT,
+              template_config_json TEXT,
+              submit_sbatch_script TEXT,
+              sbatch_scripts TEXT,
+              default_retrieve_path TEXT,
+              sync_include TEXT,
+              sync_exclude TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_blueprints_updated_at ON blueprints(updated_at DESC);
             "#,
         )
         .execute(&self.pool)
         .await?;
-        let columns: Vec<String> = sqlx::query("PRAGMA table_info(blueprints)")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .filter_map(|row| row.try_get::<String, _>("name").ok())
-            .collect();
-        if !columns.iter().any(|name| name == "tarball_hash") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN tarball_hash TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "tool_version") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN tool_version TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "template_config_json") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN template_config_json TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "submit_sbatch_script") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN submit_sbatch_script TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "sbatch_scripts") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN sbatch_scripts TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "default_retrieve_path") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN default_retrieve_path TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "sync_include") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN sync_include TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
-        if !columns.iter().any(|name| name == "sync_exclude") {
-            sqlx::query("ALTER TABLE blueprints ADD COLUMN sync_exclude TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
         Ok(())
     }
     /// Insert a new host. Returns the new row id.
@@ -1012,6 +976,30 @@ impl HostStore {
         Ok(row.map(|r| r.try_get::<String, _>("remote_path").unwrap()))
     }
 
+    pub async fn latest_remote_path_for_blueprint(
+        &self,
+        host_name: &str,
+        blueprint_name: &str,
+        template_values: Option<&str>,
+    ) -> Result<Option<String>> {
+        let row = sqlx::query(
+            r#"
+            select j.remote_path as remote_path
+            from jobs j
+            join hosts h on j.host_id = h.id
+            where h.name = ?1 and j.blueprint_name = ?2 and j.template_values is ?3
+            order by j.id desc
+            limit 1
+            "#,
+        )
+        .bind(host_name)
+        .bind(blueprint_name)
+        .bind(template_values)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_get::<String, _>("remote_path").unwrap()))
+    }
+
     pub async fn running_job_id_for_remote_path(
         &self,
         host_name: &str,
@@ -1029,6 +1017,54 @@ impl HostStore {
         )
         .bind(host_name)
         .bind(remote_path)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_get::<i64, _>("id").unwrap()))
+    }
+
+    pub async fn running_job_id_for_local_path(
+        &self,
+        host_name: &str,
+        local_path: &str,
+        template_values: Option<&str>,
+    ) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            r#"
+            select j.id as id
+            from jobs j
+            join hosts h on j.host_id = h.id
+            where h.name = ?1 and j.local_path = ?2 and j.template_values is ?3 and j.is_completed = 0
+            order by j.id desc
+            limit 1
+            "#,
+        )
+        .bind(host_name)
+        .bind(local_path)
+        .bind(template_values)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|r| r.try_get::<i64, _>("id").unwrap()))
+    }
+
+    pub async fn running_job_id_for_blueprint(
+        &self,
+        host_name: &str,
+        blueprint_name: &str,
+        template_values: Option<&str>,
+    ) -> Result<Option<i64>> {
+        let row = sqlx::query(
+            r#"
+            select j.id as id
+            from jobs j
+            join hosts h on j.host_id = h.id
+            where h.name = ?1 and j.blueprint_name = ?2 and j.template_values is ?3 and j.is_completed = 0
+            order by j.id desc
+            limit 1
+            "#,
+        )
+        .bind(host_name)
+        .bind(blueprint_name)
+        .bind(template_values)
         .fetch_optional(&self.pool)
         .await?;
         Ok(row.map(|r| r.try_get::<i64, _>("id").unwrap()))
@@ -1783,6 +1819,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn latest_remote_path_for_blueprint_matches_template_values() {
+        let db = HostStore::open_memory().await.unwrap();
+        let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
+        db.insert_host(&host).await.unwrap();
+
+        let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
+        let job1 = NewJob {
+            scheduler_id: Some(60),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run1".into(),
+            stdout_path: "/remote/run1/slurm-60.out".into(),
+            stderr_path: None,
+            blueprint_name: Some("demo".to_string()),
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let job2 = NewJob {
+            scheduler_id: Some(61),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run2".into(),
+            stdout_path: "/remote/run2/slurm-61.out".into(),
+            stderr_path: None,
+            blueprint_name: Some("demo".to_string()),
+            default_retrieve_path: None,
+            template_values: Some(r#"{"mode":"a"}"#.to_string()),
+        };
+        let job3 = NewJob {
+            scheduler_id: Some(62),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run3".into(),
+            stdout_path: "/remote/run3/slurm-62.out".into(),
+            stderr_path: None,
+            blueprint_name: Some("other".to_string()),
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let job4 = NewJob {
+            scheduler_id: Some(63),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run4".into(),
+            stdout_path: "/remote/run4/slurm-63.out".into(),
+            stderr_path: None,
+            blueprint_name: Some("demo".to_string()),
+            default_retrieve_path: None,
+            template_values: None,
+        };
+
+        db.insert_job(&job1).await.unwrap();
+        db.insert_job(&job2).await.unwrap();
+        db.insert_job(&job3).await.unwrap();
+        db.insert_job(&job4).await.unwrap();
+
+        let latest_none = db
+            .latest_remote_path_for_blueprint("host-a", "demo", None)
+            .await
+            .unwrap();
+        assert_eq!(latest_none.as_deref(), Some("/remote/run4"));
+
+        let latest_a = db
+            .latest_remote_path_for_blueprint("host-a", "demo", Some(r#"{"mode":"a"}"#))
+            .await
+            .unwrap();
+        assert_eq!(latest_a.as_deref(), Some("/remote/run2"));
+
+        let missing = db
+            .latest_remote_path_for_blueprint("host-a", "demo", Some(r#"{"mode":"b"}"#))
+            .await
+            .unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
     async fn running_job_id_for_remote_path_filters_completed() {
         let db = HostStore::open_memory().await.unwrap();
         let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
@@ -1817,6 +1929,114 @@ mod tests {
             .await
             .unwrap();
         assert!(running.is_none());
+    }
+
+    #[tokio::test]
+    async fn running_job_id_for_local_path_matches_template_values() {
+        let db = HostStore::open_memory().await.unwrap();
+        let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
+        db.insert_host(&host).await.unwrap();
+
+        let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
+        let job_none = NewJob {
+            scheduler_id: Some(210),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run-none".into(),
+            stdout_path: "/remote/run-none/slurm-210.out".into(),
+            stderr_path: None,
+            blueprint_name: None,
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let job_a = NewJob {
+            scheduler_id: Some(211),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/run-a".into(),
+            stdout_path: "/remote/run-a/slurm-211.out".into(),
+            stderr_path: None,
+            blueprint_name: None,
+            default_retrieve_path: None,
+            template_values: Some(r#"{"mode":"a"}"#.to_string()),
+        };
+        let none_id = db.insert_job(&job_none).await.unwrap();
+        let a_id = db.insert_job(&job_a).await.unwrap();
+
+        let running_none = db
+            .running_job_id_for_local_path("host-a", "/tmp/project", None)
+            .await
+            .unwrap();
+        assert_eq!(running_none, Some(none_id));
+
+        let running_a = db
+            .running_job_id_for_local_path("host-a", "/tmp/project", Some(r#"{"mode":"a"}"#))
+            .await
+            .unwrap();
+        assert_eq!(running_a, Some(a_id));
+
+        db.mark_job_completed(a_id, Some("COMPLETED"))
+            .await
+            .unwrap();
+        let running_a = db
+            .running_job_id_for_local_path("host-a", "/tmp/project", Some(r#"{"mode":"a"}"#))
+            .await
+            .unwrap();
+        assert!(running_a.is_none());
+    }
+
+    #[tokio::test]
+    async fn running_job_id_for_blueprint_matches_template_values() {
+        let db = HostStore::open_memory().await.unwrap();
+        let host = make_host("host-a", "alice", Address::Hostname("node-a".into()));
+        db.insert_host(&host).await.unwrap();
+
+        let host_row = db.get_by_name("host-a").await.unwrap().unwrap();
+        let job_none = NewJob {
+            scheduler_id: Some(220),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/bp-none".into(),
+            stdout_path: "/remote/bp-none/slurm-220.out".into(),
+            stderr_path: None,
+            blueprint_name: Some("demo".to_string()),
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let job_a = NewJob {
+            scheduler_id: Some(221),
+            host_id: host_row.id,
+            local_path: "/tmp/project".into(),
+            remote_path: "/remote/bp-a".into(),
+            stdout_path: "/remote/bp-a/slurm-221.out".into(),
+            stderr_path: None,
+            blueprint_name: Some("demo".to_string()),
+            default_retrieve_path: None,
+            template_values: Some(r#"{"mode":"a"}"#.to_string()),
+        };
+        let none_id = db.insert_job(&job_none).await.unwrap();
+        let a_id = db.insert_job(&job_a).await.unwrap();
+
+        let running_none = db
+            .running_job_id_for_blueprint("host-a", "demo", None)
+            .await
+            .unwrap();
+        assert_eq!(running_none, Some(none_id));
+
+        let running_a = db
+            .running_job_id_for_blueprint("host-a", "demo", Some(r#"{"mode":"a"}"#))
+            .await
+            .unwrap();
+        assert_eq!(running_a, Some(a_id));
+
+        db.mark_job_completed(a_id, Some("COMPLETED"))
+            .await
+            .unwrap();
+        let running_a = db
+            .running_job_id_for_blueprint("host-a", "demo", Some(r#"{"mode":"a"}"#))
+            .await
+            .unwrap();
+        assert!(running_a.is_none());
     }
 
     #[tokio::test]

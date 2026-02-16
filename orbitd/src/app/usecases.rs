@@ -1818,7 +1818,6 @@ cancel them with `job cancel` or pass --force"
             sbatchscript: input.sbatchscript,
             filters: input.filters,
             new_directory: input.new_directory,
-            force: input.force,
             blueprint_name: input.blueprint_name,
             blueprint_tag: None,
             default_retrieve_path: input.default_retrieve_path,
@@ -1842,7 +1841,6 @@ cancel them with `job cancel` or pass --force"
             sbatchscript: input.sbatchscript,
             filters: input.filters,
             new_directory: input.new_directory,
-            force: input.force,
             blueprint_name: Some(input.blueprint_name),
             blueprint_tag: Some(input.blueprint_tag),
             default_retrieve_path: input.default_retrieve_path,
@@ -1859,6 +1857,7 @@ cancel them with `job cancel` or pass --force"
         mfa: &mut dyn MfaPort,
         mut cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
+        // Because the majority of logic for blueprints and jobs are reused, both are handled through the single interface right now
         let mut input = input;
         let cluster_name = input.name.clone();
         let blueprint_name = input.blueprint_name.clone();
@@ -1946,14 +1945,86 @@ cancel them with `job cancel` or pass --force"
             _template_guard = Some(prepared.temp_dir);
         }
 
-        let reuse_remote_path = if input.remote_path.is_none() && !input.new_directory {
-            self.jobs
-                .latest_remote_path_for_local_path(
-                    &input.name,
-                    &input.local_path,
-                    template_values_json.as_deref(),
-                )
-                .await?
+        let is_blueprint_submission = input.blueprint_tag.is_some();
+        let use_combination_reuse = input.remote_path.is_none() && !input.new_directory;
+        let blueprint_name_for_submission =
+            if is_blueprint_submission {
+                Some(input.blueprint_name.as_deref().ok_or_else(|| {
+                    invalid_argument("blueprint tag provided without blueprint name")
+                })?)
+            } else {
+                None
+            };
+
+        if use_combination_reuse {
+            let running_job_id = if is_blueprint_submission {
+                self.jobs
+                    .running_job_id_for_blueprint(
+                        &input.name,
+                        blueprint_name_for_submission
+                            .expect("blueprint name must exist for blueprint run"),
+                        template_values_json.as_deref(),
+                    )
+                    .await?
+            } else {
+                self.jobs
+                    .running_job_id_for_local_path(
+                        &input.name,
+                        &input.local_path,
+                        template_values_json.as_deref(),
+                    )
+                    .await?
+            };
+
+            if let Some(job_id) = running_job_id {
+                let detail = if is_blueprint_submission {
+                    format!(
+                        "job {job_id} with blueprint '{blueprint_name}' on cluster '{}' and current template values is still running; cancel it first or run in a new directory with --new-directory or --remote-path",
+                        input.name,
+                        blueprint_name = blueprint_name_for_submission
+                            .expect("blueprint name must exist for blueprint run")
+                    )
+                } else {
+                    format!(
+                        "job {job_id} with cluster '{}' + local path '{}' and current template values is still running; cancel it first or run in a new directory with --new-directory or --remote-path",
+                        input.name, input.local_path
+                    )
+                };
+                self.telemetry.event(
+                    "job.submit.failed",
+                    TelemetryEvent {
+                        cluster: Some(cluster_name.clone()),
+                        project: blueprint_name.clone(),
+                        ..TelemetryEvent::default()
+                    },
+                );
+                return Err(AppError::with_message(
+                    AppErrorKind::AlreadyExists,
+                    codes::CONFLICT,
+                    detail,
+                ));
+            }
+        }
+
+        let reuse_remote_path = if use_combination_reuse {
+            if is_blueprint_submission {
+                self.jobs
+                    .latest_remote_path_for_blueprint(
+                        &input.name,
+                        blueprint_name_for_submission
+                            .expect("blueprint name must exist for blueprint run"),
+                        template_values_json.as_deref(),
+                    )
+                    .await?
+            } else {
+                self.jobs
+                    .latest_remote_path_for_local_path(
+                        &input.name,
+                        &input.local_path,
+                        template_values_json.as_deref(),
+                    )
+                    .await?
+            }
         } else {
             None
         };
@@ -1984,23 +2055,21 @@ cancel them with `job cancel` or pass --force"
         self.telemetry
             .event("job.submit.started", telemetry_context.clone());
 
-        if !input.force {
-            if let Some(job_id) = self
-                .jobs
-                .running_job_id_for_remote_path(&input.name, &remote_path)
-                .await?
-            {
-                let detail = format!(
-                    "job {job_id} is still running in {remote_path}; use --force to run anyway"
-                );
-                self.telemetry
-                    .event("job.submit.failed", telemetry_context.clone());
-                return Err(AppError::with_message(
-                    AppErrorKind::AlreadyExists,
-                    codes::CONFLICT,
-                    detail,
-                ));
-            }
+        if let Some(job_id) = self
+            .jobs
+            .running_job_id_for_remote_path(&input.name, &remote_path)
+            .await?
+        {
+            let detail = format!(
+                "job {job_id} is still running in {remote_path}; cancel it first or run in a new directory with --new-directory or --remote-path"
+            );
+            self.telemetry
+                .event("job.submit.failed", telemetry_context.clone());
+            return Err(AppError::with_message(
+                AppErrorKind::AlreadyExists,
+                codes::CONFLICT,
+                detail,
+            ));
         }
 
         if stream
@@ -2990,7 +3059,6 @@ pub struct RunJobInput {
     pub sbatchscript: String,
     pub filters: Vec<crate::app::types::SyncFilterRule>,
     pub new_directory: bool,
-    pub force: bool,
     pub blueprint_name: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub template_values_json: Option<String>,
@@ -3005,7 +3073,6 @@ pub struct RunBlueprintInput {
     pub sbatchscript: String,
     pub filters: Vec<crate::app::types::SyncFilterRule>,
     pub new_directory: bool,
-    pub force: bool,
     pub default_retrieve_path: Option<String>,
     pub template_values_json: Option<String>,
 }
@@ -3018,7 +3085,6 @@ struct RunInput {
     pub sbatchscript: String,
     pub filters: Vec<crate::app::types::SyncFilterRule>,
     pub new_directory: bool,
-    pub force: bool,
     pub blueprint_name: Option<String>,
     pub blueprint_tag: Option<String>,
     pub default_retrieve_path: Option<String>,
@@ -3877,9 +3943,10 @@ mod tests {
     use std::collections::VecDeque;
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use tokio::sync::{mpsc, watch};
 
     use crate::app::ports::ExecCapture;
-    use crate::app::types::{Distro, SlurmVersion};
+    use crate::app::types::{Distro, NewBlueprintBuild, NewJob, SlurmVersion};
 
     #[derive(Default)]
     struct NoopRemoteExec;
@@ -4191,6 +4258,36 @@ mod tests {
         }
     }
 
+    struct NoopRunStreamOutput;
+
+    #[async_trait::async_trait]
+    impl RunStreamOutputPort for NoopRunStreamOutput {
+        async fn send(&self, _event: RunStreamEvent) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn is_closed(&self) -> bool {
+            false
+        }
+    }
+
+    struct NoopMfa {
+        receiver: mpsc::Receiver<proto::MfaAnswer>,
+    }
+
+    impl NoopMfa {
+        fn new() -> Self {
+            let (_tx, receiver) = mpsc::channel(1);
+            Self { receiver }
+        }
+    }
+
+    impl MfaPort for NoopMfa {
+        fn receiver(&mut self) -> &mut mpsc::Receiver<proto::MfaAnswer> {
+            &mut self.receiver
+        }
+    }
+
     fn sample_host(name: &str) -> NewHost {
         NewHost {
             name: name.to_string(),
@@ -4299,6 +4396,157 @@ mod tests {
             .insert_job(&sample_job(host_b_id, "run-b-none", None))
             .await
             .expect("insert cluster-b no-project job");
+    }
+
+    #[tokio::test]
+    async fn run_job_rejects_running_combination_without_directory_override() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let local_dir = tempfile::tempdir().expect("temp dir");
+        let local_path = local_dir.path().to_string_lossy().into_owned();
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster-a");
+        let running_job = NewJob {
+            scheduler_id: Some(401),
+            host_id,
+            local_path: local_path.clone(),
+            remote_path: "/remote/project".to_string(),
+            stdout_path: "/remote/project/slurm-401.out".to_string(),
+            stderr_path: None,
+            blueprint_name: None,
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let running_job_id = usecases
+            .jobs
+            .insert_job(&running_job)
+            .await
+            .expect("insert running job");
+
+        let stream = NoopRunStreamOutput;
+        let mut mfa = NoopMfa::new();
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let err = usecases
+            .run_job(
+                RunJobInput {
+                    local_path: local_path.clone(),
+                    remote_path: None,
+                    name: "cluster-a".to_string(),
+                    sbatchscript: "job.sbatch".to_string(),
+                    filters: Vec::new(),
+                    new_directory: false,
+                    blueprint_name: None,
+                    default_retrieve_path: None,
+                    template_values_json: None,
+                },
+                &stream,
+                &mut mfa,
+                cancel_rx,
+            )
+            .await
+            .expect_err("run must be blocked");
+
+        assert_eq!(err.kind(), AppErrorKind::AlreadyExists);
+        assert_eq!(err.code(), codes::CONFLICT);
+        assert!(err.message().contains(&format!("job {running_job_id}")));
+        assert!(err.message().contains("--new-directory"));
+        assert!(err.message().contains("--remote-path"));
+    }
+
+    #[tokio::test]
+    async fn run_blueprint_rejects_running_combination_without_directory_override() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster-a");
+
+        let blueprint_name = "demo-combo";
+        let blueprint_tag = "20260216.001";
+        let blueprint_ref = format!("{blueprint_name}:{blueprint_tag}");
+
+        let source_root_dir = tempfile::tempdir().expect("source root temp dir");
+        let source_root = source_root_dir.path().join("demo-combo");
+        std::fs::create_dir_all(&source_root).expect("create source root");
+        std::fs::write(source_root.join("job.sbatch"), "#!/bin/bash\n")
+            .expect("write sbatch script");
+
+        let tarball_path = tarball_path_for_blueprint_ref(&std::env::temp_dir(), &blueprint_ref);
+        crate::app::services::project_building::create_tarball(
+            &source_root,
+            "demo-combo",
+            &tarball_path,
+            false,
+        )
+        .expect("create tarball");
+
+        usecases
+            .projects
+            .upsert_blueprint_build(&NewBlueprintBuild {
+                name: blueprint_ref,
+                path: source_root.to_string_lossy().into_owned(),
+                tarball_hash: "test-hash".to_string(),
+                tarball_hash_function: "blake3".to_string(),
+                tool_version: "test".to_string(),
+                template_config_json: None,
+                submit_sbatch_script: Some("job.sbatch".to_string()),
+                sbatch_scripts: vec!["job.sbatch".to_string()],
+                default_retrieve_path: None,
+                sync_include: Vec::new(),
+                sync_exclude: Vec::new(),
+            })
+            .await
+            .expect("insert blueprint build");
+
+        let running_job = NewJob {
+            scheduler_id: Some(402),
+            host_id,
+            local_path: source_root.to_string_lossy().into_owned(),
+            remote_path: "/remote/blueprint".to_string(),
+            stdout_path: "/remote/blueprint/slurm-402.out".to_string(),
+            stderr_path: None,
+            blueprint_name: Some(blueprint_name.to_string()),
+            default_retrieve_path: None,
+            template_values: None,
+        };
+        let running_job_id = usecases
+            .jobs
+            .insert_job(&running_job)
+            .await
+            .expect("insert running job");
+
+        let stream = NoopRunStreamOutput;
+        let mut mfa = NoopMfa::new();
+        let (_cancel_tx, cancel_rx) = watch::channel(false);
+        let err = usecases
+            .run_blueprint(
+                RunBlueprintInput {
+                    blueprint_name: blueprint_name.to_string(),
+                    blueprint_tag: blueprint_tag.to_string(),
+                    remote_path: None,
+                    name: "cluster-a".to_string(),
+                    sbatchscript: "job.sbatch".to_string(),
+                    filters: Vec::new(),
+                    new_directory: false,
+                    default_retrieve_path: None,
+                    template_values_json: None,
+                },
+                &stream,
+                &mut mfa,
+                cancel_rx,
+            )
+            .await
+            .expect_err("run must be blocked");
+
+        assert_eq!(err.kind(), AppErrorKind::AlreadyExists);
+        assert_eq!(err.code(), codes::CONFLICT);
+        assert!(err.message().contains(&format!("job {running_job_id}")));
+        assert!(err.message().contains(blueprint_name));
+        assert!(err.message().contains("--new-directory"));
+        assert!(err.message().contains("--remote-path"));
     }
 
     #[tokio::test]

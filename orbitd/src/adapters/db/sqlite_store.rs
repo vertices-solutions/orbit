@@ -200,6 +200,57 @@ impl JobStorePort for SqliteStoreAdapter {
 
     #[tracing::instrument(
         level = "debug",
+        skip(self, host_name, blueprint_name, template_values),
+        fields(op = "latest_remote_path_for_blueprint", table = "jobs")
+    )]
+    async fn latest_remote_path_for_blueprint(
+        &self,
+        host_name: &str,
+        blueprint_name: &str,
+        template_values: Option<&str>,
+    ) -> AppResult<Option<String>> {
+        self.store
+            .latest_remote_path_for_blueprint(host_name, blueprint_name, template_values)
+            .await
+            .map_err(map_store_error)
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, host_name, local_path, template_values),
+        fields(op = "running_job_id_for_local_path", table = "jobs")
+    )]
+    async fn running_job_id_for_local_path(
+        &self,
+        host_name: &str,
+        local_path: &str,
+        template_values: Option<&str>,
+    ) -> AppResult<Option<i64>> {
+        self.store
+            .running_job_id_for_local_path(host_name, local_path, template_values)
+            .await
+            .map_err(map_store_error)
+    }
+
+    #[tracing::instrument(
+        level = "debug",
+        skip(self, host_name, blueprint_name, template_values),
+        fields(op = "running_job_id_for_blueprint", table = "jobs")
+    )]
+    async fn running_job_id_for_blueprint(
+        &self,
+        host_name: &str,
+        blueprint_name: &str,
+        template_values: Option<&str>,
+    ) -> AppResult<Option<i64>> {
+        self.store
+            .running_job_id_for_blueprint(host_name, blueprint_name, template_values)
+            .await
+            .map_err(map_store_error)
+    }
+
+    #[tracing::instrument(
+        level = "debug",
         skip(self),
         fields(op = "get_job_by_job_id", table = "jobs")
     )]

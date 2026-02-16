@@ -144,7 +144,7 @@ message RunJobRequestInit {
   string sbatchscript = 4;
   repeated RunPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
   bool new_directory = 6; // ignore prior remote dir for this local path
-  bool force = 7; // allow reuse of a running remote directory
+  reserved 7; // previously: force
   optional string blueprint_name = 8; // blueprint identifier from Orbitfile
   optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
   optional string template_values_json = 10; // template values JSON map from Orbitfile
@@ -157,7 +157,7 @@ message RunBlueprintRequestInit {
   string sbatchscript = 4;
   repeated RunPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
   bool new_directory = 6; // ignore prior remote dir for this local path
-  bool force = 7; // allow reuse of a running remote directory
+  reserved 7; // previously: force
   optional string remote_path = 8; // path to where to locate the remote blueprint
   optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
   optional string template_values_json = 10; // template values JSON map from Orbitfile

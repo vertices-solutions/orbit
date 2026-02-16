@@ -78,9 +78,6 @@ pub struct RunArgs {
     /// Always create a new remote directory, even if this local path was run before.
     #[arg(long)]
     pub new_directory: bool,
-    /// Allow running into a remote directory even if another job is running there.
-    #[arg(long)]
-    pub force: bool,
     /// Include paths matching PATTERN.
     #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
     pub include: Vec<String>,
@@ -258,9 +255,6 @@ pub struct BlueprintRunArgs {
     /// Always create a new remote directory, even if this local path was run before.
     #[arg(long)]
     pub new_directory: bool,
-    /// Allow running into a remote directory even if another job is running there.
-    #[arg(long)]
-    pub force: bool,
     /// Include paths matching PATTERN.
     #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
     pub include: Vec<String>,
@@ -365,9 +359,6 @@ pub struct JobRunArgs {
     /// Always create a new remote directory, even if this local path was run before.
     #[arg(long)]
     pub new_directory: bool,
-    /// Allow running into a remote directory even if another job is running there.
-    #[arg(long)]
-    pub force: bool,
     /// Include paths matching PATTERN.
     /// Rules are checked in the order they appear across --include/--exclude;
     /// the first match wins, and unmatched paths are included.
