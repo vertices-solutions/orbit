@@ -1,6 +1,6 @@
 set shell := ["sh", "-cu"]
 
-release_state := ".release-state.env"
+release_state := "/tmp/orbit-release-state.env"
 
 # Compute per-crate coverage with cargo-tarpaulin and print a summary table.
 coverage:
@@ -28,19 +28,20 @@ coverage:
 	@python3 scripts/coverage_summary.py
 
 release:
-	@rm -f {{release_state}}
-	@just _release-check-commands
-	@just _release-check-git
-	@just _release-tests
-	@just _release-select-version
-	@just _release-select-remote
-	@just _release-bump
-	@just _release-version-docs
-	@just _release-stage
-	@just _release-commit
-	@just _release-tag
-	@just _release-push
-	@rm -f {{release_state}}
+	@set -eu; \
+	trap 'rm -f {{release_state}}' EXIT INT TERM; \
+	rm -f {{release_state}}; \
+	just _release-check-commands; \
+	just _release-check-git; \
+	just _release-tests; \
+	just _release-select-version; \
+	just _release-select-remote; \
+	just _release-bump; \
+	just _release-version-docs; \
+	just _release-stage; \
+	just _release-commit; \
+	just _release-tag; \
+	just _release-push
 
 [private]
 _release-check-commands:
