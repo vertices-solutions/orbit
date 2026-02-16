@@ -305,24 +305,14 @@ pub struct ClusterLsArgs {
 
 #[derive(Args, Debug)]
 pub struct SetClusterArgs {
-    pub name: Option<String>,
+    /// Cluster name to update.
+    #[arg(long = "on", value_name = "CLUSTER")]
+    pub cluster: String,
 
-    /// Use a remote host (hostname or IP address)
-    #[arg(long)]
-    pub host: Option<String>,
-
-    /// Use a different username for SSH
-    #[arg(long)]
-    pub username: Option<String>,
-
-    #[arg(long)]
-    pub port: Option<u32>,
-
-    #[arg(long)]
-    pub identity_path: Option<String>,
-
-    #[arg(long)]
-    pub default_base_path: Option<String>,
+    /// Single setting assignment in KEY=VALUE form.
+    /// Supported keys: host, username, port, identity_path, default_base_path, default.
+    #[arg(value_name = "KEY=VALUE")]
+    pub setting: String,
 }
 
 #[derive(Args, Debug)]
@@ -641,18 +631,31 @@ mod tests {
     }
 
     #[test]
-    fn cluster_set_name_is_optional() {
-        let args = Cli::parse_from(["orbit", "cluster", "set", "--host", "node"]);
+    fn cluster_set_parses_on_and_setting() {
+        let args = Cli::parse_from([
+            "orbit",
+            "cluster",
+            "set",
+            "--on",
+            "cluster-a",
+            "default=true",
+        ]);
         match args.cmd {
             Cmd::Cluster(cluster) => match cluster.cmd {
                 ClusterCmd::Set(set) => {
-                    assert!(set.name.is_none());
-                    assert_eq!(set.host.as_deref(), Some("node"));
+                    assert_eq!(set.cluster, "cluster-a");
+                    assert_eq!(set.setting, "default=true");
                 }
                 _ => panic!("expected cluster set command"),
             },
             _ => panic!("expected cluster command"),
         }
+    }
+
+    #[test]
+    fn cluster_set_requires_on_flag() {
+        let args = Cli::try_parse_from(["orbit", "cluster", "set", "default=true"]);
+        assert!(args.is_err());
     }
 
     #[test]

@@ -1112,6 +1112,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         identity_path: Option<String>,
         port: Option<u32>,
         default_base_path: Option<String>,
+        is_default: Option<bool>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<StreamCapture> {
@@ -1133,6 +1134,7 @@ impl OrbitdPort for GrpcOrbitdPort {
             port,
             identity_path: identity_path_expanded,
             default_base_path,
+            is_default,
         };
         let scr = SetClusterRequest {
             msg: Some(set_cluster_request::Msg::Init(init)),

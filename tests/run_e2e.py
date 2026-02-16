@@ -383,6 +383,23 @@ def validate_cluster_list_flags(orbit_cmd, cluster_name):
         )
 
 
+def validate_cluster_set_key_value(orbit_cmd, cluster_name):
+    cmd = list(orbit_cmd)
+    if "--non-interactive" not in cmd:
+        cmd.append("--non-interactive")
+
+    run_cmd(cmd + ["cluster", "set", "--on", cluster_name, "default=true"])
+    cluster = parse_json_output(run_cmd(cmd + ["cluster", "get", cluster_name]))
+    if not isinstance(cluster, dict):
+        raise RuntimeError("cluster get: expected object output")
+    if cluster.get("name") != cluster_name:
+        raise RuntimeError(
+            f"cluster get: expected cluster '{cluster_name}', got {cluster.get('name')!r}"
+        )
+    if cluster.get("is_default") is not True:
+        raise RuntimeError("cluster set: expected default=true to be applied")
+
+
 def validate_blueprint_job_filter(orbit_cmd, cluster, blueprint_name, expected_job_id):
     jobs = list_jobs_json(orbit_cmd, cluster=cluster, blueprint=blueprint_name)
     if not jobs:
@@ -701,6 +718,8 @@ def main():
         run_cmd(orbit_cmd + ["ping"])
         validate_cluster_list_flags(non_interactive_cmd, args.cluster)
         print("cluster list flags: ok")
+        validate_cluster_set_key_value(non_interactive_cmd, args.cluster)
+        print("cluster set key=value: ok")
 
         scenarios = [
             {

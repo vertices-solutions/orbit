@@ -7,18 +7,16 @@ Update cluster parameters
 
 Parent command: [`orbit cluster`](./orbit-cluster)
 
-**Usage:** `orbit cluster set [OPTIONS] [NAME]`
+**Usage:** `orbit cluster set --on <CLUSTER> <KEY=VALUE>`
 
 ## Arguments
 
-- `[NAME]`
+- `<KEY=VALUE>`: Single setting assignment.
+  Supported keys: `host`, `username`, `port`, `identity_path`, `default_base_path`, `default`.
+  Use `default=true` to mark the cluster as default.
 
 ## Flags and Options
 
-- `--host <HOST>`: Use a remote host (hostname or IP address)
+- `--on <CLUSTER>`: Cluster name to update
 - `--non-interactive`: Run without prompts, fail on MFA, and output JSON only.
-- `--username <USERNAME>`: Use a different username for SSH
-- `--port <PORT>`
-- `--identity-path <IDENTITY_PATH>`
-- `--default-base-path <DEFAULT_BASE_PATH>`
 - `-h, --help`: Print help

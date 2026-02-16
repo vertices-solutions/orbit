@@ -2464,6 +2464,7 @@ cancel them with `job cancel` or pass --force"
             .or_else(|| existing.default_base_path.clone());
         let default_scratch_directory = existing.default_scratch_directory.clone();
         let port = input.port.unwrap_or(existing.port);
+        let is_default = input.is_default.unwrap_or(existing.is_default);
 
         let cluster_name = input.name.clone();
         let result = self
@@ -2476,7 +2477,7 @@ cancel them with `job cancel` or pass --force"
                     identity_path,
                     default_base_path,
                     default_scratch_directory,
-                    is_default: existing.is_default,
+                    is_default,
                     emit_progress: false,
                 },
                 stream,
@@ -3110,6 +3111,7 @@ pub struct SetClusterInput {
     pub port: Option<u16>,
     pub identity_path: Option<String>,
     pub default_base_path: Option<String>,
+    pub is_default: Option<bool>,
 }
 
 #[derive(Clone, Debug)]

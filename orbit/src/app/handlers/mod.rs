@@ -528,33 +528,57 @@ pub async fn handle_cluster_set(
     ctx: &AppContext,
     cmd: SetClusterCommand,
 ) -> AppResult<CommandResult> {
-    let mut updated_fields = Vec::new();
-    if let Some(value) = cmd.host.as_deref() {
-        updated_fields.push(("host".to_string(), value.to_string()));
-    }
-    if let Some(value) = cmd.username.as_deref() {
-        updated_fields.push(("username".to_string(), value.to_string()));
-    }
-    if let Some(value) = cmd.port {
-        updated_fields.push(("port".to_string(), value.to_string()));
-    }
-    if let Some(value) = cmd.identity_path.as_deref() {
-        updated_fields.push(("identity_path".to_string(), value.to_string()));
-    }
-    if let Some(value) = cmd.default_base_path.as_deref() {
-        updated_fields.push(("default_base_path".to_string(), value.to_string()));
-    }
+    let update = parse_cluster_set_setting(&cmd.setting)?;
+    let mut host = None;
+    let mut username = None;
+    let mut port = None;
+    let mut identity_path = None;
+    let mut default_base_path = None;
+    let mut is_default = None;
+
+    let updated_field = match update {
+        ClusterSetUpdate::Host(value) => {
+            host = Some(value.clone());
+            ("host".to_string(), value)
+        }
+        ClusterSetUpdate::Username(value) => {
+            username = Some(value.clone());
+            ("username".to_string(), value)
+        }
+        ClusterSetUpdate::Port(value) => {
+            port = Some(value);
+            ("port".to_string(), value.to_string())
+        }
+        ClusterSetUpdate::IdentityPath(value) => {
+            identity_path = Some(value.clone());
+            ("identity_path".to_string(), value)
+        }
+        ClusterSetUpdate::DefaultBasePath(value) => {
+            default_base_path = Some(value.clone());
+            ("default_base_path".to_string(), value)
+        }
+        ClusterSetUpdate::Default(value) => {
+            is_default = Some(value);
+            ("default".to_string(), value.to_string())
+        }
+    };
+    let updated_fields = vec![updated_field];
 
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = resolve_cluster_by_name_or_default(
-        &clusters,
-        cmd.name.as_deref(),
-        "'cluster set <name> ...'",
-    )?;
+    let cluster = clusters
+        .iter()
+        .find(|cluster| cluster.name == cmd.cluster)
+        .cloned()
+        .ok_or_else(|| {
+            AppError::cluster_not_found(format!(
+                "cluster '{}' not found; use 'cluster add' to create it",
+                cmd.cluster
+            ))
+        })?;
 
-    if cmd.host.is_none() && cluster.host.is_none() {
+    if host.is_none() && cluster.host.is_none() {
         return Err(AppError::invalid_argument(format!(
-            "cluster '{}' has no address; pass --host to update it",
+            "cluster '{}' has no address; set host=<hostname-or-ip> first",
             cluster.name
         )));
     }
@@ -564,11 +588,12 @@ pub async fn handle_cluster_set(
         .orbitd
         .set_cluster(
             cluster.name.clone(),
-            cmd.host.clone(),
-            cmd.username.clone(),
-            cmd.identity_path.clone(),
-            cmd.port,
-            cmd.default_base_path.clone(),
+            host,
+            username,
+            identity_path,
+            port,
+            default_base_path,
+            is_default,
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
@@ -585,6 +610,63 @@ pub async fn handle_cluster_set(
         name: cluster.name,
         updated_fields,
     })
+}
+
+#[derive(Debug)]
+enum ClusterSetUpdate {
+    Host(String),
+    Username(String),
+    Port(u32),
+    IdentityPath(String),
+    DefaultBasePath(String),
+    Default(bool),
+}
+
+fn parse_cluster_set_setting(raw: &str) -> AppResult<ClusterSetUpdate> {
+    let (raw_key, raw_value) = raw.split_once('=').ok_or_else(|| {
+        AppError::invalid_argument(format!(
+            "invalid cluster setting '{raw}', expected KEY=VALUE"
+        ))
+    })?;
+    let key = raw_key.trim();
+    let value = raw_value.trim();
+    if key.is_empty() || value.is_empty() {
+        return Err(AppError::invalid_argument(format!(
+            "invalid cluster setting '{raw}', expected KEY=VALUE"
+        )));
+    }
+
+    match key {
+        "host" => Ok(ClusterSetUpdate::Host(value.to_string())),
+        "username" => Ok(ClusterSetUpdate::Username(value.to_string())),
+        "port" => {
+            let port = value.parse::<u32>().map_err(|_| {
+                AppError::invalid_argument(format!(
+                    "invalid value for port: '{value}' (expected integer in 1..=65535)"
+                ))
+            })?;
+            if port == 0 || port > u16::MAX as u32 {
+                return Err(AppError::invalid_argument(format!(
+                    "invalid value for port: '{value}' (expected integer in 1..=65535)"
+                )));
+            }
+            Ok(ClusterSetUpdate::Port(port))
+        }
+        "identity_path" | "identity-path" => Ok(ClusterSetUpdate::IdentityPath(value.to_string())),
+        "default_base_path" | "default-base-path" => {
+            Ok(ClusterSetUpdate::DefaultBasePath(value.to_string()))
+        }
+        "default" => match value {
+            "true" => Ok(ClusterSetUpdate::Default(true)),
+            "false" => Ok(ClusterSetUpdate::Default(false)),
+            _ => Err(AppError::invalid_argument(format!(
+                "invalid value for default: '{value}' (expected true or false)"
+            ))),
+        },
+        _ => Err(AppError::invalid_argument(format!(
+            "unsupported cluster setting key '{key}'; supported keys: host, username, port, identity_path, default_base_path, default"
+        ))),
+    }
 }
 
 pub async fn handle_cluster_delete(
@@ -1250,5 +1332,34 @@ impl StreamOutputPort for SilentStreamOutput {
 
     fn take_run_capture(&mut self) -> RunCapture {
         std::mem::take(&mut self.submit)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ClusterSetUpdate, parse_cluster_set_setting};
+
+    #[test]
+    fn parse_cluster_set_setting_accepts_default_true() {
+        let parsed = parse_cluster_set_setting("default=true").expect("parse setting");
+        assert!(matches!(parsed, ClusterSetUpdate::Default(true)));
+    }
+
+    #[test]
+    fn parse_cluster_set_setting_accepts_port() {
+        let parsed = parse_cluster_set_setting("port=2200").expect("parse setting");
+        assert!(matches!(parsed, ClusterSetUpdate::Port(2200)));
+    }
+
+    #[test]
+    fn parse_cluster_set_setting_rejects_unknown_key() {
+        let err = parse_cluster_set_setting("token=abc").expect_err("expected parse failure");
+        assert!(err.message.contains("supported keys"));
+    }
+
+    #[test]
+    fn parse_cluster_set_setting_rejects_missing_separator() {
+        let err = parse_cluster_set_setting("host").expect_err("expected parse failure");
+        assert!(err.message.contains("expected KEY=VALUE"));
     }
 }

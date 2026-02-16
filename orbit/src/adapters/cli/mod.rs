@@ -130,12 +130,8 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 is_default: args.is_default,
             }),
             ClusterCmd::Set(args) => ClusterCommand::Set(SetClusterCommand {
-                name: args.name,
-                host: args.host,
-                username: args.username,
-                port: args.port,
-                identity_path: args.identity_path,
-                default_base_path: args.default_base_path,
+                cluster: args.cluster,
+                setting: args.setting,
             }),
             ClusterCmd::Delete(args) => ClusterCommand::Delete(DeleteClusterCommand {
                 name: args.name,
@@ -224,6 +220,31 @@ mod tests {
                 assert!(list.blueprint.is_none());
             }
             _ => panic!("expected job list command"),
+        }
+    }
+
+    #[test]
+    fn command_from_cli_maps_cluster_set_setting() {
+        let command = cli_command();
+        let matches = command
+            .try_get_matches_from([
+                "orbit",
+                "cluster",
+                "set",
+                "--on",
+                "cluster-a",
+                "default=true",
+            ])
+            .expect("parse matches");
+        let cli = Cli::from_arg_matches(&matches).expect("parse cli");
+
+        let command = command_from_cli(cli, &matches);
+        match command {
+            Command::Cluster(ClusterCommand::Set(set)) => {
+                assert_eq!(set.cluster, "cluster-a");
+                assert_eq!(set.setting, "default=true");
+            }
+            _ => panic!("expected cluster set command"),
         }
     }
 }

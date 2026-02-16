@@ -191,6 +191,7 @@ pub trait OrbitdPort: Send + Sync {
         identity_path: Option<String>,
         port: Option<u32>,
         default_base_path: Option<String>,
+        is_default: Option<bool>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<StreamCapture>;

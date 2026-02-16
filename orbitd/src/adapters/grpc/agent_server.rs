@@ -1308,19 +1308,21 @@ impl Agent for GrpcAgent {
             .map_err(|_| Status::unknown(codes::INTERNAL_ERROR))?
             .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
 
-        let (name, host, username, port, identity_path, default_base_path) = match init.msg {
-            Some(proto::set_cluster_request::Msg::Init(i)) => (
-                i.name,
-                i.host,
-                i.username,
-                i.port,
-                i.identity_path,
-                i.default_base_path,
-            ),
-            _ => {
-                return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
-            }
-        };
+        let (name, host, username, port, identity_path, default_base_path, is_default) =
+            match init.msg {
+                Some(proto::set_cluster_request::Msg::Init(i)) => (
+                    i.name,
+                    i.host,
+                    i.username,
+                    i.port,
+                    i.identity_path,
+                    i.default_base_path,
+                    i.is_default,
+                ),
+                _ => {
+                    return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
+                }
+            };
         tracing::info!(
             "set_cluster start remote_addr={remote_addr} name={name} host={host:?} username={username:?}"
         );
@@ -1357,6 +1359,7 @@ impl Agent for GrpcAgent {
             port,
             identity_path,
             default_base_path,
+            is_default,
         };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
         let stream_output = GrpcStreamOutput {

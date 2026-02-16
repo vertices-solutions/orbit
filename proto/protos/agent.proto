@@ -315,6 +315,7 @@ message SetClusterInit {
   optional uint32 port = 4;
   optional string identity_path = 5;
   optional string default_base_path = 6;
+  optional bool is_default = 7;
 }
 
 message SetClusterRequest {

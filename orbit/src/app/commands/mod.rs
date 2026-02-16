@@ -147,12 +147,8 @@ pub struct AddClusterCommand {
 
 #[derive(Debug, Clone)]
 pub struct SetClusterCommand {
-    pub name: Option<String>,
-    pub host: Option<String>,
-    pub username: Option<String>,
-    pub port: Option<u32>,
-    pub identity_path: Option<String>,
-    pub default_base_path: Option<String>,
+    pub cluster: String,
+    pub setting: String,
 }
 
 #[derive(Debug, Clone)]
