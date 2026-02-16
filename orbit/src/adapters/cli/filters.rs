@@ -2,23 +2,24 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use clap::ArgMatches;
-use proto::{SubmitPathFilterAction, SubmitPathFilterRule};
+use proto::{RunPathFilterAction, RunPathFilterRule};
 
-pub(super) fn submit_filters_from_matches(matches: &ArgMatches) -> Vec<SubmitPathFilterRule> {
+pub(super) fn run_filters_from_matches(matches: &ArgMatches) -> Vec<RunPathFilterRule> {
     let sub_matches = match matches.subcommand() {
+        Some(("run", scope)) => scope,
         Some(("job", scope)) => match scope.subcommand() {
-            Some(("submit", submit)) => submit,
+            Some(("run", run)) => run,
             _ => return Vec::new(),
         },
-        Some(("project", scope)) => match scope.subcommand() {
-            Some(("submit", submit)) => submit,
+        Some(("blueprint", scope)) => match scope.subcommand() {
+            Some(("run", run)) => run,
             _ => return Vec::new(),
         },
         _ => return Vec::new(),
     };
 
-    let mut ordered: Vec<(usize, SubmitPathFilterAction, String)> = Vec::new();
-    let mut push_rules = |arg: &str, action: SubmitPathFilterAction| {
+    let mut ordered: Vec<(usize, RunPathFilterAction, String)> = Vec::new();
+    let mut push_rules = |arg: &str, action: RunPathFilterAction| {
         let values: Vec<String> = sub_matches
             .get_many::<String>(arg)
             .map(|vals| vals.map(|v| v.to_string()).collect())
@@ -32,13 +33,13 @@ pub(super) fn submit_filters_from_matches(matches: &ArgMatches) -> Vec<SubmitPat
         }
     };
 
-    push_rules("include", SubmitPathFilterAction::Include);
-    push_rules("exclude", SubmitPathFilterAction::Exclude);
+    push_rules("include", RunPathFilterAction::Include);
+    push_rules("exclude", RunPathFilterAction::Exclude);
 
     ordered.sort_by_key(|(idx, _, _)| *idx);
     ordered
         .into_iter()
-        .map(|(_, action, pattern)| SubmitPathFilterRule {
+        .map(|(_, action, pattern)| RunPathFilterRule {
             action: action as i32,
             pattern,
         })
@@ -52,12 +53,12 @@ mod tests {
     use clap::CommandFactory;
 
     #[test]
-    fn submit_filters_preserve_flag_order() {
+    fn run_filters_preserve_flag_order_for_job_run() {
         let matches = Cli::command().get_matches_from([
             "orbit",
             "job",
-            "submit",
-            "--to",
+            "run",
+            "--on",
             "cluster-a",
             "./project",
             "--include",
@@ -67,7 +68,7 @@ mod tests {
             "--include",
             "c",
         ]);
-        let filters = submit_filters_from_matches(&matches);
+        let filters = run_filters_from_matches(&matches);
         let patterns: Vec<&str> = filters.iter().map(|f| f.pattern.as_str()).collect();
         let actions: Vec<i32> = filters.iter().map(|f| f.action).collect();
 
@@ -75,28 +76,28 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                SubmitPathFilterAction::Include as i32,
-                SubmitPathFilterAction::Exclude as i32,
-                SubmitPathFilterAction::Include as i32
+                RunPathFilterAction::Include as i32,
+                RunPathFilterAction::Exclude as i32,
+                RunPathFilterAction::Include as i32
             ]
         );
     }
 
     #[test]
-    fn project_submit_filters_preserve_flag_order() {
+    fn run_filters_preserve_flag_order_for_blueprint_run() {
         let matches = Cli::command().get_matches_from([
             "orbit",
-            "project",
-            "submit",
+            "blueprint",
+            "run",
             "proj-a",
-            "--to",
+            "--on",
             "cluster-a",
             "--exclude",
             "tmp/**",
             "--include",
             "src/**",
         ]);
-        let filters = submit_filters_from_matches(&matches);
+        let filters = run_filters_from_matches(&matches);
         let patterns: Vec<&str> = filters.iter().map(|f| f.pattern.as_str()).collect();
         let actions: Vec<i32> = filters.iter().map(|f| f.action).collect();
 
@@ -104,9 +105,27 @@ mod tests {
         assert_eq!(
             actions,
             vec![
-                SubmitPathFilterAction::Exclude as i32,
-                SubmitPathFilterAction::Include as i32
+                RunPathFilterAction::Exclude as i32,
+                RunPathFilterAction::Include as i32
             ]
         );
+    }
+
+    #[test]
+    fn run_filters_preserve_flag_order_for_top_level_run() {
+        let matches = Cli::command().get_matches_from([
+            "orbit",
+            "run",
+            "./project",
+            "--on",
+            "cluster-a",
+            "--exclude",
+            "target/**",
+            "--include",
+            "src/**",
+        ]);
+        let filters = run_filters_from_matches(&matches);
+        let patterns: Vec<&str> = filters.iter().map(|f| f.pattern.as_str()).collect();
+        assert_eq!(patterns, vec!["target/**", "src/**"]);
     }
 }

@@ -1,4 +1,4 @@
-[project]
+[blueprint]
 name = "94_special_templated_hashes"
 
 [sync]

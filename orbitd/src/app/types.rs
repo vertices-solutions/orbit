@@ -138,7 +138,7 @@ pub struct NewJob {
     pub remote_path: String,
     pub stdout_path: String,
     pub stderr_path: Option<String>,
-    pub project_name: Option<String>,
+    pub blueprint_name: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub template_values: Option<String>,
 }
@@ -158,14 +158,14 @@ pub struct JobRecord {
     pub remote_path: String,
     pub stdout_path: String,
     pub stderr_path: Option<String>,
-    pub project_name: Option<String>,
+    pub blueprint_name: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub template_values: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
-pub struct ProjectRecord {
+pub struct BlueprintRecord {
     pub name: String,
     pub path: String,
     pub created_at: String,
@@ -183,7 +183,7 @@ pub struct ProjectRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NewProjectBuild {
+pub struct NewBlueprintBuild {
     pub name: String,
     pub path: String,
     pub tarball_hash: String,

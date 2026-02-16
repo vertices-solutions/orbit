@@ -15,10 +15,10 @@ use crate::app::ports::{FilesystemPort, InteractionPort, NetworkPort};
 mod project;
 mod templates;
 pub use project::{
-    OrbitfileProjectConfig, ProjectRuleSet, TemplateConfig, TemplateField, TemplateFieldType,
-    build_default_orbitfile_contents, discover_project_from_submit_root, load_project_from_root,
-    merge_submit_filters, resolve_orbitfile_sbatch_script, sanitize_project_name,
-    template_config_from_json, upsert_orbitfile_project_name, validate_project_name,
+    BlueprintRuleSet, OrbitfileBlueprintConfig, TemplateConfig, TemplateField, TemplateFieldType,
+    build_default_orbitfile_contents, discover_blueprint_from_run_root, load_blueprint_from_root,
+    merge_run_filters, resolve_orbitfile_sbatch_script, sanitize_blueprint_name,
+    template_config_from_json, upsert_orbitfile_blueprint_name, validate_blueprint_name,
 };
 pub use templates::{TemplateSpecialContext, TemplateValues, resolve_template_values};
 
@@ -434,7 +434,7 @@ impl<'a> SbatchSelector<'a> {
     pub async fn select_from_candidates(&self, candidates: &[String]) -> AppResult<String> {
         match candidates.len() {
             0 => Err(AppError::invalid_argument(
-                "no .sbatch files found in project metadata; provide the script path explicitly",
+                "no .sbatch files found in blueprint metadata; provide the script path explicitly",
             )),
             1 => Ok(candidates[0].clone()),
             _ => {

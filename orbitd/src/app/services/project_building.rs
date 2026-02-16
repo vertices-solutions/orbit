@@ -19,7 +19,7 @@ pub fn create_tarball(
 ) -> AppResult<()> {
     if !source_root.is_dir() {
         return Err(invalid_argument(format!(
-            "project root '{}' is not a directory",
+            "blueprint root '{}' is not a directory",
             source_root.display()
         )));
     }
@@ -44,7 +44,8 @@ pub fn create_tarball(
 
     let mut entries: Vec<(PathBuf, bool)> = Vec::new();
     for entry in WalkDir::new(source_root).follow_links(false) {
-        let entry = entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
+        let entry =
+            entry.map_err(|err| local_error(format!("failed to walk blueprint root: {err}")))?;
         let path = entry.path();
         let rel = path
             .strip_prefix(source_root)

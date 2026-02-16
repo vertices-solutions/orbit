@@ -5,12 +5,12 @@ use async_trait::async_trait;
 use std::path::Path;
 
 use crate::app::errors::AppResult;
-use crate::app::ports::{MfaPort, SubmitStreamOutputPort};
+use crate::app::ports::{MfaPort, RunStreamOutputPort};
 use crate::app::types::{SshConfig, SyncOptions};
 
 #[async_trait]
 /// File transfer/sync boundary between local and remote paths.
-/// Supports submit-time local-to-remote sync with streaming and remote-to-local retrieval.
+/// Supports run-time local-to-remote sync with streaming and remote-to-local retrieval.
 /// Send+Sync because FileSyncPort is held inside UseCases as Arc<dyn FileSyncPort>, and UseCases is
 /// cloned and used concurrently by tonic handlers (which spawn tasks on a multithreaded Tokio runtime).
 /// Under normal conditions, there should be only one adapter implementing it (i.e., SshAdapter)
@@ -21,7 +21,7 @@ pub trait FileSyncPort: Send + Sync {
         local_dir: &Path,
         remote_dir: &str,
         options: SyncOptions,
-        stream: &dyn SubmitStreamOutputPort,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()>;
 

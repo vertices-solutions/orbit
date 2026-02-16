@@ -4,6 +4,7 @@ const sidebars = {
     'intro',
     'quickstart',
     'versioning',
+    'orbitfile',
     {
       type: 'category',
       label: 'CLI',

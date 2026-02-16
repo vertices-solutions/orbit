@@ -11,7 +11,7 @@ mod sbatch_picker;
 use std::io::Write;
 
 use crate::app::commands::{
-    CommandResult, InitActionStatus, ProjectInitAction, StreamCapture, SubmitCapture,
+    BlueprintInitAction, CommandResult, InitActionStatus, RunCapture, StreamCapture,
 };
 use crate::app::errors::{AppError, AppResult, format_server_error};
 use crate::app::ports::{
@@ -23,8 +23,8 @@ use console::{
 };
 use enum_picker::pick_enum_value;
 use format::{
-    format_cluster_details, format_clusters_table, format_job_details, format_jobs_table,
-    format_projects_table,
+    format_blueprints_table, format_cluster_details, format_clusters_table, format_job_details,
+    format_jobs_table,
 };
 use mfa::{clear_transient_mfa, collect_mfa_answers, collect_mfa_answers_transient};
 use sbatch_picker::pick_sbatch_script;
@@ -37,7 +37,7 @@ impl TerminalOutput {
     }
 }
 
-fn render_project_init_actions(actions: &[ProjectInitAction]) -> AppResult<()> {
+fn render_blueprint_init_actions(actions: &[BlueprintInitAction]) -> AppResult<()> {
     for action in actions {
         match &action.status {
             InitActionStatus::Success => {
@@ -106,28 +106,28 @@ impl OutputPort for TerminalOutput {
             CommandResult::ClusterDelete { name } => {
                 println!("Cluster '{}' deleted.", name);
             }
-            CommandResult::ProjectInit { name, actions, .. } => {
-                render_project_init_actions(actions)?;
-                println!("Project '{}' initialized", name);
+            CommandResult::BlueprintInit { name, actions, .. } => {
+                render_blueprint_init_actions(actions)?;
+                println!("Blueprint '{}' initialized", name);
             }
-            CommandResult::ProjectBuild { project } => {
-                let name = if let Some(tag) = project.version_tag.as_deref() {
-                    format!("{}:{}", project.name, tag)
+            CommandResult::BlueprintBuild { blueprint } => {
+                let name = if let Some(tag) = blueprint.version_tag.as_deref() {
+                    format!("{}:{}", blueprint.name, tag)
                 } else {
-                    project.name.clone()
+                    blueprint.name.clone()
                 };
                 print_with_green_check_stdout(&format!("built {name} successfully"))
                     .map_err(|err| AppError::local_error(err.to_string()))?;
             }
-            CommandResult::ProjectList { projects } => {
-                if projects.is_empty() {
-                    println!("No projects registered.");
+            CommandResult::BlueprintList { blueprints } => {
+                if blueprints.is_empty() {
+                    println!("No blueprints registered.");
                 } else {
-                    print!("{}", format_projects_table(projects));
+                    print!("{}", format_blueprints_table(blueprints));
                 }
             }
-            CommandResult::ProjectDelete { name } => {
-                println!("Project '{}' deleted.", name);
+            CommandResult::BlueprintDelete { name } => {
+                println!("Blueprint '{}' deleted.", name);
             }
         }
         Ok(())
@@ -302,7 +302,7 @@ impl InteractionPort for TerminalInteraction {
 struct TerminalStreamOutput {
     kind: StreamKind,
     stream: StreamCapture,
-    submit: SubmitCapture,
+    submit: RunCapture,
     printed_remote_path: bool,
     transfer_spinner: Option<Spinner>,
 }
@@ -312,14 +312,14 @@ impl TerminalStreamOutput {
         Self {
             kind,
             stream: StreamCapture::default(),
-            submit: SubmitCapture::default(),
+            submit: RunCapture::default(),
             printed_remote_path: false,
             transfer_spinner: None,
         }
     }
 
-    fn record_submit(&mut self, f: impl FnOnce(&mut SubmitCapture)) {
-        if self.kind == StreamKind::Submit {
+    fn record_submit(&mut self, f: impl FnOnce(&mut RunCapture)) {
+        if self.kind == StreamKind::Run {
             f(&mut self.submit);
         }
     }
@@ -338,13 +338,13 @@ impl TerminalStreamOutput {
     }
 }
 
-fn is_submit_conflict_message(text: &str) -> bool {
+fn is_run_conflict_message(text: &str) -> bool {
     let trimmed = text.trim();
     if !trimmed.starts_with("job ") {
         return false;
     }
     let infix = " is still running in ";
-    let suffix = "; use --force to submit anyway";
+    let suffix = "; use --force to run anyway";
     let Some((_, rest)) = trimmed.split_once(infix) else {
         return false;
     };
@@ -377,7 +377,7 @@ fn parse_stderr_status_line(bytes: &[u8]) -> Option<StderrStatusLine<'_>> {
 #[tonic::async_trait]
 impl StreamOutputPort for TerminalStreamOutput {
     async fn on_stdout(&mut self, bytes: &[u8]) -> AppResult<()> {
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.stop_transfer_spinner();
         }
         std::io::stdout()
@@ -390,13 +390,13 @@ impl StreamOutputPort for TerminalStreamOutput {
     }
 
     async fn on_stderr(&mut self, bytes: &[u8]) -> AppResult<()> {
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.stop_transfer_spinner();
         }
         let mut printed = true;
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             if let Ok(text) = std::str::from_utf8(bytes) {
-                if is_submit_conflict_message(text) {
+                if is_run_conflict_message(text) {
                     printed = false;
                 }
             }
@@ -425,7 +425,7 @@ impl StreamOutputPort for TerminalStreamOutput {
     }
 
     async fn on_exit_code(&mut self, code: i32) -> AppResult<()> {
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.stop_transfer_spinner();
         }
         self.stream.exit_code = Some(code);
@@ -434,25 +434,25 @@ impl StreamOutputPort for TerminalStreamOutput {
     }
 
     async fn on_error(&mut self, code: &str) -> AppResult<()> {
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.stop_transfer_spinner();
         }
         self.stream.error_code = Some(code.to_string());
         self.record_submit(|capture| capture.error_code = Some(code.to_string()));
-        if self.kind != StreamKind::Submit {
+        if self.kind != StreamKind::Run {
             eprintln!("{}", format_server_error(code));
         }
         Ok(())
     }
 
-    async fn on_submit_status(&mut self, status: &proto::SubmitStatus) -> AppResult<()> {
-        if self.kind != StreamKind::Submit {
+    async fn on_run_status(&mut self, status: &proto::RunStatus) -> AppResult<()> {
+        if self.kind != StreamKind::Run {
             return Ok(());
         }
-        let phase = proto::submit_status::Phase::try_from(status.phase)
-            .unwrap_or(proto::submit_status::Phase::Unspecified);
+        let phase = proto::run_status::Phase::try_from(status.phase)
+            .unwrap_or(proto::run_status::Phase::Unspecified);
         match phase {
-            proto::submit_status::Phase::Resolved => {
+            proto::run_status::Phase::Resolved => {
                 if !status.remote_path.is_empty() && !self.printed_remote_path {
                     print_with_green_check_stdout(&format!("Remote path: {}", status.remote_path))
                         .map_err(|err| AppError::local_error(err.to_string()))?;
@@ -462,10 +462,10 @@ impl StreamOutputPort for TerminalStreamOutput {
                     self.submit.remote_path = Some(status.remote_path.clone());
                 }
             }
-            proto::submit_status::Phase::TransferStart => {
+            proto::run_status::Phase::TransferStart => {
                 self.start_transfer_spinner();
             }
-            proto::submit_status::Phase::TransferDone => {
+            proto::run_status::Phase::TransferDone => {
                 self.stop_transfer_spinner();
                 print_with_green_check_stderr("Data transfer complete.")
                     .map_err(|err| AppError::local_error(err.to_string()))?;
@@ -475,15 +475,15 @@ impl StreamOutputPort for TerminalStreamOutput {
         Ok(())
     }
 
-    async fn on_submit_result(&mut self, result: &proto::SubmitResult) -> AppResult<()> {
-        if self.kind != StreamKind::Submit {
+    async fn on_run_result(&mut self, result: &proto::RunResult) -> AppResult<()> {
+        if self.kind != StreamKind::Run {
             return Ok(());
         }
         self.stop_transfer_spinner();
-        let status = proto::submit_result::Status::try_from(result.status)
-            .unwrap_or(proto::submit_result::Status::Unspecified);
+        let status = proto::run_result::Status::try_from(result.status)
+            .unwrap_or(proto::run_result::Status::Unspecified);
         match status {
-            proto::submit_result::Status::Submitted => {
+            proto::run_result::Status::Submitted => {
                 if let Some(job_id) = result.job_id {
                     print_with_green_check_stdout(&format!("Job {job_id} submitted!"))
                         .map_err(|err| AppError::local_error(err.to_string()))?;
@@ -494,7 +494,7 @@ impl StreamOutputPort for TerminalStreamOutput {
                 self.submit.job_id = result.job_id;
                 self.submit.exit_code = Some(0);
             }
-            proto::submit_result::Status::Failed => {
+            proto::run_result::Status::Failed => {
                 let detail = result.detail.trim();
                 if detail.is_empty() {
                     eprintln!("failed");
@@ -506,9 +506,9 @@ impl StreamOutputPort for TerminalStreamOutput {
                 }
                 self.submit.exit_code = Some(1);
             }
-            proto::submit_result::Status::Unspecified => {
-                eprintln!("failed: submit result missing status");
-                self.submit.detail = Some("submit result missing status".to_string());
+            proto::run_result::Status::Unspecified => {
+                eprintln!("failed: run result missing status");
+                self.submit.detail = Some("run result missing status".to_string());
                 self.submit.exit_code = Some(1);
             }
         }
@@ -519,7 +519,7 @@ impl StreamOutputPort for TerminalStreamOutput {
         std::mem::take(&mut self.stream)
     }
 
-    fn take_submit_capture(&mut self) -> SubmitCapture {
+    fn take_run_capture(&mut self) -> RunCapture {
         std::mem::take(&mut self.submit)
     }
 }

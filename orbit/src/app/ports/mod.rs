@@ -3,15 +3,15 @@
 
 use std::path::{Path, PathBuf};
 
-use proto::{ListClustersUnitResponse, ListJobsUnitResponse, SubmitResult, SubmitStatus};
+use proto::{ListClustersUnitResponse, ListJobsUnitResponse, RunResult, RunStatus};
 
-use crate::app::commands::{AddClusterCapture, CommandResult, StreamCapture, SubmitCapture};
+use crate::app::commands::{AddClusterCapture, CommandResult, RunCapture, StreamCapture};
 use crate::app::errors::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StreamKind {
     Generic,
-    Submit,
+    Run,
 }
 
 pub trait PromptFeedbackPort: Send {
@@ -77,14 +77,14 @@ pub trait OrbitdPort: Send + Sync {
     async fn list_jobs(
         &self,
         cluster: Option<String>,
-        project: Option<String>,
+        blueprint: Option<String>,
     ) -> AppResult<Vec<ListJobsUnitResponse>>;
     async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>>;
     async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>>;
-    async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord>;
-    async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord>;
-    async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>>;
-    async fn delete_project(&self, name: &str) -> AppResult<bool>;
+    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<proto::BlueprintRecord>;
+    async fn get_blueprint(&self, name: &str) -> AppResult<proto::BlueprintRecord>;
+    async fn list_blueprints(&self) -> AppResult<Vec<proto::BlueprintRecord>>;
+    async fn delete_blueprint(&self, name: &str) -> AppResult<bool>;
     async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool>;
 
     async fn ls(
@@ -131,7 +131,7 @@ pub trait OrbitdPort: Send + Sync {
         interaction: &dyn InteractionPort,
     ) -> AppResult<(PathBuf, StreamCapture)>;
 
-    async fn submit_job(
+    async fn run_job(
         &self,
         name: String,
         local_path: String,
@@ -139,35 +139,35 @@ pub trait OrbitdPort: Send + Sync {
         new_directory: bool,
         force: bool,
         sbatchscript: String,
-        filters: Vec<proto::SubmitPathFilterRule>,
-        project_name: Option<String>,
+        filters: Vec<proto::RunPathFilterRule>,
+        blueprint_name: Option<String>,
         default_retrieve_path: Option<String>,
         template_values_json: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<SubmitCapture>;
+    ) -> AppResult<RunCapture>;
 
-    async fn submit_project(
+    async fn run_blueprint(
         &self,
-        project_name: String,
-        project_tag: String,
+        blueprint_name: String,
+        blueprint_tag: String,
         name: String,
         remote_path: Option<String>,
         new_directory: bool,
         force: bool,
         sbatchscript: String,
-        filters: Vec<proto::SubmitPathFilterRule>,
+        filters: Vec<proto::RunPathFilterRule>,
         default_retrieve_path: Option<String>,
         template_values_json: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<SubmitCapture>;
+    ) -> AppResult<RunCapture>;
 
-    async fn build_project(
+    async fn build_blueprint(
         &self,
         path: String,
         package_git: bool,
-    ) -> AppResult<proto::ProjectRecord>;
+    ) -> AppResult<proto::BlueprintRecord>;
 
     async fn add_cluster(
         &self,
@@ -215,11 +215,11 @@ pub trait StreamOutputPort: Send {
     async fn on_stderr(&mut self, bytes: &[u8]) -> AppResult<()>;
     async fn on_exit_code(&mut self, code: i32) -> AppResult<()>;
     async fn on_error(&mut self, code: &str) -> AppResult<()>;
-    async fn on_submit_status(&mut self, status: &SubmitStatus) -> AppResult<()>;
-    async fn on_submit_result(&mut self, result: &SubmitResult) -> AppResult<()>;
+    async fn on_run_status(&mut self, status: &RunStatus) -> AppResult<()>;
+    async fn on_run_result(&mut self, result: &RunResult) -> AppResult<()>;
 
     fn take_stream_capture(&mut self) -> StreamCapture;
-    fn take_submit_capture(&mut self) -> SubmitCapture;
+    fn take_run_capture(&mut self) -> RunCapture;
 }
 
 #[tonic::async_trait]

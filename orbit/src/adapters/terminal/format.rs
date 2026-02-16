@@ -4,7 +4,7 @@
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
 
 use crate::adapters::presentation::{cluster_host_string, job_status};
-use crate::app::commands::ProjectListItem;
+use crate::app::commands::BlueprintListItem;
 
 pub(super) fn format_clusters_table(
     clusters: &[ListClustersUnitResponse],
@@ -215,7 +215,7 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
     let headers = [
         "job id",
         "cluster id",
-        "project",
+        "blueprint",
         "status",
         "created",
         "finished",
@@ -229,8 +229,8 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
             .scheduler_id
             .map(|id| id.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let project = item
-            .project_name
+        let blueprint = item
+            .blueprint_name
             .clone()
             .unwrap_or_else(|| "none".to_string());
         let completed_str = job_status(item);
@@ -238,7 +238,7 @@ pub(super) fn format_jobs_table(jobs: &[ListJobsUnitResponse]) -> String {
         rows.push((
             job_id,
             item.name.clone(),
-            project,
+            blueprint,
             completed_str.to_string(),
             item.created_at.clone(),
             finished_at,
@@ -312,14 +312,14 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
         .map(|id| id.to_string())
         .unwrap_or_else(|| "-".to_string());
     let completed_str = job_status(item);
-    let project = item.project_name.as_deref().unwrap_or("none");
+    let blueprint = item.blueprint_name.as_deref().unwrap_or("none");
     format!(
-        "job_id: {}\nlocal_path: {}\nremote_path: {}\nname: {}\nproject: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\nscheduler_id: {}\n",
+        "job_id: {}\nlocal_path: {}\nremote_path: {}\nname: {}\nblueprint: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\nscheduler_id: {}\n",
         item.job_id,
         item.local_path.as_str(),
         item.remote_path.as_str(),
         item.name,
-        project,
+        blueprint,
         completed_str,
         item.terminal_state.as_deref().unwrap_or("-"),
         item.created_at,
@@ -328,18 +328,18 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
     )
 }
 
-pub(super) fn format_projects_table(projects: &[ProjectListItem]) -> String {
+pub(super) fn format_blueprints_table(blueprints: &[BlueprintListItem]) -> String {
     let headers = ["name", "latest tag", "path", "updated"];
     let mut rows: Vec<(String, String, String, String)> = Vec::new();
-    for project in projects {
+    for blueprint in blueprints {
         rows.push((
-            project.name.clone(),
-            project
+            blueprint.name.clone(),
+            blueprint
                 .latest_tag
                 .clone()
                 .unwrap_or_else(|| "-".to_string()),
-            project.path.clone(),
-            project.updated_at.clone(),
+            blueprint.path.clone(),
+            blueprint.updated_at.clone(),
         ));
     }
 
@@ -436,7 +436,7 @@ mod tests {
             scheduler_state: scheduler_state.map(|s| s.to_string()),
             local_path: "/tmp/project".to_string(),
             remote_path: "/remote/project".to_string(),
-            project_name: None,
+            blueprint_name: None,
             default_retrieve_path: None,
         }
     }
@@ -488,7 +488,7 @@ mod tests {
         let job = sample_job(true, Some("COMPLETED"), None);
         let output = format_jobs_table(&[job]);
         assert!(output.contains("job id"));
-        assert!(output.contains("project"));
+        assert!(output.contains("blueprint"));
         assert!(output.contains("cluster-a"));
         assert!(output.contains("none"));
         assert!(output.contains("completed"));

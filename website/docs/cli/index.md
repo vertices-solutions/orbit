@@ -4,8 +4,8 @@ description: Command reference for the orbit CLI.
 ---
 
 This section contains generated command reference pages for `orbit`.
-Commands are grouped by top-level command family, for example `orbit project ...`
-pages are under the `orbit project` section.
+Commands are grouped by top-level command family, for example `orbit blueprint ...`
+pages are under the `orbit blueprint` section.
 
 The files under `website/docs/cli/commands/` are auto-generated from the live CLI help text.
 

@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use crate::app::AppContext;
-use crate::app::commands::{ClusterCommand, Command, JobCommand, ProjectCommand};
+use crate::app::commands::{BlueprintCommand, ClusterCommand, Command, JobCommand};
 use crate::app::errors::AppResult;
 use crate::app::handlers;
 
@@ -18,8 +18,9 @@ impl Dispatcher {
     pub async fn dispatch(&self, command: Command) -> AppResult<i32> {
         let result = match command {
             Command::Ping(cmd) => handlers::handle_ping(&self.ctx, cmd).await,
+            Command::Run(cmd) => handlers::handle_run(&self.ctx, cmd).await,
             Command::Job(cmd) => match cmd {
-                JobCommand::Submit(cmd) => handlers::handle_job_submit(&self.ctx, cmd).await,
+                JobCommand::Run(cmd) => handlers::handle_job_run(&self.ctx, cmd).await,
                 JobCommand::List(cmd) => handlers::handle_job_list(&self.ctx, cmd).await,
                 JobCommand::Get(cmd) => handlers::handle_job_get(&self.ctx, cmd).await,
                 JobCommand::Logs(cmd) => handlers::handle_job_logs(&self.ctx, cmd).await,
@@ -38,15 +39,19 @@ impl Dispatcher {
                     handlers::handle_cluster_delete(&self.ctx, cmd).await
                 }
             },
-            Command::Project(cmd) => match cmd {
-                ProjectCommand::Init(cmd) => handlers::handle_project_init(&self.ctx, cmd).await,
-                ProjectCommand::Build(cmd) => handlers::handle_project_build(&self.ctx, cmd).await,
-                ProjectCommand::Submit(cmd) => {
-                    handlers::handle_project_submit(&self.ctx, cmd).await
+            Command::Blueprint(cmd) => match cmd {
+                BlueprintCommand::Init(cmd) => {
+                    handlers::handle_blueprint_init(&self.ctx, cmd).await
                 }
-                ProjectCommand::List(cmd) => handlers::handle_project_list(&self.ctx, cmd).await,
-                ProjectCommand::Delete(cmd) => {
-                    handlers::handle_project_delete(&self.ctx, cmd).await
+                BlueprintCommand::Build(cmd) => {
+                    handlers::handle_blueprint_build(&self.ctx, cmd).await
+                }
+                BlueprintCommand::Run(cmd) => handlers::handle_blueprint_run(&self.ctx, cmd).await,
+                BlueprintCommand::List(cmd) => {
+                    handlers::handle_blueprint_list(&self.ctx, cmd).await
+                }
+                BlueprintCommand::Delete(cmd) => {
+                    handlers::handle_blueprint_delete(&self.ctx, cmd).await
                 }
             },
         };

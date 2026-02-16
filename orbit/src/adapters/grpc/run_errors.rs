@@ -8,7 +8,7 @@ pub struct RemotePathFailure<'a> {
 
 const REMOTE_PATH_IN_USE_REASON: &str = "in use by another job";
 const REMOTE_PATH_IN_USE_INFIX: &str = " is still running in ";
-const REMOTE_PATH_IN_USE_SUFFIX: &str = "; use --force to submit anyway";
+const REMOTE_PATH_IN_USE_SUFFIX: &str = "; use --force to run anyway";
 
 pub fn parse_remote_path_failure(message: &str) -> Option<RemotePathFailure<'_>> {
     parse_remote_path_in_use(message).map(|remote_path| RemotePathFailure {
@@ -37,13 +37,13 @@ mod tests {
 
     #[test]
     fn parse_remote_path_in_use_extracts_path() {
-        let message = "job 42 is still running in /scratch/run; use --force to submit anyway";
+        let message = "job 42 is still running in /scratch/run; use --force to run anyway";
         assert_eq!(parse_remote_path_in_use(message), Some("/scratch/run"));
     }
 
     #[test]
     fn parse_remote_path_failure_maps_reason() {
-        let message = "job 7 is still running in /data/run; use --force to submit anyway";
+        let message = "job 7 is still running in /data/run; use --force to run anyway";
         let failure = parse_remote_path_failure(message).expect("expected failure");
         assert_eq!(failure.remote_path, "/data/run");
         assert_eq!(failure.reason, REMOTE_PATH_IN_USE_REASON);

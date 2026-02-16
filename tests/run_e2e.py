@@ -216,7 +216,7 @@ def parse_job_id(output):
         match = re.search(pattern, cleaned)
         if match:
             return int(match.group(1))
-    raise RuntimeError("unable to parse job id from submit output")
+    raise RuntimeError("unable to parse job id from run output")
 
 
 def parse_remote_path(output):
@@ -227,7 +227,7 @@ def parse_remote_path(output):
             path = path.strip()
             if path:
                 return path
-    raise RuntimeError("unable to parse remote path from submit output")
+    raise RuntimeError("unable to parse remote path from run output")
 
 
 def parse_orbit_json(output):
@@ -272,7 +272,7 @@ def parse_orbit_error_output(output):
     return data
 
 
-def parse_submit_result(result):
+def parse_run_result(result):
     stdout = (result.stdout or "").strip()
     if stdout:
         try:
@@ -298,13 +298,13 @@ def parse_submit_result(result):
     return parse_job_id(output), parse_remote_path(output)
 
 
-def parse_submit_json(result):
+def parse_run_json(result):
     data = parse_json_output(result)
     if not isinstance(data, dict):
-        raise RuntimeError("submit JSON should be an object")
+        raise RuntimeError("run JSON should be an object")
     job_id = data.get("job_id")
     if job_id is None:
-        raise RuntimeError("submit JSON missing job_id")
+        raise RuntimeError("run JSON missing job_id")
     return int(job_id), data.get("remote_path")
 
 
@@ -321,15 +321,15 @@ def job_status(orbit_cmd, job_id):
     return data.get("status"), data.get("terminal_state")
 
 
-def list_jobs_json(orbit_cmd, cluster=None, project=None):
+def list_jobs_json(orbit_cmd, cluster=None, blueprint=None):
     cmd = list(orbit_cmd)
     if "--non-interactive" not in cmd:
         cmd.append("--non-interactive")
     cmd.extend(["job", "list"])
     if cluster:
         cmd.extend(["--cluster", cluster])
-    if project:
-        cmd.extend(["--project", project])
+    if blueprint:
+        cmd.extend(["--blueprint", blueprint])
     data = parse_json_output(run_cmd(cmd))
     if not isinstance(data, list):
         raise RuntimeError("job list JSON should be an array")
@@ -383,24 +383,36 @@ def validate_cluster_list_flags(orbit_cmd, cluster_name):
         )
 
 
-def validate_project_job_filter(orbit_cmd, cluster, project_name, expected_job_id):
-    jobs = list_jobs_json(orbit_cmd, cluster=cluster, project=project_name)
+def validate_blueprint_job_filter(orbit_cmd, cluster, blueprint_name, expected_job_id):
+    jobs = list_jobs_json(orbit_cmd, cluster=cluster, blueprint=blueprint_name)
     if not jobs:
         raise RuntimeError(
-            f"job list --project {project_name}: expected at least one job in response"
+            f"job list --blueprint {blueprint_name}: expected at least one job in response"
         )
     if not any(item.get("job_id") == expected_job_id for item in jobs):
         raise RuntimeError(
-            f"job list --project {project_name}: missing submitted job {expected_job_id}"
+            f"job list --blueprint {blueprint_name}: missing submitted job {expected_job_id}"
         )
     mismatched = [
         item.get("job_id")
         for item in jobs
-        if item.get("project_name") != project_name
+        if item.get("blueprint_name") != blueprint_name
     ]
     if mismatched:
         raise RuntimeError(
-            f"job list --project {project_name}: received mismatched jobs {mismatched}"
+            f"job list --blueprint {blueprint_name}: received mismatched jobs {mismatched}"
+        )
+
+
+def validate_directory_job_has_no_blueprint(orbit_cmd, cluster, job_id):
+    jobs = list_jobs_json(orbit_cmd, cluster=cluster)
+    record = next((item for item in jobs if item.get("job_id") == job_id), None)
+    if record is None:
+        raise RuntimeError(f"job list: job {job_id} missing while validating blueprint metadata")
+    if record.get("blueprint_name") is not None:
+        raise RuntimeError(
+            f"directory run job {job_id} unexpectedly has blueprint_name="
+            f"{record.get('blueprint_name')!r}"
         )
 
 
@@ -612,22 +624,21 @@ def validate_templated_hashes(project_out, expected_count, expected_method):
         raise RuntimeError("templated_hashes: inputs.txt hash method mismatch")
 
 
-def build_submit_cmd(orbit_cmd, cluster, project_path, submit_args, extra_args=None):
+def build_run_cmd(orbit_cmd, cluster, project_path, run_args, extra_args=None):
     cmd = orbit_cmd + [
-        "job",
-        "submit",
+        "run",
         str(project_path),
-        "--to",
+        "--on",
         cluster,
     ]
-    cmd.extend(submit_args)
+    cmd.extend(run_args)
     if extra_args:
         cmd.extend(extra_args)
     return cmd
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Run orbit end-to-end test projects.")
+    parser = argparse.ArgumentParser(description="Run orbit end-to-end test scenarios.")
     parser.add_argument("--cluster", required=True, help="Cluster name configured in orbit.")
     parser.add_argument(
         "--orbit-bin",
@@ -691,33 +702,33 @@ def main():
         validate_cluster_list_flags(non_interactive_cmd, args.cluster)
         print("cluster list flags: ok")
 
-        projects = [
+        scenarios = [
             {
                 "id": "01_smoke",
                 "path": repo_root / "tests/01_smoke",
-                "submit_args": [],
+                "run_args": [],
                 "retrieve": ["results"],
                 "validate": lambda out: validate_smoke(out, repo_root),
             },
             {
                 "id": "02_python_stats",
                 "path": repo_root / "tests/02_python_stats",
-                "submit_args": ["--sbatchscript", "scripts/submit.sbatch"],
+                "run_args": ["--sbatchscript", "scripts/submit.sbatch"],
                 "retrieve": ["results"],
                 "validate": validate_python_stats,
             },
             {
                 "id": "03_filter_tree",
                 "path": repo_root / "tests/03_filter_tree",
-            "submit_args": [
-                "--include",
-                "cache/keep.txt",
-                "--exclude",
-                "cache/*",
-                "--exclude",
-                "*.tmp",
-                "--exclude",
-                "build/",
+                "run_args": [
+                    "--include",
+                    "cache/keep.txt",
+                    "--exclude",
+                    "cache/*",
+                    "--exclude",
+                    "*.tmp",
+                    "--exclude",
+                    "build/",
                 ],
                 "retrieve": ["results/files.txt"],
                 "validate": validate_filter_tree,
@@ -725,7 +736,7 @@ def main():
             {
                 "id": "04_binary_output",
                 "path": repo_root / "tests/04_binary_output",
-                "submit_args": [],
+                "run_args": [],
                 "retrieve": [
                     "results/raw/random.bin",
                     "results/raw/random.sha256",
@@ -736,7 +747,7 @@ def main():
             {
                 "id": "05_cancel_job",
                 "path": repo_root / "tests/05_cancel_job",
-                "submit_args": [],
+                "run_args": [],
                 "cancel": True,
                 "retrieve": [],
                 "validate": lambda out: None,
@@ -744,7 +755,7 @@ def main():
             {
                 "id": "06_templated_hashes",
                 "path": repo_root / "tests/06_templated_hashes",
-                "submit_args": [
+                "run_args": [
                     "--field",
                     "hash_method=sha256",
                     "--field",
@@ -756,90 +767,90 @@ def main():
             },
         ]
 
-        for project in projects:
-            submit_cmd = build_submit_cmd(
+        for scenario in scenarios:
+            run_cmdline = build_run_cmd(
                 orbit_cmd,
                 args.cluster,
-                project["path"],
-                project["submit_args"],
+                scenario["path"],
+                scenario["run_args"],
             )
-            result = run_cmd(submit_cmd)
-            job_id, remote_path = parse_submit_result(result)
+            result = run_cmd(run_cmdline)
+            job_id, remote_path = parse_run_result(result)
             job_ids = [job_id]
             job_paths = {job_id: remote_path}
             primary_job_id = job_id
-            if project.get("cancel"):
-                print(f"{project['id']}: submitted job {job_id}")
+            if scenario.get("cancel"):
+                print(f"{scenario['id']}: submitted job {job_id}")
                 cancel_cmd = orbit_cmd + ["job", "cancel", str(job_id), "--yes"]
                 run_cmd(cancel_cmd)
                 wait_for_job_canceled(orbit_cmd, job_id, args.timeout, args.poll)
-                print(f"{project['id']}: job {job_id} canceled")
+                print(f"{scenario['id']}: job {job_id} canceled")
                 cleanup_job_and_validate(
                     orbit_cmd, args.cluster, job_id, job_paths[job_id]
                 )
-                print(f"{project['id']}: cleanup ok for job {job_id}")
+                print(f"{scenario['id']}: cleanup ok for job {job_id}")
                 continue
-            if project["id"] == "01_smoke":
-                conflict_cmd = build_submit_cmd(
+            if scenario["id"] == "01_smoke":
+                conflict_cmd = build_run_cmd(
                     non_interactive_cmd,
                     args.cluster,
-                    project["path"],
-                    project["submit_args"],
+                    scenario["path"],
+                    scenario["run_args"],
                 )
                 conflict_status, conflict_output = run_cmd_status(conflict_cmd)
                 if conflict_status == 0:
                     raise RuntimeError(
-                        "submit should fail while a job is running in the same directory"
+                        "run should fail while a job is running in the same directory"
                     )
                 conflict_error = parse_orbit_error_output(conflict_output)
                 error_type = str(conflict_error.get("errorType") or "").lower()
                 if error_type != "conflict":
                     raise RuntimeError(
-                        "submit conflict expected errorType=conflict "
+                        "run conflict expected errorType=conflict "
                         f"(actual={conflict_error.get('errorType')})"
                     )
                 reason = str(conflict_error.get("reason") or "")
                 if not reason:
                     raise RuntimeError(
-                        "submit conflict message missing reason "
+                        "run conflict message missing reason "
                         f"(reason={reason})"
                     )
 
-                force_cmd = build_submit_cmd(
+                force_cmd = build_run_cmd(
                     orbit_cmd,
                     args.cluster,
-                    project["path"],
-                    project["submit_args"],
+                    scenario["path"],
+                    scenario["run_args"],
                     extra_args=["--force"],
                 )
                 force_result = run_cmd(force_cmd)
-                force_job_id, force_remote_path = parse_submit_result(force_result)
+                force_job_id, force_remote_path = parse_run_result(force_result)
                 if force_remote_path != remote_path:
                     raise RuntimeError(
-                        "force submit did not reuse existing remote path"
+                        "force run did not reuse existing remote path"
                     )
                 job_ids.append(force_job_id)
                 job_paths[force_job_id] = force_remote_path
 
-                new_dir_cmd = build_submit_cmd(
+                new_dir_cmd = build_run_cmd(
                     orbit_cmd,
                     args.cluster,
-                    project["path"],
-                    project["submit_args"],
+                    scenario["path"],
+                    scenario["run_args"],
                     extra_args=["--new-directory"],
                 )
                 new_dir_result = run_cmd(new_dir_cmd)
-                new_dir_job_id, new_dir_remote_path = parse_submit_result(new_dir_result)
+                new_dir_job_id, new_dir_remote_path = parse_run_result(new_dir_result)
                 if new_dir_remote_path == remote_path:
                     raise RuntimeError(
-                        "new-directory submit did not create a new remote path"
+                        "new-directory run did not create a new remote path"
                     )
                 job_ids.append(new_dir_job_id)
                 job_paths[new_dir_job_id] = new_dir_remote_path
                 primary_job_id = new_dir_job_id
 
             for active_job_id in job_ids:
-                print(f"{project['id']}: submitted job {active_job_id}")
+                print(f"{scenario['id']}: submitted job {active_job_id}")
                 wait_for_job(orbit_cmd, active_job_id, args.timeout, args.poll)
                 wait_for_job_list_entry(
                     non_interactive_cmd,
@@ -848,16 +859,21 @@ def main():
                     args.timeout,
                     args.poll,
                 )
-                print(f"{project['id']}: job {active_job_id} completed")
+                validate_directory_job_has_no_blueprint(
+                    non_interactive_cmd,
+                    args.cluster,
+                    active_job_id,
+                )
+                print(f"{scenario['id']}: job {active_job_id} completed")
 
-            if project["id"] == "01_smoke":
+            if scenario["id"] == "01_smoke":
                 validate_smoke_logs(orbit_cmd, primary_job_id)
-                print(f"{project['id']}: logs ok")
+                print(f"{scenario['id']}: logs ok")
 
-            project_out = out_dir / project["id"] / str(primary_job_id)
+            project_out = out_dir / scenario["id"] / str(primary_job_id)
             project_out.mkdir(parents=True, exist_ok=True)
 
-            for path in project["retrieve"]:
+            for path in scenario["retrieve"]:
                 retrieve_cmd = orbit_cmd + [
                     "job",
                     "retrieve",
@@ -869,8 +885,8 @@ def main():
                 ]
                 run_cmd(retrieve_cmd)
 
-            project["validate"](project_out)
-            print(f"{project['id']}: validation ok")
+            scenario["validate"](project_out)
+            print(f"{scenario['id']}: validation ok")
 
             for cleanup_job_id in job_ids:
                 cleanup_job_and_validate(
@@ -879,123 +895,125 @@ def main():
                     cleanup_job_id,
                     job_paths[cleanup_job_id],
                 )
-                print(f"{project['id']}: cleanup ok for job {cleanup_job_id}")
+                print(f"{scenario['id']}: cleanup ok for job {cleanup_job_id}")
 
-        project_lifecycle_template = repo_root / "tests/93_hello_world"
-        project_lifecycle_src = out_dir / "_project_lifecycle_src"
-        if project_lifecycle_src.exists():
-            shutil.rmtree(project_lifecycle_src)
-        shutil.copytree(project_lifecycle_template, project_lifecycle_src)
+        blueprint_lifecycle_template = repo_root / "tests/93_hello_world"
+        blueprint_lifecycle_src = out_dir / "_blueprint_lifecycle_src"
+        if blueprint_lifecycle_src.exists():
+            shutil.rmtree(blueprint_lifecycle_src)
+        shutil.copytree(blueprint_lifecycle_template, blueprint_lifecycle_src)
 
-        project_name = f"e2e_proj_{uuid.uuid4().hex[:10]}"
+        blueprint_name = f"e2e_blueprint_{uuid.uuid4().hex[:10]}"
         run_cmd(
             orbit_cmd
             + [
-                "project",
+                "blueprint",
                 "init",
-                str(project_lifecycle_src),
+                str(blueprint_lifecycle_src),
                 "--name",
-                project_name,
+                blueprint_name,
             ]
         )
 
-        listed = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
-        projects_payload = listed.get("projects") or []
-        if any(item.get("name") == project_name for item in projects_payload):
-            raise RuntimeError("project lifecycle: init should not register project")
+        listed = parse_json_output(run_cmd(non_interactive_cmd + ["blueprint", "list"]))
+        blueprints_payload = listed.get("blueprints") or []
+        if any(item.get("name") == blueprint_name for item in blueprints_payload):
+            raise RuntimeError("blueprint lifecycle: init should not register blueprint")
 
         build_result = parse_json_output(
-            run_cmd(non_interactive_cmd + ["project", "build", str(project_lifecycle_src)])
+            run_cmd(non_interactive_cmd + ["blueprint", "build", str(blueprint_lifecycle_src)])
         )
-        project_version = build_result.get("versionTag")
-        if build_result.get("name") != project_name or not project_version:
-            raise RuntimeError("project lifecycle: build returned unexpected project metadata")
-        project_ref = f"{project_name}:{project_version}"
+        blueprint_version = build_result.get("versionTag")
+        if build_result.get("name") != blueprint_name or not blueprint_version:
+            raise RuntimeError("blueprint lifecycle: build returned unexpected metadata")
+        blueprint_ref = f"{blueprint_name}:{blueprint_version}"
 
-        listed = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
-        projects_payload = listed.get("projects") or []
-        project_record = next(
+        listed = parse_json_output(run_cmd(non_interactive_cmd + ["blueprint", "list"]))
+        blueprints_payload = listed.get("blueprints") or []
+        blueprint_record = next(
             (
                 item
-                for item in projects_payload
-                if item.get("name") == project_name
-                and project_version in (item.get("tags") or [])
+                for item in blueprints_payload
+                if item.get("name") == blueprint_name
+                and blueprint_version in (item.get("tags") or [])
             ),
             None,
         )
-        if project_record is None:
-            raise RuntimeError("project lifecycle: built project missing from project list")
-        if project_record.get("latest_tag") != project_version:
+        if blueprint_record is None:
+            raise RuntimeError("blueprint lifecycle: built blueprint missing from blueprint list")
+        if blueprint_record.get("latest_tag") != blueprint_version:
             raise RuntimeError(
-                "project lifecycle: latest_tag did not match built version "
-                f"(expected={project_version}, actual={project_record.get('latest_tag')})"
+                "blueprint lifecycle: latest_tag did not match built version "
+                f"(expected={blueprint_version}, actual={blueprint_record.get('latest_tag')})"
             )
-        expected_project_path = str(project_lifecycle_src.resolve())
-        if project_record.get("path") != expected_project_path:
+        expected_blueprint_path = str(blueprint_lifecycle_src.resolve())
+        if blueprint_record.get("path") != expected_blueprint_path:
             raise RuntimeError(
-                "project lifecycle: listed project path mismatch "
-                f"(expected={expected_project_path}, actual={project_record.get('path')})"
+                "blueprint lifecycle: listed blueprint path mismatch "
+                f"(expected={expected_blueprint_path}, actual={blueprint_record.get('path')})"
             )
 
-        project_submit_cmd = non_interactive_cmd + [
-            "project",
-            "submit",
-            "--to",
+        blueprint_run_cmd = non_interactive_cmd + [
+            "blueprint",
+            "run",
+            blueprint_ref,
+            "--on",
             args.cluster,
-            project_ref,
         ]
-        project_submit = run_cmd(project_submit_cmd)
-        project_job_id, project_remote_path = parse_submit_json(project_submit)
-        print(f"project lifecycle: submitted job {project_job_id}")
+        blueprint_run = run_cmd(blueprint_run_cmd)
+        blueprint_job_id, blueprint_remote_path = parse_run_json(blueprint_run)
+        print(f"blueprint lifecycle: submitted job {blueprint_job_id}")
 
-        status, terminal_state = job_status(orbit_cmd, project_job_id)
+        status, terminal_state = job_status(orbit_cmd, blueprint_job_id)
         if status not in ("queued", "running", "completed"):
             raise RuntimeError(
-                "project lifecycle: unexpected initial job status "
+                "blueprint lifecycle: unexpected initial job status "
                 f"{status} (terminal_state={terminal_state})"
             )
 
-        wait_for_job(orbit_cmd, project_job_id, args.timeout, args.poll)
-        status, terminal_state = job_status(orbit_cmd, project_job_id)
+        wait_for_job(orbit_cmd, blueprint_job_id, args.timeout, args.poll)
+        status, terminal_state = job_status(orbit_cmd, blueprint_job_id)
         if status != "completed":
             raise RuntimeError(
-                f"project lifecycle: expected completed status, got {status} "
+                f"blueprint lifecycle: expected completed status, got {status} "
                 f"(terminal_state={terminal_state})"
             )
-        validate_project_job_filter(
+        validate_blueprint_job_filter(
             non_interactive_cmd,
             args.cluster,
-            project_name,
-            project_job_id,
+            blueprint_name,
+            blueprint_job_id,
         )
-        print("project lifecycle: job list --project filter ok")
-        print(f"project lifecycle: job {project_job_id} completed")
+        print("blueprint lifecycle: job list --blueprint filter ok")
+        print(f"blueprint lifecycle: job {blueprint_job_id} completed")
 
-        cleanup_job_and_validate(orbit_cmd, args.cluster, project_job_id, project_remote_path)
-        print(f"project lifecycle: cleanup ok for job {project_job_id}")
+        cleanup_job_and_validate(orbit_cmd, args.cluster, blueprint_job_id, blueprint_remote_path)
+        print(f"blueprint lifecycle: cleanup ok for job {blueprint_job_id}")
 
-        run_cmd(orbit_cmd + ["project", "delete", project_ref, "--yes"])
-        listed_after_delete = parse_json_output(run_cmd(non_interactive_cmd + ["project", "list"]))
-        projects_after_delete = listed_after_delete.get("projects") or []
-        if any(item.get("name") == project_name for item in projects_after_delete):
-            raise RuntimeError("project lifecycle: project still present after delete")
-        print(f"project lifecycle: deleted project {project_name}")
+        run_cmd(orbit_cmd + ["blueprint", "delete", blueprint_ref, "--yes"])
+        listed_after_delete = parse_json_output(
+            run_cmd(non_interactive_cmd + ["blueprint", "list"])
+        )
+        blueprints_after_delete = listed_after_delete.get("blueprints") or []
+        if any(item.get("name") == blueprint_name for item in blueprints_after_delete):
+            raise RuntimeError("blueprint lifecycle: blueprint still present after delete")
+        print(f"blueprint lifecycle: deleted blueprint {blueprint_name}")
 
         ping_result = parse_json_output(run_cmd(non_interactive_cmd + ["ping"]))
         if ping_result.get("message") != "pong":
             raise RuntimeError("non-interactive ping returned unexpected response")
 
-        non_interactive_project = repo_root / "tests/01_smoke"
-        submit_cmd = build_submit_cmd(
+        non_interactive_run_dir = repo_root / "tests/01_smoke"
+        run_cmdline = build_run_cmd(
             non_interactive_cmd,
             args.cluster,
-            non_interactive_project,
+            non_interactive_run_dir,
             [],
         )
-        submit_result = run_cmd(submit_cmd)
-        job_id, remote_path = parse_submit_json(submit_result)
+        run_result = run_cmd(run_cmdline)
+        job_id, remote_path = parse_run_json(run_result)
         if not remote_path:
-            raise RuntimeError("non-interactive submit missing remote_path")
+            raise RuntimeError("non-interactive run missing remote_path")
         wait_for_job(non_interactive_cmd, job_id, args.timeout, args.poll)
         print(f"non-interactive: submitted job {job_id}")
 
@@ -1017,7 +1035,7 @@ def main():
         validate_smoke(non_interactive_out, repo_root)
         print("non-interactive: validation ok")
 
-        print("All projects completed.")
+        print("All scenarios completed.")
         return 0
     finally:
         stop_daemon(daemon_proc)

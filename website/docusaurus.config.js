@@ -67,13 +67,10 @@ const config = {
           title: 'Project',
           items: [
             {
-              label: 'Main README',
+              label: 'GitHub',
               href: 'https://github.com/vertices-solutions/orbit',
             },
-            {
-              label: 'Architecture',
-              href: 'https://github.com/vertices-solutions/orbit/blob/main/architecture/ARCHITECTURE.md',
-            },
+
           ],
         },
       ],

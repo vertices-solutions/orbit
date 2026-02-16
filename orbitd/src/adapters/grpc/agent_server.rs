@@ -7,15 +7,15 @@ use std::pin::Pin;
 use async_trait::async_trait;
 use proto::agent_server::Agent;
 use proto::{
-    AddClusterRequest, BuildProjectRequest, BuildProjectResponse, CancelJobRequest,
-    CleanupJobRequest, DeleteClusterRequest, DeleteClusterResponse, DeleteProjectRequest,
-    DeleteProjectResponse, GetProjectRequest, GetProjectResponse, JobLogsRequest,
-    ListAccountsRequest, ListAccountsResponse, ListAccountsUnitResponse, ListClustersRequest,
-    ListClustersResponse, ListJobsRequest, ListJobsResponse, ListPartitionsRequest,
-    ListPartitionsResponse, ListPartitionsUnitResponse, ListProjectsRequest, ListProjectsResponse,
+    AddClusterRequest, BuildBlueprintRequest, BuildBlueprintResponse, CancelJobRequest,
+    CleanupJobRequest, DeleteBlueprintRequest, DeleteBlueprintResponse, DeleteClusterRequest,
+    DeleteClusterResponse, GetBlueprintRequest, GetBlueprintResponse, JobLogsRequest,
+    ListAccountsRequest, ListAccountsResponse, ListAccountsUnitResponse, ListBlueprintsRequest,
+    ListBlueprintsResponse, ListClustersRequest, ListClustersResponse, ListJobsRequest,
+    ListJobsResponse, ListPartitionsRequest, ListPartitionsResponse, ListPartitionsUnitResponse,
     LsRequest, MfaAnswer, PingReply, PingRequest, ResolveHomeDirRequest, RetrieveJobRequest,
-    SetClusterRequest, StreamEvent, SubmitJobRequest, SubmitProjectRequest, SubmitStreamEvent,
-    UpsertProjectRequest, UpsertProjectResponse, stream_event,
+    RunBlueprintRequest, RunJobRequest, RunStreamEvent, SetClusterRequest, StreamEvent,
+    UpsertBlueprintRequest, UpsertBlueprintResponse, stream_event,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -23,22 +23,22 @@ use tonic::{Request, Response, Status};
 use tracing::Instrument;
 
 use crate::adapters::grpc::mapping::{
-    build_sync_filters, cluster_status_to_response, job_record_to_response,
-    project_record_to_response,
+    blueprint_record_to_response, build_sync_filters, cluster_status_to_response,
+    job_record_to_response,
 };
 use crate::app::errors::{AppError, AppErrorKind, codes};
-use crate::app::ports::{MfaPort, StreamOutputPort, SubmitStreamOutputPort};
+use crate::app::ports::{MfaPort, RunStreamOutputPort, StreamOutputPort};
 use crate::app::types::Address;
 use crate::app::usecases::{
     AddClusterInput, CancelJobInput, CleanupJobInput, JobLogsInput, LsInput, ResolveHomeDirInput,
-    ResolveScratchDirectoriesInput, RetrieveJobInput, SetClusterInput, SubmitJobInput,
-    SubmitProjectInput, UseCases, ValidateDefaultBasePathInput, ValidateScratchDirectoryInput,
+    ResolveScratchDirectoriesInput, RetrieveJobInput, RunBlueprintInput, RunJobInput,
+    SetClusterInput, UseCases, ValidateDefaultBasePathInput, ValidateScratchDirectoryInput,
 };
 
 pub type OutStream =
     Pin<Box<dyn Stream<Item = Result<StreamEvent, Status>> + Send + Sync + 'static>>;
-pub type SubmitOutStream =
-    Pin<Box<dyn Stream<Item = Result<SubmitStreamEvent, Status>> + Send + Sync + 'static>>;
+pub type RunOutStream =
+    Pin<Box<dyn Stream<Item = Result<RunStreamEvent, Status>> + Send + Sync + 'static>>;
 
 #[derive(Clone)]
 pub struct GrpcAgent {
@@ -71,13 +71,13 @@ impl StreamOutputPort for GrpcStreamOutput {
 }
 
 #[derive(Clone)]
-struct GrpcSubmitStreamOutput {
-    sender: mpsc::Sender<Result<SubmitStreamEvent, Status>>,
+struct GrpcRunStreamOutput {
+    sender: mpsc::Sender<Result<RunStreamEvent, Status>>,
 }
 
 #[async_trait]
-impl SubmitStreamOutputPort for GrpcSubmitStreamOutput {
-    async fn send(&self, event: SubmitStreamEvent) -> Result<(), AppError> {
+impl RunStreamOutputPort for GrpcRunStreamOutput {
+    async fn send(&self, event: RunStreamEvent) -> Result<(), AppError> {
         self.sender
             .send(Ok(event))
             .await
@@ -201,8 +201,8 @@ impl Agent for GrpcAgent {
     type JobLogsStream = OutStream;
     type CancelJobStream = OutStream;
     type CleanupJobStream = OutStream;
-    type SubmitJobStream = SubmitOutStream;
-    type SubmitProjectStream = SubmitOutStream;
+    type RunJobStream = RunOutStream;
+    type RunBlueprintStream = RunOutStream;
     type AddClusterStream = OutStream;
     type SetClusterStream = OutStream;
     type ResolveHomeDirStream = OutStream;
@@ -740,11 +740,11 @@ impl Agent for GrpcAgent {
         }))
     }
 
-    async fn submit_job(
+    async fn run_job(
         &self,
-        request: Request<tonic::Streaming<SubmitJobRequest>>,
-    ) -> Result<Response<Self::SubmitJobStream>, Status> {
-        let span = rpc_span(&request, "SubmitJob");
+        request: Request<tonic::Streaming<RunJobRequest>>,
+    ) -> Result<Response<Self::RunJobStream>, Status> {
+        let span = rpc_span(&request, "RunJob");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
@@ -763,11 +763,11 @@ impl Agent for GrpcAgent {
             filters,
             new_directory,
             force,
-            project_name,
+            blueprint_name,
             default_retrieve_path,
             template_values_json,
         ) = match init.msg {
-            Some(proto::submit_job_request::Msg::Init(init)) => (
+            Some(proto::run_job_request::Msg::Init(init)) => (
                 init.local_path,
                 init.remote_path,
                 init.name,
@@ -775,28 +775,28 @@ impl Agent for GrpcAgent {
                 init.filters,
                 init.new_directory,
                 init.force,
-                init.project_name,
+                init.blueprint_name,
                 init.default_retrieve_path,
                 init.template_values_json,
             ),
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
         tracing::info!(
-            "submit_job start remote_addr={remote_addr} name={name} local_path={local_path} requested_remote_path={:?} sbatch={sbatchscript}",
+            "run_job start remote_addr={remote_addr} name={name} local_path={local_path} requested_remote_path={:?} sbatch={sbatchscript}",
             remote_path
         );
         let current_span = tracing::Span::current();
 
         let filters = build_sync_filters(filters).map_err(status_from_app_error)?;
 
-        let (evt_tx, evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, Status>>(64);
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<RunStreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
         tokio::spawn(
             async move {
                 while let Ok(Some(item)) = inbound.message().await {
-                    if let Some(proto::submit_job_request::Msg::Mfa(ans)) = item.msg
+                    if let Some(proto::run_job_request::Msg::Mfa(ans)) = item.msg
                         && mfa_tx.send(ans).await.is_err()
                     {
                         break;
@@ -807,7 +807,7 @@ impl Agent for GrpcAgent {
             .instrument(current_span.clone()),
         );
 
-        let input = SubmitJobInput {
+        let input = RunJobInput {
             local_path,
             remote_path,
             name,
@@ -815,19 +815,19 @@ impl Agent for GrpcAgent {
             filters,
             new_directory,
             force,
-            project_name,
+            blueprint_name,
             default_retrieve_path,
             template_values_json,
         };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
-        let stream_output = GrpcSubmitStreamOutput {
+        let stream_output = GrpcRunStreamOutput {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
                 if let Err(err) = usecases
-                    .submit_job(input, &stream_output, &mut mfa_port, cancel_rx)
+                    .run_job(input, &stream_output, &mut mfa_port, cancel_rx)
                     .await
                 {
                     let _ = evt_tx.send(Err(status_from_app_error(err))).await;
@@ -836,15 +836,15 @@ impl Agent for GrpcAgent {
             .instrument(current_span.clone()),
         );
 
-        let out: SubmitOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
+        let out: RunOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
     }
 
-    async fn submit_project(
+    async fn run_blueprint(
         &self,
-        request: Request<tonic::Streaming<SubmitProjectRequest>>,
-    ) -> Result<Response<Self::SubmitProjectStream>, Status> {
-        let span = rpc_span(&request, "SubmitProject");
+        request: Request<tonic::Streaming<RunBlueprintRequest>>,
+    ) -> Result<Response<Self::RunBlueprintStream>, Status> {
+        let span = rpc_span(&request, "RunBlueprint");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
@@ -856,8 +856,8 @@ impl Agent for GrpcAgent {
             .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
 
         let (
-            project_name,
-            project_tag,
+            blueprint_name,
+            blueprint_tag,
             name,
             sbatchscript,
             filters,
@@ -867,9 +867,9 @@ impl Agent for GrpcAgent {
             default_retrieve_path,
             template_values_json,
         ) = match init.msg {
-            Some(proto::submit_project_request::Msg::Init(init)) => (
-                init.project_name,
-                init.project_tag,
+            Some(proto::run_blueprint_request::Msg::Init(init)) => (
+                init.blueprint_name,
+                init.blueprint_tag,
                 init.name,
                 init.sbatchscript,
                 init.filters,
@@ -882,21 +882,21 @@ impl Agent for GrpcAgent {
             _ => return Err(Status::invalid_argument(codes::INVALID_ARGUMENT)),
         };
         tracing::info!(
-            "submit_project start remote_addr={remote_addr} name={name} project={project_name}:{project_tag} requested_remote_path={:?} sbatch={sbatchscript}",
+            "run_blueprint start remote_addr={remote_addr} name={name} blueprint={blueprint_name}:{blueprint_tag} requested_remote_path={:?} sbatch={sbatchscript}",
             remote_path
         );
         let current_span = tracing::Span::current();
 
         let filters = build_sync_filters(filters).map_err(status_from_app_error)?;
 
-        let (evt_tx, evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, Status>>(64);
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<RunStreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         let (cancel_tx, cancel_rx) = tokio::sync::watch::channel(false);
 
         tokio::spawn(
             async move {
                 while let Ok(Some(item)) = inbound.message().await {
-                    if let Some(proto::submit_project_request::Msg::Mfa(ans)) = item.msg
+                    if let Some(proto::run_blueprint_request::Msg::Mfa(ans)) = item.msg
                         && mfa_tx.send(ans).await.is_err()
                     {
                         break;
@@ -907,9 +907,9 @@ impl Agent for GrpcAgent {
             .instrument(current_span.clone()),
         );
 
-        let input = SubmitProjectInput {
-            project_name,
-            project_tag,
+        let input = RunBlueprintInput {
+            blueprint_name,
+            blueprint_tag,
             remote_path,
             name,
             sbatchscript,
@@ -920,14 +920,14 @@ impl Agent for GrpcAgent {
             template_values_json,
         };
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
-        let stream_output = GrpcSubmitStreamOutput {
+        let stream_output = GrpcRunStreamOutput {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
                 if let Err(err) = usecases
-                    .submit_project(input, &stream_output, &mut mfa_port, cancel_rx)
+                    .run_blueprint(input, &stream_output, &mut mfa_port, cancel_rx)
                     .await
                 {
                     let _ = evt_tx.send(Err(status_from_app_error(err))).await;
@@ -936,7 +936,7 @@ impl Agent for GrpcAgent {
             .instrument(current_span.clone()),
         );
 
-        let out: SubmitOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
+        let out: RunOutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
     }
 
@@ -1395,135 +1395,135 @@ impl Agent for GrpcAgent {
         let remote_addr = format_remote_addr(request.remote_addr());
         let inbound = request.into_inner();
         let name_filter = inbound.name.as_deref();
-        let project_filter = inbound.project_name.as_deref();
+        let blueprint_filter = inbound.blueprint_name.as_deref();
 
         let jobs = self
             .usecases
-            .list_jobs(name_filter, project_filter)
+            .list_jobs(name_filter, blueprint_filter)
             .await
             .map_err(status_from_app_error)?;
         let api_jobs: Vec<_> = jobs.iter().map(job_record_to_response).collect();
         let name_label = name_filter.unwrap_or("<all>");
-        let project_label = project_filter.unwrap_or("<all>");
+        let blueprint_label = blueprint_filter.unwrap_or("<all>");
         tracing::info!(
-            "list_jobs remote_addr={remote_addr} name={name_label} project={project_label} count={}",
+            "list_jobs remote_addr={remote_addr} name={name_label} blueprint={blueprint_label} count={}",
             api_jobs.len()
         );
         Ok(Response::new(ListJobsResponse { jobs: api_jobs }))
     }
 
-    async fn upsert_project(
+    async fn upsert_blueprint(
         &self,
-        request: Request<UpsertProjectRequest>,
-    ) -> Result<Response<UpsertProjectResponse>, Status> {
-        let span = rpc_span(&request, "UpsertProject");
+        request: Request<UpsertBlueprintRequest>,
+    ) -> Result<Response<UpsertBlueprintResponse>, Status> {
+        let span = rpc_span(&request, "UpsertBlueprint");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let req = request.into_inner();
-        let project = self
+        let blueprint = self
             .usecases
-            .upsert_project(&req.name, &req.path)
+            .upsert_blueprint(&req.name, &req.path)
             .await
             .map_err(status_from_app_error)?;
         tracing::info!(
-            "upsert_project remote_addr={remote_addr} name={} path={}",
-            project.name,
-            project.path
+            "upsert_blueprint remote_addr={remote_addr} name={} path={}",
+            blueprint.name,
+            blueprint.path
         );
-        Ok(Response::new(UpsertProjectResponse {
-            project: Some(project_record_to_response(&project)),
+        Ok(Response::new(UpsertBlueprintResponse {
+            blueprint: Some(blueprint_record_to_response(&blueprint)),
         }))
     }
 
-    async fn get_project(
+    async fn get_blueprint(
         &self,
-        request: Request<GetProjectRequest>,
-    ) -> Result<Response<GetProjectResponse>, Status> {
-        let span = rpc_span(&request, "GetProject");
+        request: Request<GetBlueprintRequest>,
+    ) -> Result<Response<GetBlueprintResponse>, Status> {
+        let span = rpc_span(&request, "GetBlueprint");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let req = request.into_inner();
-        let project = self
+        let blueprint = self
             .usecases
-            .get_project_by_name(&req.name)
+            .get_blueprint_by_name(&req.name)
             .await
             .map_err(status_from_app_error)?;
         tracing::info!(
-            "get_project remote_addr={remote_addr} name={} path={}",
-            project.name,
-            project.path
+            "get_blueprint remote_addr={remote_addr} name={} path={}",
+            blueprint.name,
+            blueprint.path
         );
-        Ok(Response::new(GetProjectResponse {
-            project: Some(project_record_to_response(&project)),
+        Ok(Response::new(GetBlueprintResponse {
+            blueprint: Some(blueprint_record_to_response(&blueprint)),
         }))
     }
 
-    async fn list_projects(
+    async fn list_blueprints(
         &self,
-        request: Request<ListProjectsRequest>,
-    ) -> Result<Response<ListProjectsResponse>, Status> {
-        let span = rpc_span(&request, "ListProjects");
+        request: Request<ListBlueprintsRequest>,
+    ) -> Result<Response<ListBlueprintsResponse>, Status> {
+        let span = rpc_span(&request, "ListBlueprints");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let _ = request.into_inner();
-        let projects = self
+        let blueprints = self
             .usecases
-            .list_projects()
+            .list_blueprints()
             .await
             .map_err(status_from_app_error)?;
-        let projects = projects
+        let blueprints = blueprints
             .iter()
-            .map(project_record_to_response)
+            .map(blueprint_record_to_response)
             .collect::<Vec<_>>();
         tracing::info!(
-            "list_projects remote_addr={remote_addr} count={}",
-            projects.len()
+            "list_blueprints remote_addr={remote_addr} count={}",
+            blueprints.len()
         );
-        Ok(Response::new(ListProjectsResponse { projects }))
+        Ok(Response::new(ListBlueprintsResponse { blueprints }))
     }
 
-    async fn delete_project(
+    async fn delete_blueprint(
         &self,
-        request: Request<DeleteProjectRequest>,
-    ) -> Result<Response<DeleteProjectResponse>, Status> {
-        let span = rpc_span(&request, "DeleteProject");
+        request: Request<DeleteBlueprintRequest>,
+    ) -> Result<Response<DeleteBlueprintResponse>, Status> {
+        let span = rpc_span(&request, "DeleteBlueprint");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let name = request.into_inner().name.trim().to_string();
         let deleted = self
             .usecases
-            .delete_project(&name)
+            .delete_blueprint(&name)
             .await
             .map_err(status_from_app_error)?;
-        tracing::info!("delete_project remote_addr={remote_addr} name={name} deleted={deleted}");
-        Ok(Response::new(DeleteProjectResponse { deleted }))
+        tracing::info!("delete_blueprint remote_addr={remote_addr} name={name} deleted={deleted}");
+        Ok(Response::new(DeleteBlueprintResponse { deleted }))
     }
 
-    async fn build_project(
+    async fn build_blueprint(
         &self,
-        request: Request<BuildProjectRequest>,
-    ) -> Result<Response<BuildProjectResponse>, Status> {
-        let span = rpc_span(&request, "BuildProject");
+        request: Request<BuildBlueprintRequest>,
+    ) -> Result<Response<BuildBlueprintResponse>, Status> {
+        let span = rpc_span(&request, "BuildBlueprint");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
         let req = request.into_inner();
-        let project = self
+        let blueprint = self
             .usecases
-            .build_project(&req.path, req.package_git)
+            .build_blueprint(&req.path, req.package_git)
             .await
             .map_err(status_from_app_error)?;
         tracing::info!(
-            "build_project remote_addr={remote_addr} name={} path={}",
-            project.name,
-            project.path
+            "build_blueprint remote_addr={remote_addr} name={} path={}",
+            blueprint.name,
+            blueprint.path
         );
-        Ok(Response::new(BuildProjectResponse {
-            project: Some(project_record_to_response(&project)),
+        Ok(Response::new(BuildBlueprintResponse {
+            blueprint: Some(blueprint_record_to_response(&blueprint)),
         }))
     }
 }

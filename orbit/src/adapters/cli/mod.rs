@@ -10,8 +10,8 @@ use clap::{ArgMatches, CommandFactory};
 use clap_complete::{Shell, generate};
 
 use crate::app::commands::*;
-use args::{ClusterCmd, JobCmd, ProjectCmd};
-use filters::submit_filters_from_matches;
+use args::{BlueprintCmd, ClusterCmd, JobCmd};
+use filters::run_filters_from_matches;
 
 const HELP_TEMPLATE: &str = r#"██████╗ ██████╗ ██████╗ ██╗ ████████╗
 ██╔══██╗██╔══██╗██╔══██╗██║ ╚══██╔══╝
@@ -49,10 +49,25 @@ pub fn generate_shell_completions(shell: Shell) {
 pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
     match cli.cmd {
         Cmd::Ping => Command::Ping(PingCommand),
+        Cmd::Run(args) => {
+            let filters = run_filters_from_matches(matches);
+            Command::Run(RunCommand {
+                target: args.target,
+                cluster: args.cluster,
+                sbatchscript: args.sbatchscript,
+                remote_path: args.remote_path,
+                new_directory: args.new_directory,
+                force: args.force,
+                filters,
+                template_preset: args.preset,
+                template_fields: args.field,
+                fill_defaults: args.fill_defaults,
+            })
+        }
         Cmd::Job(job_args) => Command::Job(match job_args.cmd {
-            JobCmd::Submit(args) => {
-                let filters = submit_filters_from_matches(matches);
-                JobCommand::Submit(SubmitJobCommand {
+            JobCmd::Run(args) => {
+                let filters = run_filters_from_matches(matches);
+                JobCommand::Run(JobRunCommand {
                     cluster: args.cluster,
                     local_path: args.local_path,
                     sbatchscript: args.sbatchscript,
@@ -67,7 +82,7 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             }
             JobCmd::List(args) => JobCommand::List(ListJobsCommand {
                 cluster: args.cluster,
-                project: args.project,
+                blueprint: args.blueprint,
             }),
             JobCmd::Get(args) => JobCommand::Get(JobGetCommand {
                 job_id: args.job_id,
@@ -130,19 +145,19 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 force: args.force,
             }),
         }),
-        Cmd::Project(project_args) => Command::Project(match project_args.cmd {
-            ProjectCmd::Init(args) => ProjectCommand::Init(ProjectInitCommand {
+        Cmd::Blueprint(project_args) => Command::Blueprint(match project_args.cmd {
+            BlueprintCmd::Init(args) => BlueprintCommand::Init(BlueprintInitCommand {
                 path: args.path,
                 name: args.name,
             }),
-            ProjectCmd::Build(args) => ProjectCommand::Build(ProjectBuildCommand {
+            BlueprintCmd::Build(args) => BlueprintCommand::Build(BlueprintBuildCommand {
                 path: args.path,
                 package_git: args.package_git,
             }),
-            ProjectCmd::Submit(args) => {
-                let filters = submit_filters_from_matches(matches);
-                ProjectCommand::Submit(ProjectSubmitCommand {
-                    project: args.project,
+            BlueprintCmd::Run(args) => {
+                let filters = run_filters_from_matches(matches);
+                BlueprintCommand::Run(BlueprintRunCommand {
+                    blueprint: args.blueprint,
                     cluster: args.cluster,
                     sbatchscript: args.sbatchscript,
                     remote_path: args.remote_path,
@@ -154,8 +169,8 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                     fill_defaults: args.fill_defaults,
                 })
             }
-            ProjectCmd::List(_args) => ProjectCommand::List(ProjectListCommand),
-            ProjectCmd::Delete(args) => ProjectCommand::Delete(ProjectDeleteCommand {
+            BlueprintCmd::List(_args) => BlueprintCommand::List(BlueprintListCommand),
+            BlueprintCmd::Delete(args) => BlueprintCommand::Delete(BlueprintDeleteCommand {
                 name: args.name,
                 yes: args.yes,
             }),
@@ -172,7 +187,7 @@ mod tests {
     use clap::FromArgMatches;
 
     #[test]
-    fn command_from_cli_maps_job_list_project_filter() {
+    fn command_from_cli_maps_job_list_blueprint_filter() {
         let command = cli_command();
         let matches = command
             .try_get_matches_from([
@@ -181,8 +196,8 @@ mod tests {
                 "list",
                 "--cluster",
                 "cluster-a",
-                "--project",
-                "demo-project",
+                "--blueprint",
+                "demo-blueprint",
             ])
             .expect("parse matches");
         let cli = Cli::from_arg_matches(&matches).expect("parse cli");
@@ -191,14 +206,14 @@ mod tests {
         match command {
             Command::Job(JobCommand::List(list)) => {
                 assert_eq!(list.cluster.as_deref(), Some("cluster-a"));
-                assert_eq!(list.project.as_deref(), Some("demo-project"));
+                assert_eq!(list.blueprint.as_deref(), Some("demo-blueprint"));
             }
             _ => panic!("expected job list command"),
         }
     }
 
     #[test]
-    fn command_from_cli_maps_job_list_without_project_filter() {
+    fn command_from_cli_maps_job_list_without_blueprint_filter() {
         let command = cli_command();
         let matches = command
             .try_get_matches_from(["orbit", "job", "list", "--cluster", "cluster-a"])
@@ -209,7 +224,7 @@ mod tests {
         match command {
             Command::Job(JobCommand::List(list)) => {
                 assert_eq!(list.cluster.as_deref(), Some("cluster-a"));
-                assert!(list.project.is_none());
+                assert!(list.blueprint.is_none());
             }
             _ => panic!("expected job list command"),
         }

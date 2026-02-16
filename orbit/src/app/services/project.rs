@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
-use proto::{SubmitPathFilterAction, SubmitPathFilterRule};
+use proto::{RunPathFilterAction, RunPathFilterRule};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -14,22 +14,22 @@ use crate::app::ports::FilesystemPort;
 const ORBITFILE_NAME: &str = "Orbitfile";
 
 /// Holds include/exclude sync patterns resolved from Orbitfile.
-/// This is used to merge project-level rules with CLI submit filters.
+/// This is used to merge blueprint-level rules with CLI run filters.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ProjectRuleSet {
+pub struct BlueprintRuleSet {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
 }
 
-/// Parsed and validated project configuration loaded from Orbitfile
-/// This is the canonical in-memory representation used by project discovery and validation.
+/// Parsed and validated blueprint configuration loaded from Orbitfile.
+/// This is the canonical in-memory representation used by blueprint discovery and validation.
 #[derive(Debug, Clone, PartialEq)]
-pub struct OrbitfileProjectConfig {
+pub struct OrbitfileBlueprintConfig {
     pub root: PathBuf,
     pub name: String,
     pub default_retrieve_path: Option<String>,
     pub submit_sbatch_script: Option<String>,
-    pub rules: ProjectRuleSet,
+    pub rules: BlueprintRuleSet,
     pub template: Option<TemplateConfig>,
 }
 
@@ -67,7 +67,7 @@ pub struct TemplateField {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RawOrbitfile {
     #[serde(default)]
-    project: Option<RawProject>,
+    blueprint: Option<RawBlueprint>,
     #[serde(default)]
     retrieve: Option<RawRetrieve>,
     #[serde(default)]
@@ -78,10 +78,10 @@ struct RawOrbitfile {
     template: Option<RawTemplate>,
 }
 
-/// Raw [project] section used while loading and writing Orbitfiles.
+/// Raw [blueprint] section used while loading and writing Orbitfiles.
 /// The name is validated after parsing.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct RawProject {
+struct RawBlueprint {
     name: String,
 }
 
@@ -139,23 +139,23 @@ struct RawTemplateFiles {
     paths: Vec<String>,
 }
 
-pub fn validate_project_name(name: &str) -> AppResult<()> {
+pub fn validate_blueprint_name(name: &str) -> AppResult<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(AppError::invalid_argument("project name cannot be empty"));
+        return Err(AppError::invalid_argument("blueprint name cannot be empty"));
     }
     let valid = trimmed
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
     if !valid {
         return Err(AppError::invalid_argument(
-            "project name must match ^[A-Za-z0-9_-]+$",
+            "blueprint name must match ^[A-Za-z0-9_-]+$",
         ));
     }
     Ok(())
 }
 
-pub fn sanitize_project_name(input: &str) -> String {
+pub fn sanitize_blueprint_name(input: &str) -> String {
     input
         .trim()
         .chars()
@@ -164,9 +164,9 @@ pub fn sanitize_project_name(input: &str) -> String {
 }
 
 pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
-    validate_project_name(name)?;
+    validate_blueprint_name(name)?;
     let mut raw = RawOrbitfile {
-        project: Some(RawProject {
+        blueprint: Some(RawBlueprint {
             name: name.trim().to_string(),
         }),
         ..RawOrbitfile::default()
@@ -179,14 +179,14 @@ pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
 }
 
-pub fn upsert_orbitfile_project_name(existing: Option<&str>, name: &str) -> AppResult<String> {
-    validate_project_name(name)?;
+pub fn upsert_orbitfile_blueprint_name(existing: Option<&str>, name: &str) -> AppResult<String> {
+    validate_blueprint_name(name)?;
     let mut raw = match existing {
         Some(contents) => toml::from_str::<RawOrbitfile>(contents)
             .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?,
         None => RawOrbitfile::default(),
     };
-    raw.project = Some(RawProject {
+    raw.blueprint = Some(RawBlueprint {
         name: name.trim().to_string(),
     });
     if raw.sync.is_none() {
@@ -198,10 +198,10 @@ pub fn upsert_orbitfile_project_name(existing: Option<&str>, name: &str) -> AppR
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
 }
 
-pub fn discover_project_from_submit_root(
+pub fn discover_blueprint_from_run_root(
     fs: &dyn FilesystemPort,
     submit_root: &Path,
-) -> AppResult<Option<OrbitfileProjectConfig>> {
+) -> AppResult<Option<OrbitfileBlueprintConfig>> {
     let mut cursor = if fs.is_dir(submit_root)? {
         submit_root.to_path_buf()
     } else {
@@ -214,7 +214,7 @@ pub fn discover_project_from_submit_root(
     loop {
         let orbitfile = cursor.join(ORBITFILE_NAME);
         if fs.is_file(&orbitfile)? {
-            let config = load_project_from_root(fs, &cursor)?;
+            let config = load_blueprint_from_root(fs, &cursor)?;
             return Ok(Some(config));
         }
         if !cursor.pop() {
@@ -224,14 +224,14 @@ pub fn discover_project_from_submit_root(
     Ok(None)
 }
 
-pub fn load_project_from_root(
+pub fn load_blueprint_from_root(
     fs: &dyn FilesystemPort,
-    project_root: &Path,
-) -> AppResult<OrbitfileProjectConfig> {
-    let orbitfile_path = project_root.join(ORBITFILE_NAME);
+    blueprint_root: &Path,
+) -> AppResult<OrbitfileBlueprintConfig> {
+    let orbitfile_path = blueprint_root.join(ORBITFILE_NAME);
     if !fs.is_file(&orbitfile_path)? {
         return Err(AppError::invalid_argument(format!(
-            "Project has no Orbitfile at {}",
+            "Blueprint has no Orbitfile at {}",
             orbitfile_path.display()
         )));
     }
@@ -243,17 +243,17 @@ pub fn load_project_from_root(
         .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?;
 
     let RawOrbitfile {
-        project,
+        blueprint,
         retrieve,
         submit,
         sync,
         template,
     } = raw;
 
-    let project =
-        project.ok_or_else(|| AppError::invalid_argument("Orbitfile is missing [project]"))?;
-    let name = project.name.trim().to_string();
-    validate_project_name(&name)?;
+    let blueprint =
+        blueprint.ok_or_else(|| AppError::invalid_argument("Orbitfile is missing [blueprint]"))?;
+    let name = blueprint.name.trim().to_string();
+    validate_blueprint_name(&name)?;
 
     let default_retrieve_path = trim_optional(retrieve.and_then(|section| section.default_path))
         .map(|value| value.to_string());
@@ -269,12 +269,12 @@ pub fn load_project_from_root(
 
     let template = parse_template_config(template)?;
 
-    Ok(OrbitfileProjectConfig {
-        root: project_root.to_path_buf(),
+    Ok(OrbitfileBlueprintConfig {
+        root: blueprint_root.to_path_buf(),
         name,
         default_retrieve_path,
         submit_sbatch_script,
-        rules: ProjectRuleSet { include, exclude },
+        rules: BlueprintRuleSet { include, exclude },
         template,
     })
 }
@@ -290,20 +290,20 @@ pub fn template_config_from_json(raw: &str) -> AppResult<TemplateConfig> {
         .map_err(|err| AppError::invalid_argument(format!("invalid template config JSON: {err}")))
 }
 
-pub fn merge_submit_filters(
-    cli_filters: Vec<SubmitPathFilterRule>,
-    rules: &ProjectRuleSet,
-) -> Vec<SubmitPathFilterRule> {
+pub fn merge_run_filters(
+    cli_filters: Vec<RunPathFilterRule>,
+    rules: &BlueprintRuleSet,
+) -> Vec<RunPathFilterRule> {
     let mut merged = cli_filters;
     for pattern in &rules.include {
-        merged.push(SubmitPathFilterRule {
-            action: SubmitPathFilterAction::Include as i32,
+        merged.push(RunPathFilterRule {
+            action: RunPathFilterAction::Include as i32,
             pattern: pattern.clone(),
         });
     }
     for pattern in &rules.exclude {
-        merged.push(SubmitPathFilterRule {
-            action: SubmitPathFilterAction::Exclude as i32,
+        merged.push(RunPathFilterRule {
+            action: RunPathFilterAction::Exclude as i32,
             pattern: pattern.clone(),
         });
     }
@@ -653,21 +653,21 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn validate_project_name_accepts_expected_pattern() {
-        assert!(validate_project_name("abc-123_name").is_ok());
-        assert!(validate_project_name("bad space").is_err());
-        assert!(validate_project_name("bad.dot").is_err());
+    fn validate_blueprint_name_accepts_expected_pattern() {
+        assert!(validate_blueprint_name("abc-123_name").is_ok());
+        assert!(validate_blueprint_name("bad space").is_err());
+        assert!(validate_blueprint_name("bad.dot").is_err());
     }
 
     #[test]
-    fn merge_submit_filters_places_cli_first() {
-        let cli = vec![SubmitPathFilterRule {
-            action: SubmitPathFilterAction::Include as i32,
+    fn merge_run_filters_places_cli_first() {
+        let cli = vec![RunPathFilterRule {
+            action: RunPathFilterAction::Include as i32,
             pattern: "cli/**".to_string(),
         }];
-        let merged = merge_submit_filters(
+        let merged = merge_run_filters(
             cli,
-            &ProjectRuleSet {
+            &BlueprintRuleSet {
                 include: vec!["src/**".to_string()],
                 exclude: vec!["**/*.tmp".to_string()],
             },
@@ -679,9 +679,9 @@ mod tests {
     }
 
     #[test]
-    fn default_orbitfile_contains_project_and_git_exclude() {
+    fn default_orbitfile_contains_blueprint_and_git_exclude() {
         let content = build_default_orbitfile_contents("demo").expect("content");
-        assert!(content.contains("[project]"));
+        assert!(content.contains("[blueprint]"));
         assert!(content.contains("name = \"demo\""));
         assert!(content.contains("[sync]"));
         assert!(content.contains("/.git/"));
@@ -693,7 +693,7 @@ mod tests {
     fn parse_template_config_accepts_fields_files_and_presets() {
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [project]
+            [blueprint]
             name = "demo"
 
             [template]
@@ -896,7 +896,7 @@ mod tests {
     fn parse_template_config_rejects_invalid_inputs() {
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [project]
+            [blueprint]
             name = "demo"
 
             [template]
@@ -911,7 +911,7 @@ mod tests {
 
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [project]
+            [blueprint]
             name = "demo"
 
             [template]
@@ -925,7 +925,7 @@ mod tests {
 
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [project]
+            [blueprint]
             name = "demo"
 
             [template]
@@ -942,7 +942,7 @@ mod tests {
 
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [project]
+            [blueprint]
             name = "demo"
 
             [template]

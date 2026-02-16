@@ -5,12 +5,12 @@ use std::path::Path;
 use std::sync::Arc;
 
 use async_trait::async_trait;
-use proto::{MfaAnswer, StreamEvent, SubmitStreamEvent};
+use proto::{MfaAnswer, RunStreamEvent, StreamEvent};
 use tokio::sync::mpsc;
 
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
-    FileSyncPort, MfaPort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
+    FileSyncPort, MfaPort, RemoteExecPort, RunStreamOutputPort, StreamOutputPort,
 };
 use crate::app::types::{
     SshConfig, SyncFilterAction as AppSyncFilterAction, SyncFilterRule as AppSyncFilterRule,
@@ -122,8 +122,8 @@ async fn drain_stream_events(
 }
 
 async fn drain_submit_events(
-    rx: &mut mpsc::Receiver<Result<SubmitStreamEvent, tonic::Status>>,
-    stream: &dyn SubmitStreamOutputPort,
+    rx: &mut mpsc::Receiver<Result<RunStreamEvent, tonic::Status>>,
+    stream: &dyn RunStreamOutputPort,
 ) {
     loop {
         match rx.try_recv() {
@@ -299,11 +299,11 @@ impl RemoteExecPort for SshAdapter {
     async fn ensure_connected_submit(
         &self,
         config: &SshConfig,
-        stream: &dyn SubmitStreamOutputPort,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()> {
         let session = self.sessions.get_or_create(config).await?;
-        let (evt_tx, evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, tonic::Status>>(64);
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<RunStreamEvent, tonic::Status>>(64);
         let (mfa_tx, mut ssh_mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         let mut mfa_tx = Some(mfa_tx);
 
@@ -405,11 +405,11 @@ impl FileSyncPort for SshAdapter {
         local_dir: &Path,
         remote_dir: &str,
         options: AppSyncOptions,
-        stream: &dyn SubmitStreamOutputPort,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()> {
         let session = self.sessions.get_or_create(config).await?;
-        let (evt_tx, evt_rx) = mpsc::channel::<Result<SubmitStreamEvent, tonic::Status>>(64);
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<RunStreamEvent, tonic::Status>>(64);
         let (mfa_tx, ssh_mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         let mut mfa_tx = Some(mfa_tx);
         let filters = to_ssh_filters(&options.filters);

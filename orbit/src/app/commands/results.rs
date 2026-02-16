@@ -14,7 +14,7 @@ pub struct StreamCapture {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct SubmitCapture {
+pub struct RunCapture {
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
     pub exit_code: Option<i32>,
@@ -39,13 +39,13 @@ pub enum InitActionStatus {
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectInitAction {
+pub struct BlueprintInitAction {
     pub status: InitActionStatus,
     pub message: String,
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectListItem {
+pub struct BlueprintListItem {
     pub name: String,
     pub path: String,
     pub latest_tag: Option<String>,
@@ -71,7 +71,7 @@ pub enum CommandResult {
         cluster: String,
         local_path: String,
         sbatchscript: String,
-        capture: SubmitCapture,
+        capture: RunCapture,
     },
     JobLogs {
         capture: StreamCapture,
@@ -123,20 +123,20 @@ pub enum CommandResult {
     ClusterDelete {
         name: String,
     },
-    ProjectInit {
+    BlueprintInit {
         name: String,
         path: PathBuf,
         orbitfile: PathBuf,
         git_initialized: bool,
-        actions: Vec<ProjectInitAction>,
+        actions: Vec<BlueprintInitAction>,
     },
-    ProjectBuild {
-        project: proto::ProjectRecord,
+    BlueprintBuild {
+        blueprint: proto::BlueprintRecord,
     },
-    ProjectList {
-        projects: Vec<ProjectListItem>,
+    BlueprintList {
+        blueprints: Vec<BlueprintListItem>,
     },
-    ProjectDelete {
+    BlueprintDelete {
         name: String,
     },
 }

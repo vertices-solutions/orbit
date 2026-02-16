@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result, anyhow};
 use proto::{
-    MfaAnswer, MfaPrompt, Prompt, StreamEvent, SubmitStreamEvent, stream_event, submit_stream_event,
+    MfaAnswer, MfaPrompt, Prompt, RunStreamEvent, StreamEvent, run_stream_event, stream_event,
 };
 use russh::client::{AuthResult, KeyboardInteractiveAuthResponse};
 use russh::keys::PrivateKeyWithHashAlg;
@@ -32,10 +32,10 @@ impl MfaEvent for StreamEvent {
     }
 }
 
-impl MfaEvent for SubmitStreamEvent {
+impl MfaEvent for RunStreamEvent {
     fn from_prompt(prompt: MfaPrompt) -> Self {
-        SubmitStreamEvent {
-            event: Some(submit_stream_event::Event::Mfa(prompt)),
+        RunStreamEvent {
+            event: Some(run_stream_event::Event::Mfa(prompt)),
         }
     }
 }
@@ -69,7 +69,7 @@ impl SessionManager {
 
     pub async fn ensure_connected_submit(
         &self,
-        evt_tx: &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
+        evt_tx: &mpsc::Sender<Result<RunStreamEvent, tonic::Status>>,
         mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         self.ensure_connected_with(evt_tx, mfa_rx).await
@@ -175,7 +175,7 @@ impl SessionManager {
 
     pub(crate) async fn ensure_connected_for_sync(
         &self,
-        evt_tx: &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
+        evt_tx: &mpsc::Sender<Result<RunStreamEvent, tonic::Status>>,
         mfa_rx: &mut mpsc::Receiver<MfaAnswer>,
     ) -> Result<()> {
         #[cfg(test)]

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-mod submit_errors;
+mod run_errors;
 
 use std::future::Future;
 use std::io::{IsTerminal, Write};
@@ -19,7 +19,7 @@ use tokio_stream::StreamExt;
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Code, Request, Status};
 
-use crate::app::commands::{AddClusterCapture, StreamCapture, SubmitCapture};
+use crate::app::commands::{AddClusterCapture, RunCapture, StreamCapture};
 use crate::app::errors::{
     AppError, AppResult, ErrorType, describe_error_code, format_server_error,
 };
@@ -28,18 +28,18 @@ use crate::app::ports::{
 };
 use proto::agent_client::AgentClient;
 use proto::{
-    AddClusterInit, AddClusterRequest, BuildProjectRequest, CancelJobRequest, CancelJobRequestInit,
-    CleanupJobRequest, CleanupJobRequestInit, DeleteClusterRequest, DeleteProjectRequest,
-    GetProjectRequest, JobLogsRequest, JobLogsRequestInit, ListAccountsRequest,
-    ListClustersRequest, ListJobsRequest, ListPartitionsRequest, ListProjectsRequest, LsRequest,
-    LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
-    RetrieveJobRequestInit, SetClusterInit, SetClusterRequest, SubmitJobRequest,
-    SubmitPathFilterRule, SubmitProjectRequest, UpsertProjectRequest, add_cluster_init,
-    add_cluster_request, add_cluster_scratch_selection, resolve_home_dir_request,
-    resolve_home_dir_request_init, set_cluster_request, stream_event, submit_job_request,
-    submit_project_request, submit_stream_event,
+    AddClusterInit, AddClusterRequest, BuildBlueprintRequest, CancelJobRequest,
+    CancelJobRequestInit, CleanupJobRequest, CleanupJobRequestInit, DeleteBlueprintRequest,
+    DeleteClusterRequest, GetBlueprintRequest, JobLogsRequest, JobLogsRequestInit,
+    ListAccountsRequest, ListBlueprintsRequest, ListClustersRequest, ListJobsRequest,
+    ListPartitionsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
+    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, RunBlueprintRequest,
+    RunJobRequest, RunPathFilterRule, SetClusterInit, SetClusterRequest, UpsertBlueprintRequest,
+    add_cluster_init, add_cluster_request, add_cluster_scratch_selection, resolve_home_dir_request,
+    resolve_home_dir_request_init, run_blueprint_request, run_job_request, run_stream_event,
+    set_cluster_request, stream_event,
 };
-use submit_errors::parse_remote_path_failure;
+use run_errors::parse_remote_path_failure;
 
 pub struct GrpcOrbitdPort {
     endpoint: String,
@@ -158,12 +158,12 @@ impl OrbitdPort for GrpcOrbitdPort {
     async fn list_jobs(
         &self,
         cluster: Option<String>,
-        project: Option<String>,
+        blueprint: Option<String>,
     ) -> AppResult<Vec<proto::ListJobsUnitResponse>> {
         let mut client = self.connect().await?;
         let list_jobs_request = ListJobsRequest {
             name: cluster,
-            project_name: project,
+            blueprint_name: blueprint,
         };
         let response =
             match timeout(Duration::from_secs(5), client.list_jobs(list_jobs_request)).await {
@@ -209,54 +209,57 @@ impl OrbitdPort for GrpcOrbitdPort {
             .collect())
     }
 
-    async fn upsert_project(&self, name: &str, path: &str) -> AppResult<proto::ProjectRecord> {
+    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<proto::BlueprintRecord> {
         let mut client = self.connect().await?;
-        let request = UpsertProjectRequest {
+        let request = UpsertBlueprintRequest {
             name: name.to_string(),
             path: path.to_string(),
         };
-        let response = match timeout(Duration::from_secs(5), client.upsert_project(request)).await {
+        let response = match timeout(Duration::from_secs(5), client.upsert_blueprint(request)).await
+        {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
             Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
         response
-            .project
-            .ok_or_else(|| AppError::remote_error("missing project in response"))
+            .blueprint
+            .ok_or_else(|| AppError::remote_error("missing blueprint in response"))
     }
 
-    async fn get_project(&self, name: &str) -> AppResult<proto::ProjectRecord> {
+    async fn get_blueprint(&self, name: &str) -> AppResult<proto::BlueprintRecord> {
         let mut client = self.connect().await?;
-        let request = GetProjectRequest {
+        let request = GetBlueprintRequest {
             name: name.to_string(),
         };
-        let response = match timeout(Duration::from_secs(5), client.get_project(request)).await {
+        let response = match timeout(Duration::from_secs(5), client.get_blueprint(request)).await {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
             Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
         response
-            .project
-            .ok_or_else(|| AppError::remote_error("missing project in response"))
+            .blueprint
+            .ok_or_else(|| AppError::remote_error("missing blueprint in response"))
     }
 
-    async fn list_projects(&self) -> AppResult<Vec<proto::ProjectRecord>> {
+    async fn list_blueprints(&self) -> AppResult<Vec<proto::BlueprintRecord>> {
         let mut client = self.connect().await?;
-        let request = ListProjectsRequest {};
-        let response = match timeout(Duration::from_secs(5), client.list_projects(request)).await {
+        let request = ListBlueprintsRequest {};
+        let response = match timeout(Duration::from_secs(5), client.list_blueprints(request)).await
+        {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
             Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
-        Ok(response.projects)
+        Ok(response.blueprints)
     }
 
-    async fn delete_project(&self, name: &str) -> AppResult<bool> {
+    async fn delete_blueprint(&self, name: &str) -> AppResult<bool> {
         let mut client = self.connect().await?;
-        let request = DeleteProjectRequest {
+        let request = DeleteBlueprintRequest {
             name: name.to_string(),
         };
-        let response = match timeout(Duration::from_secs(5), client.delete_project(request)).await {
+        let response = match timeout(Duration::from_secs(5), client.delete_blueprint(request)).await
+        {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
             Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
@@ -264,21 +267,22 @@ impl OrbitdPort for GrpcOrbitdPort {
         Ok(response.deleted)
     }
 
-    async fn build_project(
+    async fn build_blueprint(
         &self,
         path: String,
         package_git: bool,
-    ) -> AppResult<proto::ProjectRecord> {
+    ) -> AppResult<proto::BlueprintRecord> {
         let mut client = self.connect().await?;
-        let request = BuildProjectRequest { path, package_git };
-        let response = match timeout(Duration::from_secs(10), client.build_project(request)).await {
+        let request = BuildBlueprintRequest { path, package_git };
+        let response = match timeout(Duration::from_secs(10), client.build_blueprint(request)).await
+        {
             Ok(Ok(res)) => res.into_inner(),
             Ok(Err(status)) => return Err(app_error_from_status(status)),
             Err(e) => return Err(AppError::network_error(format!("operation timed out: {e}"))),
         };
         response
-            .project
-            .ok_or_else(|| AppError::remote_error("missing project in response"))
+            .blueprint
+            .ok_or_else(|| AppError::remote_error("missing blueprint in response"))
     }
 
     async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool> {
@@ -568,7 +572,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         Ok((local_target, capture))
     }
 
-    async fn submit_job(
+    async fn run_job(
         &self,
         name: String,
         local_path: String,
@@ -576,19 +580,19 @@ impl OrbitdPort for GrpcOrbitdPort {
         new_directory: bool,
         force: bool,
         sbatchscript: String,
-        filters: Vec<SubmitPathFilterRule>,
-        project_name: Option<String>,
+        filters: Vec<RunPathFilterRule>,
+        blueprint_name: Option<String>,
         default_retrieve_path: Option<String>,
         template_values_json: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<SubmitCapture> {
+    ) -> AppResult<RunCapture> {
         let mut client = self.connect().await?;
-        let (tx_ans, rx_ans) = mpsc::channel::<SubmitJobRequest>(16);
+        let (tx_ans, rx_ans) = mpsc::channel::<RunJobRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
         tx_ans
-            .send(SubmitJobRequest {
-                msg: Some(submit_job_request::Msg::Init(proto::SubmitJobRequestInit {
+            .send(RunJobRequest {
+                msg: Some(run_job_request::Msg::Init(proto::RunJobRequestInit {
                     local_path,
                     remote_path,
                     name,
@@ -596,15 +600,15 @@ impl OrbitdPort for GrpcOrbitdPort {
                     filters,
                     new_directory,
                     force,
-                    project_name,
+                    blueprint_name,
                     default_retrieve_path,
                     template_values_json,
                 })),
             })
             .await
-            .map_err(|_| AppError::internal_error("failed to send submit init"))?;
+            .map_err(|_| AppError::internal_error("failed to send run init"))?;
 
-        let response = match client.submit_job(Request::new(outbound)).await {
+        let response = match client.run_job(Request::new(outbound)).await {
             Ok(response) => response,
             Err(status) => {
                 let message = format_status_error(&status);
@@ -621,12 +625,12 @@ impl OrbitdPort for GrpcOrbitdPort {
             }
         };
         let inbound = response.into_inner();
-        handle_submit_stream(inbound, output, interaction, move |answers| {
+        handle_run_stream(inbound, output, interaction, move |answers| {
             let tx_ans = tx_ans.clone();
             async move {
                 tx_ans
-                    .send(SubmitJobRequest {
-                        msg: Some(submit_job_request::Msg::Mfa(answers)),
+                    .send(RunJobRequest {
+                        msg: Some(run_job_request::Msg::Mfa(answers)),
                     })
                     .await
                     .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
@@ -635,30 +639,30 @@ impl OrbitdPort for GrpcOrbitdPort {
         .await
     }
 
-    async fn submit_project(
+    async fn run_blueprint(
         &self,
-        project_name: String,
-        project_tag: String,
+        blueprint_name: String,
+        blueprint_tag: String,
         name: String,
         remote_path: Option<String>,
         new_directory: bool,
         force: bool,
         sbatchscript: String,
-        filters: Vec<SubmitPathFilterRule>,
+        filters: Vec<RunPathFilterRule>,
         default_retrieve_path: Option<String>,
         template_values_json: Option<String>,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
-    ) -> AppResult<SubmitCapture> {
+    ) -> AppResult<RunCapture> {
         let mut client = self.connect().await?;
-        let (tx_ans, rx_ans) = mpsc::channel::<SubmitProjectRequest>(16);
+        let (tx_ans, rx_ans) = mpsc::channel::<RunBlueprintRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
         tx_ans
-            .send(SubmitProjectRequest {
-                msg: Some(submit_project_request::Msg::Init(
-                    proto::SubmitProjectRequestInit {
-                        project_name,
-                        project_tag,
+            .send(RunBlueprintRequest {
+                msg: Some(run_blueprint_request::Msg::Init(
+                    proto::RunBlueprintRequestInit {
+                        blueprint_name,
+                        blueprint_tag,
                         name,
                         sbatchscript,
                         filters,
@@ -671,9 +675,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                 )),
             })
             .await
-            .map_err(|_| AppError::internal_error("failed to send submit init"))?;
+            .map_err(|_| AppError::internal_error("failed to send run init"))?;
 
-        let response = match client.submit_project(Request::new(outbound)).await {
+        let response = match client.run_blueprint(Request::new(outbound)).await {
             Ok(response) => response,
             Err(status) => {
                 let message = format_status_error(&status);
@@ -690,12 +694,12 @@ impl OrbitdPort for GrpcOrbitdPort {
             }
         };
         let inbound = response.into_inner();
-        handle_submit_stream(inbound, output, interaction, move |answers| {
+        handle_run_stream(inbound, output, interaction, move |answers| {
             let tx_ans = tx_ans.clone();
             async move {
                 tx_ans
-                    .send(SubmitProjectRequest {
-                        msg: Some(submit_project_request::Msg::Mfa(answers)),
+                    .send(RunBlueprintRequest {
+                        msg: Some(run_blueprint_request::Msg::Mfa(answers)),
                     })
                     .await
                     .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
@@ -1330,7 +1334,7 @@ async fn prompt_add_cluster_default_base_path(
     interaction
         .prompt_line_with_default_confirmable(
             "Default base path: ",
-            "Remote base folder for projects.",
+            "Remote base folder for runs.",
             default,
         )
         .await
@@ -1472,48 +1476,48 @@ where
     Ok(output.take_stream_capture())
 }
 
-async fn handle_submit_stream<S, F, Fut>(
+async fn handle_run_stream<S, F, Fut>(
     mut inbound: S,
     output: &mut dyn StreamOutputPort,
     interaction: &dyn InteractionPort,
     mut send_mfa: F,
-) -> AppResult<SubmitCapture>
+) -> AppResult<RunCapture>
 where
-    S: tokio_stream::Stream<Item = Result<proto::SubmitStreamEvent, Status>> + Unpin,
+    S: tokio_stream::Stream<Item = Result<proto::RunStreamEvent, Status>> + Unpin,
     F: FnMut(proto::MfaAnswer) -> Fut,
     Fut: Future<Output = AppResult<()>>,
 {
     while let Some(item) = inbound.next().await {
         match item {
-            Ok(proto::SubmitStreamEvent { event: Some(ev) }) => match ev {
-                submit_stream_event::Event::Stdout(bytes) => {
+            Ok(proto::RunStreamEvent { event: Some(ev) }) => match ev {
+                run_stream_event::Event::Stdout(bytes) => {
                     output.on_stdout(&bytes).await?;
                 }
-                submit_stream_event::Event::Stderr(bytes) => {
+                run_stream_event::Event::Stderr(bytes) => {
                     output.on_stderr(&bytes).await?;
                 }
-                submit_stream_event::Event::ExitCode(code) => {
+                run_stream_event::Event::ExitCode(code) => {
                     output.on_exit_code(code).await?;
                     break;
                 }
-                submit_stream_event::Event::Mfa(mfa) => {
+                run_stream_event::Event::Mfa(mfa) => {
                     let answers = interaction.prompt_mfa(&mfa).await?;
                     send_mfa(answers).await?;
                 }
-                submit_stream_event::Event::Error(err) => {
+                run_stream_event::Event::Error(err) => {
                     output.on_error(&err).await?;
                     output.on_exit_code(1).await?;
                     break;
                 }
-                submit_stream_event::Event::SubmitStatus(status) => {
-                    output.on_submit_status(&status).await?;
+                run_stream_event::Event::RunStatus(status) => {
+                    output.on_run_status(&status).await?;
                 }
-                submit_stream_event::Event::SubmitResult(result) => {
-                    output.on_submit_result(&result).await?;
+                run_stream_event::Event::RunResult(result) => {
+                    output.on_run_result(&result).await?;
                     break;
                 }
             },
-            Ok(proto::SubmitStreamEvent { event: None }) => {}
+            Ok(proto::RunStreamEvent { event: None }) => {}
             Err(status) => {
                 output
                     .on_error(remote_code_for_status(status.code()))
@@ -1524,7 +1528,7 @@ where
         }
     }
 
-    Ok(output.take_submit_capture())
+    Ok(output.take_run_capture())
 }
 
 fn job_logs_error_exit_code(err: &str) -> i32 {

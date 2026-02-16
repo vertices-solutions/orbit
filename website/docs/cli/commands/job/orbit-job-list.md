@@ -12,6 +12,6 @@ Parent command: [`orbit job`](./orbit-job)
 ## Flags and Options
 
 - `--cluster <CLUSTER>`
+- `--blueprint <BLUEPRINT>`
 - `--non-interactive`: Run without prompts, fail on MFA, and output JSON only.
-- `--project <PROJECT>`
 - `-h, --help`: Print help

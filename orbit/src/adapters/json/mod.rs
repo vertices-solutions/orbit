@@ -5,7 +5,7 @@ mod format;
 
 use serde_json::{Value, json};
 
-use crate::app::commands::{CommandResult, InitActionStatus, StreamCapture, SubmitCapture};
+use crate::app::commands::{CommandResult, InitActionStatus, RunCapture, StreamCapture};
 use crate::app::errors::{AppError, AppResult};
 use crate::app::ports::{
     InteractionPort, OutputPort, PromptFeedbackPort, PromptLine, StreamKind, StreamOutputPort,
@@ -180,7 +180,7 @@ impl InteractionPort for NonInteractiveInteraction {
 struct JsonStreamOutput {
     kind: StreamKind,
     stream: StreamCapture,
-    submit: SubmitCapture,
+    submit: RunCapture,
 }
 
 impl JsonStreamOutput {
@@ -188,7 +188,7 @@ impl JsonStreamOutput {
         Self {
             kind,
             stream: StreamCapture::default(),
-            submit: SubmitCapture::default(),
+            submit: RunCapture::default(),
         }
     }
 }
@@ -197,7 +197,7 @@ impl JsonStreamOutput {
 impl StreamOutputPort for JsonStreamOutput {
     async fn on_stdout(&mut self, bytes: &[u8]) -> AppResult<()> {
         self.stream.stdout.extend_from_slice(bytes);
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.submit.stdout.extend_from_slice(bytes);
         }
         Ok(())
@@ -205,7 +205,7 @@ impl StreamOutputPort for JsonStreamOutput {
 
     async fn on_stderr(&mut self, bytes: &[u8]) -> AppResult<()> {
         self.stream.stderr.extend_from_slice(bytes);
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.submit.stderr.extend_from_slice(bytes);
         }
         Ok(())
@@ -213,7 +213,7 @@ impl StreamOutputPort for JsonStreamOutput {
 
     async fn on_exit_code(&mut self, code: i32) -> AppResult<()> {
         self.stream.exit_code = Some(code);
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.submit.exit_code = Some(code);
         }
         Ok(())
@@ -221,41 +221,41 @@ impl StreamOutputPort for JsonStreamOutput {
 
     async fn on_error(&mut self, code: &str) -> AppResult<()> {
         self.stream.error_code = Some(code.to_string());
-        if self.kind == StreamKind::Submit {
+        if self.kind == StreamKind::Run {
             self.submit.error_code = Some(code.to_string());
         }
         Ok(())
     }
 
-    async fn on_submit_status(&mut self, status: &proto::SubmitStatus) -> AppResult<()> {
-        if self.kind == StreamKind::Submit {
-            let phase = proto::submit_status::Phase::try_from(status.phase)
-                .unwrap_or(proto::submit_status::Phase::Unspecified);
-            if phase == proto::submit_status::Phase::Resolved && !status.remote_path.is_empty() {
+    async fn on_run_status(&mut self, status: &proto::RunStatus) -> AppResult<()> {
+        if self.kind == StreamKind::Run {
+            let phase = proto::run_status::Phase::try_from(status.phase)
+                .unwrap_or(proto::run_status::Phase::Unspecified);
+            if phase == proto::run_status::Phase::Resolved && !status.remote_path.is_empty() {
                 self.submit.remote_path = Some(status.remote_path.clone());
             }
         }
         Ok(())
     }
 
-    async fn on_submit_result(&mut self, result: &proto::SubmitResult) -> AppResult<()> {
-        if self.kind == StreamKind::Submit {
-            let status = proto::submit_result::Status::try_from(result.status)
-                .unwrap_or(proto::submit_result::Status::Unspecified);
+    async fn on_run_result(&mut self, result: &proto::RunResult) -> AppResult<()> {
+        if self.kind == StreamKind::Run {
+            let status = proto::run_result::Status::try_from(result.status)
+                .unwrap_or(proto::run_result::Status::Unspecified);
             match status {
-                proto::submit_result::Status::Submitted => {
+                proto::run_result::Status::Submitted => {
                     self.submit.job_id = result.job_id;
                     self.submit.exit_code = Some(0);
                 }
-                proto::submit_result::Status::Failed => {
+                proto::run_result::Status::Failed => {
                     let detail = result.detail.trim();
                     if !detail.is_empty() {
                         self.submit.detail = Some(detail.to_string());
                     }
                     self.submit.exit_code = Some(1);
                 }
-                proto::submit_result::Status::Unspecified => {
-                    self.submit.detail = Some("submit result missing status".to_string());
+                proto::run_result::Status::Unspecified => {
+                    self.submit.detail = Some("run result missing status".to_string());
                     self.submit.exit_code = Some(1);
                 }
             }
@@ -267,7 +267,7 @@ impl StreamOutputPort for JsonStreamOutput {
         std::mem::take(&mut self.stream)
     }
 
-    fn take_submit_capture(&mut self) -> SubmitCapture {
+    fn take_run_capture(&mut self) -> RunCapture {
         std::mem::take(&mut self.submit)
     }
 }
@@ -285,7 +285,7 @@ fn stream_capture_json(capture: &StreamCapture) -> Value {
 }
 
 fn submit_capture_json(
-    capture: &SubmitCapture,
+    capture: &RunCapture,
     cluster: &str,
     local_path: &str,
     sbatchscript: &str,
@@ -393,7 +393,7 @@ fn result_to_json(result: &CommandResult) -> Value {
             "name": name,
             "status": "deleted",
         }),
-        CommandResult::ProjectInit {
+        CommandResult::BlueprintInit {
             name,
             path,
             orbitfile,
@@ -420,39 +420,39 @@ fn result_to_json(result: &CommandResult) -> Value {
             }).collect::<Vec<_>>(),
             "status": "initialized",
         }),
-        CommandResult::ProjectBuild { project } => json!({
-            "name": project.name,
-            "versionTag": project.version_tag,
-            "path": project.path,
-            "tarballHash": project.tarball_hash,
-            "tarballHashFunction": project.tarball_hash_function,
-            "toolVersion": project.tool_version,
-            "templateConfig": project.template_config_json,
-            "submitSbatchScript": project.submit_sbatch_script,
-            "sbatchScripts": project.sbatch_scripts,
-            "defaultRetrievePath": project.default_retrieve_path,
-            "syncInclude": project.sync_include,
-            "syncExclude": project.sync_exclude,
-            "createdAt": project.created_at,
-            "updatedAt": project.updated_at,
+        CommandResult::BlueprintBuild { blueprint } => json!({
+            "name": blueprint.name,
+            "versionTag": blueprint.version_tag,
+            "path": blueprint.path,
+            "tarballHash": blueprint.tarball_hash,
+            "tarballHashFunction": blueprint.tarball_hash_function,
+            "toolVersion": blueprint.tool_version,
+            "templateConfig": blueprint.template_config_json,
+            "submitSbatchScript": blueprint.submit_sbatch_script,
+            "sbatchScripts": blueprint.sbatch_scripts,
+            "defaultRetrievePath": blueprint.default_retrieve_path,
+            "syncInclude": blueprint.sync_include,
+            "syncExclude": blueprint.sync_exclude,
+            "createdAt": blueprint.created_at,
+            "updatedAt": blueprint.updated_at,
             "status": "built",
         }),
-        CommandResult::ProjectList { projects } => {
-            let items = projects
+        CommandResult::BlueprintList { blueprints } => {
+            let items = blueprints
                 .iter()
-                .map(|project| {
+                .map(|blueprint| {
                     json!({
-                        "name": project.name,
-                        "path": project.path,
-                        "latest_tag": project.latest_tag,
-                        "tags": project.tags,
-                        "updated_at": project.updated_at,
+                        "name": blueprint.name,
+                        "path": blueprint.path,
+                        "latest_tag": blueprint.latest_tag,
+                        "tags": blueprint.tags,
+                        "updated_at": blueprint.updated_at,
                     })
                 })
                 .collect::<Vec<_>>();
-            json!({ "projects": items })
+            json!({ "blueprints": items })
         }
-        CommandResult::ProjectDelete { name } => json!({
+        CommandResult::BlueprintDelete { name } => json!({
             "name": name,
             "status": "deleted",
         }),

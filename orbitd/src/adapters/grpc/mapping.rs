@@ -3,21 +3,21 @@
 
 use crate::app::errors::{AppError, AppErrorKind, codes};
 use crate::app::types::{
-    ClusterStatus, JobRecord, ProjectRecord, SyncFilterAction, SyncFilterRule,
+    BlueprintRecord, ClusterStatus, JobRecord, SyncFilterAction, SyncFilterRule,
 };
 use proto::{
-    ListClustersUnitResponse, ListJobsUnitResponse, SubmitPathFilterAction, SubmitPathFilterRule,
+    ListClustersUnitResponse, ListJobsUnitResponse, RunPathFilterAction, RunPathFilterRule,
     list_clusters_unit_response,
 };
 
 pub fn build_sync_filters(
-    filters: Vec<SubmitPathFilterRule>,
+    filters: Vec<RunPathFilterRule>,
 ) -> Result<Vec<SyncFilterRule>, AppError> {
     let mut out = Vec::with_capacity(filters.len());
     for rule in filters {
-        let action = match SubmitPathFilterAction::try_from(rule.action) {
-            Ok(SubmitPathFilterAction::Include) => SyncFilterAction::Include,
-            Ok(SubmitPathFilterAction::Exclude) => SyncFilterAction::Exclude,
+        let action = match RunPathFilterAction::try_from(rule.action) {
+            Ok(RunPathFilterAction::Include) => SyncFilterAction::Include,
+            Ok(RunPathFilterAction::Exclude) => SyncFilterAction::Exclude,
             _ => {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
@@ -75,27 +75,27 @@ pub fn job_record_to_response(jr: &JobRecord) -> ListJobsUnitResponse {
         scheduler_state: jr.scheduler_state.clone(),
         local_path: jr.local_path.clone(),
         remote_path: jr.remote_path.clone(),
-        project_name: jr.project_name.clone(),
+        blueprint_name: jr.blueprint_name.clone(),
         default_retrieve_path: jr.default_retrieve_path.clone(),
     }
 }
 
-pub fn project_record_to_response(project: &ProjectRecord) -> proto::ProjectRecord {
-    proto::ProjectRecord {
-        name: project.name.clone(),
-        path: project.path.clone(),
-        created_at: project.created_at.clone(),
-        updated_at: project.updated_at.clone(),
-        version_tag: project.version_tag.clone(),
-        tarball_hash: project.tarball_hash.clone(),
-        tarball_hash_function: project.tarball_hash_function.clone(),
-        tool_version: project.tool_version.clone(),
-        template_config_json: project.template_config_json.clone(),
-        submit_sbatch_script: project.submit_sbatch_script.clone(),
-        sbatch_scripts: project.sbatch_scripts.clone(),
-        default_retrieve_path: project.default_retrieve_path.clone(),
-        sync_include: project.sync_include.clone(),
-        sync_exclude: project.sync_exclude.clone(),
+pub fn blueprint_record_to_response(blueprint: &BlueprintRecord) -> proto::BlueprintRecord {
+    proto::BlueprintRecord {
+        name: blueprint.name.clone(),
+        path: blueprint.path.clone(),
+        created_at: blueprint.created_at.clone(),
+        updated_at: blueprint.updated_at.clone(),
+        version_tag: blueprint.version_tag.clone(),
+        tarball_hash: blueprint.tarball_hash.clone(),
+        tarball_hash_function: blueprint.tarball_hash_function.clone(),
+        tool_version: blueprint.tool_version.clone(),
+        template_config_json: blueprint.template_config_json.clone(),
+        submit_sbatch_script: blueprint.submit_sbatch_script.clone(),
+        sbatch_scripts: blueprint.sbatch_scripts.clone(),
+        default_retrieve_path: blueprint.default_retrieve_path.clone(),
+        sync_include: blueprint.sync_include.clone(),
+        sync_exclude: blueprint.sync_exclude.clone(),
     }
 }
 
@@ -108,12 +108,12 @@ mod tests {
     #[test]
     fn build_sync_filters_accepts_include_and_exclude_rules() {
         let filters = vec![
-            SubmitPathFilterRule {
-                action: SubmitPathFilterAction::Include as i32,
+            RunPathFilterRule {
+                action: RunPathFilterAction::Include as i32,
                 pattern: "src/**".to_string(),
             },
-            SubmitPathFilterRule {
-                action: SubmitPathFilterAction::Exclude as i32,
+            RunPathFilterRule {
+                action: RunPathFilterAction::Exclude as i32,
                 pattern: "target/**".to_string(),
             },
         ];
@@ -136,8 +136,8 @@ mod tests {
 
     #[test]
     fn build_sync_filters_rejects_unknown_action() {
-        let filters = vec![SubmitPathFilterRule {
-            action: SubmitPathFilterAction::Unspecified as i32,
+        let filters = vec![RunPathFilterRule {
+            action: RunPathFilterAction::Unspecified as i32,
             pattern: "src/**".to_string(),
         }];
 
@@ -148,8 +148,8 @@ mod tests {
 
     #[test]
     fn build_sync_filters_rejects_blank_pattern() {
-        let filters = vec![SubmitPathFilterRule {
-            action: SubmitPathFilterAction::Include as i32,
+        let filters = vec![RunPathFilterRule {
+            action: RunPathFilterAction::Include as i32,
             pattern: "   ".to_string(),
         }];
 
@@ -217,7 +217,7 @@ mod tests {
             remote_path: "/remote/path".to_string(),
             stdout_path: "/tmp/stdout".to_string(),
             stderr_path: Some("/tmp/stderr".to_string()),
-            project_name: Some("p".to_string()),
+            blueprint_name: Some("p".to_string()),
             default_retrieve_path: Some("/tmp/out".to_string()),
             template_values: Some("{\"a\":\"b\"}".to_string()),
         };
@@ -236,13 +236,13 @@ mod tests {
         assert_eq!(response.scheduler_state.as_deref(), Some("COMPLETED"));
         assert_eq!(response.local_path, "/tmp/local");
         assert_eq!(response.remote_path, "/remote/path");
-        assert_eq!(response.project_name.as_deref(), Some("p"));
+        assert_eq!(response.blueprint_name.as_deref(), Some("p"));
         assert_eq!(response.default_retrieve_path.as_deref(), Some("/tmp/out"));
     }
 
     #[test]
-    fn project_record_to_response_maps_all_fields() {
-        let project = ProjectRecord {
+    fn blueprint_record_to_response_maps_all_fields() {
+        let project = BlueprintRecord {
             name: "proj".to_string(),
             path: "/tmp/project".to_string(),
             created_at: "2026-02-07T00:00:00Z".to_string(),
@@ -259,7 +259,7 @@ mod tests {
             sync_exclude: vec!["target/**".to_string()],
         };
 
-        let response = project_record_to_response(&project);
+        let response = blueprint_record_to_response(&project);
         assert_eq!(response.name, "proj");
         assert_eq!(response.path, "/tmp/project");
         assert_eq!(response.created_at, "2026-02-07T00:00:00Z");

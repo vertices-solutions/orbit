@@ -2,12 +2,12 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use async_trait::async_trait;
-use proto::{StreamEvent, SubmitStreamEvent};
+use proto::{RunStreamEvent, StreamEvent};
 
 use crate::app::errors::AppResult;
 
 #[async_trait]
-/// Streaming output sink for non-submit RPCs.
+/// Streaming output sink for non-run RPCs.
 /// Emits `StreamEvent` without tying use-cases to transport.
 pub trait StreamOutputPort: Send + Sync {
     async fn send(&self, event: StreamEvent) -> AppResult<()>;
@@ -15,9 +15,9 @@ pub trait StreamOutputPort: Send + Sync {
 }
 
 #[async_trait]
-/// Streaming output sink for submit flows.
-/// Emits `SubmitStreamEvent` for submit-specific progress/output.
-pub trait SubmitStreamOutputPort: Send + Sync {
-    async fn send(&self, event: SubmitStreamEvent) -> AppResult<()>;
+/// Streaming output sink for run flows.
+/// Emits `RunStreamEvent` for run-specific progress/output.
+pub trait RunStreamOutputPort: Send + Sync {
+    async fn send(&self, event: RunStreamEvent) -> AppResult<()>;
     fn is_closed(&self) -> bool;
 }

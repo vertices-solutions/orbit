@@ -3,21 +3,22 @@
 
 use std::path::PathBuf;
 
-use proto::SubmitPathFilterRule;
+use proto::RunPathFilterRule;
 
 mod results;
 
 pub use results::{
-    AddClusterCapture, CommandResult, InitActionStatus, ProjectInitAction, ProjectListItem,
-    StreamCapture, SubmitCapture,
+    AddClusterCapture, BlueprintInitAction, BlueprintListItem, CommandResult, InitActionStatus,
+    RunCapture, StreamCapture,
 };
 
 #[derive(Debug, Clone)]
 pub enum Command {
     Ping(PingCommand),
+    Run(RunCommand),
     Job(JobCommand),
     Cluster(ClusterCommand),
-    Project(ProjectCommand),
+    Blueprint(BlueprintCommand),
 }
 
 #[derive(Debug, Clone)]
@@ -25,7 +26,7 @@ pub struct PingCommand;
 
 #[derive(Debug, Clone)]
 pub enum JobCommand {
-    Submit(SubmitJobCommand),
+    Run(JobRunCommand),
     List(ListJobsCommand),
     Get(JobGetCommand),
     Logs(JobLogsCommand),
@@ -36,14 +37,28 @@ pub enum JobCommand {
 }
 
 #[derive(Debug, Clone)]
-pub struct SubmitJobCommand {
+pub struct JobRunCommand {
     pub cluster: Option<String>,
     pub local_path: String,
     pub sbatchscript: Option<String>,
     pub remote_path: Option<String>,
     pub new_directory: bool,
     pub force: bool,
-    pub filters: Vec<SubmitPathFilterRule>,
+    pub filters: Vec<RunPathFilterRule>,
+    pub template_preset: Option<String>,
+    pub template_fields: Vec<String>,
+    pub fill_defaults: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunCommand {
+    pub target: String,
+    pub cluster: Option<String>,
+    pub sbatchscript: Option<String>,
+    pub remote_path: Option<String>,
+    pub new_directory: bool,
+    pub force: bool,
+    pub filters: Vec<RunPathFilterRule>,
     pub template_preset: Option<String>,
     pub template_fields: Vec<String>,
     pub fill_defaults: bool,
@@ -52,7 +67,7 @@ pub struct SubmitJobCommand {
 #[derive(Debug, Clone)]
 pub struct ListJobsCommand {
     pub cluster: Option<String>,
-    pub project: Option<String>,
+    pub blueprint: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,45 +165,45 @@ pub struct DeleteClusterCommand {
 }
 
 #[derive(Debug, Clone)]
-pub enum ProjectCommand {
-    Init(ProjectInitCommand),
-    Build(ProjectBuildCommand),
-    Submit(ProjectSubmitCommand),
-    List(ProjectListCommand),
-    Delete(ProjectDeleteCommand),
+pub enum BlueprintCommand {
+    Init(BlueprintInitCommand),
+    Build(BlueprintBuildCommand),
+    Run(BlueprintRunCommand),
+    List(BlueprintListCommand),
+    Delete(BlueprintDeleteCommand),
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectInitCommand {
+pub struct BlueprintInitCommand {
     pub path: PathBuf,
     pub name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectBuildCommand {
+pub struct BlueprintBuildCommand {
     pub path: PathBuf,
     pub package_git: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectSubmitCommand {
-    pub project: String,
+pub struct BlueprintRunCommand {
+    pub blueprint: String,
     pub cluster: Option<String>,
     pub sbatchscript: Option<String>,
     pub remote_path: Option<String>,
     pub new_directory: bool,
     pub force: bool,
-    pub filters: Vec<SubmitPathFilterRule>,
+    pub filters: Vec<RunPathFilterRule>,
     pub template_preset: Option<String>,
     pub template_fields: Vec<String>,
     pub fill_defaults: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct ProjectListCommand;
+pub struct BlueprintListCommand;
 
 #[derive(Debug, Clone)]
-pub struct ProjectDeleteCommand {
+pub struct BlueprintDeleteCommand {
     pub name: String,
     pub yes: bool,
 }

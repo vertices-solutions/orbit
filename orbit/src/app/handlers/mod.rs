@@ -12,11 +12,11 @@ use crate::app::errors::{
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
-    AddClusterResolver, PathResolver, ProjectRuleSet, SbatchSelector, TemplateSpecialContext,
-    build_default_orbitfile_contents, discover_project_from_submit_root, load_project_from_root,
-    merge_submit_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
-    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
-    validate_project_name,
+    AddClusterResolver, BlueprintRuleSet, PathResolver, SbatchSelector, TemplateSpecialContext,
+    build_default_orbitfile_contents, discover_blueprint_from_run_root, load_blueprint_from_root,
+    merge_run_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
+    sanitize_blueprint_name, template_config_from_json, upsert_orbitfile_blueprint_name,
+    validate_blueprint_name,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -26,8 +26,49 @@ pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<Comma
     })
 }
 
+pub async fn handle_run(ctx: &AppContext, cmd: RunCommand) -> AppResult<CommandResult> {
+    let resolver = PathResolver::new(ctx.fs.as_ref());
+    if let Ok(path) = resolver.resolve_local(&cmd.target) {
+        if ctx.fs.is_dir(&path)? {
+            return handle_job_run(
+                ctx,
+                JobRunCommand {
+                    cluster: cmd.cluster,
+                    local_path: cmd.target,
+                    sbatchscript: cmd.sbatchscript,
+                    remote_path: cmd.remote_path,
+                    new_directory: cmd.new_directory,
+                    force: cmd.force,
+                    filters: cmd.filters,
+                    template_preset: cmd.template_preset,
+                    template_fields: cmd.template_fields,
+                    fill_defaults: cmd.fill_defaults,
+                },
+            )
+            .await;
+        }
+    }
+
+    handle_blueprint_run(
+        ctx,
+        BlueprintRunCommand {
+            blueprint: cmd.target,
+            cluster: cmd.cluster,
+            sbatchscript: cmd.sbatchscript,
+            remote_path: cmd.remote_path,
+            new_directory: cmd.new_directory,
+            force: cmd.force,
+            filters: cmd.filters,
+            template_preset: cmd.template_preset,
+            template_fields: cmd.template_fields,
+            fill_defaults: cmd.fill_defaults,
+        },
+    )
+    .await
+}
+
 pub async fn handle_job_list(ctx: &AppContext, cmd: ListJobsCommand) -> AppResult<CommandResult> {
-    let jobs = ctx.orbitd.list_jobs(cmd.cluster, cmd.project).await?;
+    let jobs = ctx.orbitd.list_jobs(cmd.cluster, cmd.blueprint).await?;
     Ok(CommandResult::JobList { jobs })
 }
 
@@ -66,30 +107,27 @@ pub async fn handle_job_get(ctx: &AppContext, cmd: JobGetCommand) -> AppResult<C
     }
 }
 
-pub async fn handle_job_submit(
-    ctx: &AppContext,
-    cmd: SubmitJobCommand,
-) -> AppResult<CommandResult> {
+pub async fn handle_job_run(ctx: &AppContext, cmd: JobRunCommand) -> AppResult<CommandResult> {
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--to")?;
+    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--on")?;
 
     validate_cluster_live(ctx, &cluster).await?;
 
     let resolver = PathResolver::new(ctx.fs.as_ref());
     let resolved_local_path = resolver.resolve_local(&cmd.local_path)?;
-    let discovered_project =
-        discover_project_from_submit_root(ctx.fs.as_ref(), &resolved_local_path)?;
+    let discovered_blueprint =
+        discover_blueprint_from_run_root(ctx.fs.as_ref(), &resolved_local_path)?;
     let sbatch_selector =
         SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
     let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
         sbatch_selector
             .select(&resolved_local_path, Some(explicit))
             .await?
-    } else if let Some(project) = discovered_project.as_ref() {
-        if let Some(configured) = project.submit_sbatch_script.as_deref() {
+    } else if let Some(blueprint) = discovered_blueprint.as_ref() {
+        if let Some(configured) = blueprint.submit_sbatch_script.as_deref() {
             resolve_orbitfile_sbatch_script(
                 ctx.fs.as_ref(),
-                &project.root,
+                &blueprint.root,
                 &resolved_local_path,
                 configured,
             )?
@@ -101,23 +139,20 @@ pub async fn handle_job_submit(
     };
 
     let mut filters = cmd.filters.clone();
-    let mut project_name = None;
     let mut default_retrieve_path = None;
     let mut template_values_json = None;
 
-    if let Some(project) = discovered_project {
-        validate_project_name(&project.name)?;
-        filters = merge_submit_filters(filters, &project.rules);
-        project_name = Some(project.name.clone());
-        default_retrieve_path = project.default_retrieve_path.clone();
-        let project_root = project.root.display().to_string();
-        if let Some(template) = project.template.as_ref() {
+    if let Some(blueprint) = discovered_blueprint {
+        validate_blueprint_name(&blueprint.name)?;
+        filters = merge_run_filters(filters, &blueprint.rules);
+        default_retrieve_path = blueprint.default_retrieve_path.clone();
+        if let Some(template) = blueprint.template.as_ref() {
             let values = resolve_template_values(
                 template,
                 cmd.template_preset.as_deref(),
                 &cmd.template_fields,
                 cmd.fill_defaults,
-                &project.root,
+                &blueprint.root,
                 ctx.fs.as_ref(),
                 ctx.interaction.as_ref(),
                 ctx.output.as_ref(),
@@ -140,10 +175,6 @@ pub async fn handle_job_submit(
                 "template values provided but Orbitfile has no [template] section",
             ));
         }
-        let _ = ctx
-            .orbitd
-            .upsert_project(&project.name, &project_root)
-            .await?;
     } else if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
         return Err(AppError::invalid_argument(
             "template values require an Orbitfile with a [template] section",
@@ -158,10 +189,10 @@ pub async fn handle_job_submit(
         .success(&format!("Local path: {resolved_local_path_display}"))
         .await?;
 
-    let mut stream_output = ctx.output.stream_output(StreamKind::Submit);
+    let mut stream_output = ctx.output.stream_output(StreamKind::Run);
     let capture = ctx
         .orbitd
-        .submit_job(
+        .run_job(
             cluster.name.clone(),
             resolved_local_path_display.clone(),
             cmd.remote_path,
@@ -169,7 +200,7 @@ pub async fn handle_job_submit(
             cmd.force,
             sbatchscript.clone(),
             filters,
-            project_name,
+            None,
             default_retrieve_path,
             template_values_json,
             &mut *stream_output,
@@ -178,7 +209,7 @@ pub async fn handle_job_submit(
         .await?;
 
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(submit_error(&capture));
+        return Err(run_error(&capture));
     }
 
     Ok(CommandResult::JobSubmit {
@@ -599,14 +630,14 @@ pub async fn handle_cluster_delete(
     Ok(CommandResult::ClusterDelete { name: cmd.name })
 }
 
-pub async fn handle_project_init(
+pub async fn handle_blueprint_init(
     ctx: &AppContext,
-    cmd: ProjectInitCommand,
+    cmd: BlueprintInitCommand,
 ) -> AppResult<CommandResult> {
-    let init_path = resolve_project_init_path(ctx, &cmd.path)?;
+    let init_path = resolve_blueprint_init_path(ctx, &cmd.path)?;
     let parent = init_path.parent().ok_or_else(|| {
         AppError::invalid_argument(format!(
-            "cannot initialize project at '{}'",
+            "cannot initialize blueprint at '{}'",
             init_path.display()
         ))
     })?;
@@ -618,21 +649,21 @@ pub async fn handle_project_init(
     }
     if !ctx.fs.is_dir(&init_path)? {
         std::fs::create_dir_all(&init_path).map_err(|err| {
-            AppError::local_error(format!("failed to create project directory: {err}"))
+            AppError::local_error(format!("failed to create blueprint directory: {err}"))
         })?;
     }
 
     let orbitfile_path = init_path.join("Orbitfile");
     let orbitfile_exists = ctx.fs.is_file(&orbitfile_path)?;
-    let resolved_name = resolve_project_init_name(ctx, cmd.name, &init_path).await?;
-    validate_project_name(&resolved_name)?;
+    let resolved_name = resolve_blueprint_init_name(ctx, cmd.name, &init_path).await?;
+    validate_blueprint_name(&resolved_name)?;
 
     let contents = if orbitfile_exists {
         let bytes = ctx.fs.read_file(&orbitfile_path)?;
         let existing = String::from_utf8(bytes).map_err(|err| {
             AppError::invalid_argument(format!("invalid Orbitfile encoding: {err}"))
         })?;
-        upsert_orbitfile_project_name(Some(existing.as_str()), &resolved_name)?
+        upsert_orbitfile_blueprint_name(Some(existing.as_str()), &resolved_name)?
     } else {
         build_default_orbitfile_contents(&resolved_name)?
     };
@@ -642,25 +673,25 @@ pub async fn handle_project_init(
     let git_initialized = ensure_git_repository(&init_path)?;
     let mut actions = Vec::new();
     if orbitfile_exists {
-        actions.push(ProjectInitAction {
+        actions.push(BlueprintInitAction {
             status: InitActionStatus::Success,
             message: "Orbitfile updated".to_string(),
         });
     } else {
-        actions.push(ProjectInitAction {
+        actions.push(BlueprintInitAction {
             status: InitActionStatus::Success,
             message: "Orbitfile created".to_string(),
         });
     }
     if git_initialized {
-        actions.push(ProjectInitAction {
+        actions.push(BlueprintInitAction {
             status: InitActionStatus::Success,
             message: "git repository initialized".to_string(),
         });
     }
     let canonical = ctx.fs.canonicalize(&init_path)?;
 
-    Ok(CommandResult::ProjectInit {
+    Ok(CommandResult::BlueprintInit {
         name: resolved_name,
         path: canonical.clone(),
         orbitfile: canonical.join("Orbitfile"),
@@ -669,101 +700,101 @@ pub async fn handle_project_init(
     })
 }
 
-pub async fn handle_project_build(
+pub async fn handle_blueprint_build(
     ctx: &AppContext,
-    cmd: ProjectBuildCommand,
+    cmd: BlueprintBuildCommand,
 ) -> AppResult<CommandResult> {
-    let build_path = resolve_project_init_path(ctx, &cmd.path)?;
+    let build_path = resolve_blueprint_init_path(ctx, &cmd.path)?;
     let canonical = ctx.fs.canonicalize(&build_path)?;
-    let _project_config = load_project_from_root(ctx.fs.as_ref(), &canonical)?;
-    let project = ctx
+    let _blueprint_config = load_blueprint_from_root(ctx.fs.as_ref(), &canonical)?;
+    let blueprint = ctx
         .orbitd
-        .build_project(canonical.display().to_string(), cmd.package_git)
+        .build_blueprint(canonical.display().to_string(), cmd.package_git)
         .await?;
 
-    Ok(CommandResult::ProjectBuild { project })
+    Ok(CommandResult::BlueprintBuild { blueprint })
 }
 
-pub async fn handle_project_submit(
+pub async fn handle_blueprint_run(
     ctx: &AppContext,
-    cmd: ProjectSubmitCommand,
+    cmd: BlueprintRunCommand,
 ) -> AppResult<CommandResult> {
-    let (project_name, project_tag) = parse_project_ref(&cmd.project)?;
+    let (blueprint_name, blueprint_tag) = parse_blueprint_ref(&cmd.blueprint)?;
     let clusters = ctx.orbitd.list_clusters("", true).await?;
-    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--to")?;
+    let cluster = resolve_cluster_by_name_or_default(&clusters, cmd.cluster.as_deref(), "--on")?;
     validate_cluster_live(ctx, &cluster).await?;
 
-    let project = ctx.orbitd.get_project(&cmd.project).await?;
-    let project_root = PathBuf::from(&project.path);
+    let blueprint = ctx.orbitd.get_blueprint(&cmd.blueprint).await?;
+    let blueprint_root = PathBuf::from(&blueprint.path);
     let sbatch_selector =
         SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
 
     let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
         explicit.to_string()
-    } else if let Some(configured) = project.submit_sbatch_script.as_deref() {
+    } else if let Some(configured) = blueprint.submit_sbatch_script.as_deref() {
         configured.to_string()
     } else {
         sbatch_selector
-            .select_from_candidates(&project.sbatch_scripts)
+            .select_from_candidates(&blueprint.sbatch_scripts)
             .await?
     };
-    let rules = ProjectRuleSet {
-        include: project.sync_include.clone(),
-        exclude: project.sync_exclude.clone(),
+    let rules = BlueprintRuleSet {
+        include: blueprint.sync_include.clone(),
+        exclude: blueprint.sync_exclude.clone(),
     };
-    let filters = merge_submit_filters(cmd.filters.clone(), &rules);
-    let template_values_json = if let Some(template_json) = project.template_config_json.as_deref()
-    {
-        let template = template_config_from_json(template_json)?;
-        let values = resolve_template_values(
-            &template,
-            cmd.template_preset.as_deref(),
-            &cmd.template_fields,
-            cmd.fill_defaults,
-            &project_root,
-            ctx.fs.as_ref(),
-            ctx.interaction.as_ref(),
-            ctx.output.as_ref(),
-            ctx.ui_mode,
-            TemplateSpecialContext {
-                cluster_name: &cluster.name,
-                accounting_available: cluster.accounting_available,
-                default_scratch_directory: cluster.default_scratch_directory.as_deref(),
-                orbitd: ctx.orbitd.as_ref(),
-            },
-            false,
-        )
-        .await?;
-        Some(serde_json::to_string(&values).map_err(|err| {
-            AppError::internal_error(format!("failed to serialize templates: {err}"))
-        })?)
-    } else {
-        if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
-            return Err(AppError::invalid_argument(
-                "template values provided but Orbitfile has no [template] section",
-            ));
-        }
-        None
-    };
+    let filters = merge_run_filters(cmd.filters.clone(), &rules);
+    let template_values_json =
+        if let Some(template_json) = blueprint.template_config_json.as_deref() {
+            let template = template_config_from_json(template_json)?;
+            let values = resolve_template_values(
+                &template,
+                cmd.template_preset.as_deref(),
+                &cmd.template_fields,
+                cmd.fill_defaults,
+                &blueprint_root,
+                ctx.fs.as_ref(),
+                ctx.interaction.as_ref(),
+                ctx.output.as_ref(),
+                ctx.ui_mode,
+                TemplateSpecialContext {
+                    cluster_name: &cluster.name,
+                    accounting_available: cluster.accounting_available,
+                    default_scratch_directory: cluster.default_scratch_directory.as_deref(),
+                    orbitd: ctx.orbitd.as_ref(),
+                },
+                false,
+            )
+            .await?;
+            Some(serde_json::to_string(&values).map_err(|err| {
+                AppError::internal_error(format!("failed to serialize templates: {err}"))
+            })?)
+        } else {
+            if cmd.template_preset.is_some() || !cmd.template_fields.is_empty() {
+                return Err(AppError::invalid_argument(
+                    "template values provided but Orbitfile has no [template] section",
+                ));
+            }
+            None
+        };
 
     ctx.output
         .success(&format!("Selected sbatch script: {sbatchscript}"))
         .await?;
-    ctx.output.success("Project source: tarball").await?;
+    ctx.output.success("Blueprint source: tarball").await?;
 
-    let mut stream_output = ctx.output.stream_output(StreamKind::Submit);
+    let mut stream_output = ctx.output.stream_output(StreamKind::Run);
     let capture = ctx
         .orbitd
-        .submit_project(
-            project_name,
-            project_tag,
+        .run_blueprint(
+            blueprint_name,
+            blueprint_tag,
             cluster.name.clone(),
             cmd.remote_path,
             cmd.new_directory,
             cmd.force,
             sbatchscript.clone(),
             filters,
-            project.default_retrieve_path.clone(),
+            blueprint.default_retrieve_path.clone(),
             template_values_json,
             &mut *stream_output,
             ctx.interaction.as_ref(),
@@ -771,31 +802,31 @@ pub async fn handle_project_submit(
         .await?;
 
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(submit_error(&capture));
+        return Err(run_error(&capture));
     }
 
     Ok(CommandResult::JobSubmit {
         cluster: cluster.name,
-        local_path: project.path.clone(),
+        local_path: blueprint.path.clone(),
         sbatchscript,
         capture,
     })
 }
 
-pub async fn handle_project_list(
+pub async fn handle_blueprint_list(
     ctx: &AppContext,
-    _cmd: ProjectListCommand,
+    _cmd: BlueprintListCommand,
 ) -> AppResult<CommandResult> {
-    let projects = ctx.orbitd.list_projects().await?;
-    let summarized = summarize_projects(projects);
-    Ok(CommandResult::ProjectList {
-        projects: summarized,
+    let blueprints = ctx.orbitd.list_blueprints().await?;
+    let summarized = summarize_blueprints(blueprints);
+    Ok(CommandResult::BlueprintList {
+        blueprints: summarized,
     })
 }
 
-pub async fn handle_project_delete(
+pub async fn handle_blueprint_delete(
     ctx: &AppContext,
-    cmd: ProjectDeleteCommand,
+    cmd: BlueprintDeleteCommand,
 ) -> AppResult<CommandResult> {
     if !cmd.yes {
         let scope = if cmd.name.contains(':') {
@@ -805,7 +836,7 @@ pub async fn handle_project_delete(
         };
         ctx.output
             .info(&format!(
-                "WARNING:\nThis will delete project '{}' {}",
+                "WARNING:\nThis will delete blueprint '{}' {}",
                 cmd.name, scope
             ))
             .await?;
@@ -824,15 +855,15 @@ pub async fn handle_project_delete(
         }
     }
 
-    let deleted = ctx.orbitd.delete_project(&cmd.name).await?;
+    let deleted = ctx.orbitd.delete_blueprint(&cmd.name).await?;
     if !deleted {
         return Err(AppError::invalid_argument(format!(
-            "project name '{}' is not known",
+            "blueprint name '{}' is not known",
             cmd.name
         )));
     }
 
-    Ok(CommandResult::ProjectDelete { name: cmd.name })
+    Ok(CommandResult::BlueprintDelete { name: cmd.name })
 }
 
 fn bytes_to_string(bytes: &[u8]) -> String {
@@ -875,7 +906,7 @@ fn resolve_cluster_by_name_or_default(
         })
 }
 
-fn resolve_project_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {
+fn resolve_blueprint_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
@@ -883,17 +914,17 @@ fn resolve_project_init_path(ctx: &AppContext, path: &std::path::Path) -> AppRes
     }
 }
 
-async fn resolve_project_init_name(
+async fn resolve_blueprint_init_name(
     ctx: &AppContext,
     requested: Option<String>,
     init_path: &std::path::Path,
 ) -> AppResult<String> {
     if let Some(name) = requested {
         let trimmed = name.trim().to_string();
-        validate_project_name(&trimmed)?;
+        validate_blueprint_name(&trimmed)?;
         if ctx.ui_mode.is_interactive() {
             ctx.output
-                .success(&format!("Project name: {trimmed}"))
+                .success(&format!("Blueprint name: {trimmed}"))
                 .await?;
         }
         return Ok(trimmed);
@@ -908,47 +939,47 @@ async fn resolve_project_init_name(
     let default_name = init_path
         .file_name()
         .and_then(|name| name.to_str())
-        .map(sanitize_project_name)
+        .map(sanitize_blueprint_name)
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "project".to_string());
+        .unwrap_or_else(|| "blueprint".to_string());
     let mut prompt = ctx
         .interaction
         .prompt_line_with_default_confirmable(
-            "Project name: ",
-            "Project identifier used by orbit project commands.",
+            "Blueprint name: ",
+            "Blueprint identifier used by orbit blueprint commands.",
             &default_name,
         )
         .await?;
     let name = prompt.input.trim().to_string();
-    validate_project_name(&name)?;
-    prompt.finish_success(&format!("Project name: {name}"))?;
+    validate_blueprint_name(&name)?;
+    prompt.finish_success(&format!("Blueprint name: {name}"))?;
     Ok(name)
 }
 
-fn parse_project_ref(value: &str) -> AppResult<(String, String)> {
+fn parse_blueprint_ref(value: &str) -> AppResult<(String, String)> {
     let trimmed = value.trim();
     let Some((name, tag)) = trimmed.split_once(':') else {
         return Err(AppError::invalid_argument(
-            "project submit requires <project name:tag>",
+            "blueprint run requires <blueprint name:tag>",
         ));
     };
     let name = name.trim();
     let tag = tag.trim();
     if name.is_empty() || tag.is_empty() {
         return Err(AppError::invalid_argument(
-            "project submit requires <project name:tag>",
+            "blueprint run requires <blueprint name:tag>",
         ));
     }
-    validate_project_name(name)?;
+    validate_blueprint_name(name)?;
     if tag != "latest" && !is_version_tag(tag) {
         return Err(AppError::invalid_argument(format!(
-            "invalid project tag '{tag}'; expected latest or yyyymmdd.NNN"
+            "invalid blueprint tag '{tag}'; expected latest or yyyymmdd.NNN"
         )));
     }
     Ok((name.to_string(), tag.to_string()))
 }
 
-fn summarize_projects(projects: Vec<proto::ProjectRecord>) -> Vec<ProjectListItem> {
+fn summarize_blueprints(blueprints: Vec<proto::BlueprintRecord>) -> Vec<BlueprintListItem> {
     use std::collections::BTreeMap;
 
     struct SummaryBuilder {
@@ -963,34 +994,34 @@ fn summarize_projects(projects: Vec<proto::ProjectRecord>) -> Vec<ProjectListIte
 
     let mut grouped: BTreeMap<String, SummaryBuilder> = BTreeMap::new();
 
-    for project in projects {
+    for blueprint in blueprints {
         let entry = grouped
-            .entry(project.name.clone())
+            .entry(blueprint.name.clone())
             .or_insert_with(|| SummaryBuilder {
-                name: project.name.clone(),
+                name: blueprint.name.clone(),
                 tags: Vec::new(),
                 latest_tag: None,
                 latest_updated: None,
                 latest_path: None,
-                fallback_updated: project.updated_at.clone(),
-                fallback_path: project.path.clone(),
+                fallback_updated: blueprint.updated_at.clone(),
+                fallback_path: blueprint.path.clone(),
             });
 
-        if project.updated_at > entry.fallback_updated {
-            entry.fallback_updated = project.updated_at.clone();
-            entry.fallback_path = project.path.clone();
+        if blueprint.updated_at > entry.fallback_updated {
+            entry.fallback_updated = blueprint.updated_at.clone();
+            entry.fallback_path = blueprint.path.clone();
         }
 
-        if let Some(tag) = project.version_tag.clone() {
+        if let Some(tag) = blueprint.version_tag.clone() {
             entry.tags.push(tag.clone());
             let is_newest = entry
                 .latest_updated
                 .as_deref()
-                .map_or(true, |current| project.updated_at.as_str() > current);
+                .map_or(true, |current| blueprint.updated_at.as_str() > current);
             if is_newest {
                 entry.latest_tag = Some(tag);
-                entry.latest_updated = Some(project.updated_at.clone());
-                entry.latest_path = Some(project.path.clone());
+                entry.latest_updated = Some(blueprint.updated_at.clone());
+                entry.latest_path = Some(blueprint.path.clone());
             }
         }
     }
@@ -1003,7 +1034,7 @@ fn summarize_projects(projects: Vec<proto::ProjectRecord>) -> Vec<ProjectListIte
             Some(updated) => (entry.latest_path.unwrap_or(entry.fallback_path), updated),
             None => (entry.fallback_path, entry.fallback_updated),
         };
-        output.push(ProjectListItem {
+        output.push(BlueprintListItem {
             name: entry.name,
             path,
             latest_tag: entry.latest_tag,
@@ -1074,7 +1105,7 @@ fn stream_error(capture: &StreamCapture, context: ErrorContext, default: &str) -
     AppError::with_exit_code(ErrorType::RemoteError, default, exit_code)
 }
 
-fn submit_error(capture: &SubmitCapture) -> AppError {
+fn run_error(capture: &RunCapture) -> AppError {
     let exit_code = capture.exit_code.unwrap_or(1);
     if let Some(detail) = capture.detail.as_deref() {
         let trimmed = detail.trim();
@@ -1087,7 +1118,7 @@ fn submit_error(capture: &SubmitCapture) -> AppError {
         }
     }
     if let Some(message) = message_from_bytes(&capture.stderr) {
-        if let Some(normalized) = normalize_submit_conflict_message(&message) {
+        if let Some(normalized) = normalize_run_conflict_message(&message) {
             return AppError::with_exit_code(ErrorType::Conflict, normalized, exit_code);
         }
         return AppError::with_exit_code(ErrorType::RemoteError, message, exit_code);
@@ -1097,16 +1128,16 @@ fn submit_error(capture: &SubmitCapture) -> AppError {
         let message = format_server_error(code);
         return AppError::with_exit_code(kind, message, exit_code);
     }
-    AppError::with_exit_code(ErrorType::RemoteError, "submission failed", exit_code)
+    AppError::with_exit_code(ErrorType::RemoteError, "run failed", exit_code)
 }
 
-fn normalize_submit_conflict_message(message: &str) -> Option<String> {
+fn normalize_run_conflict_message(message: &str) -> Option<String> {
     let trimmed = message.trim();
     if !trimmed.starts_with("job ") {
         return None;
     }
     let infix = " is still running in ";
-    let suffix = "; use --force to submit anyway";
+    let suffix = "; use --force to run anyway";
     let (job_prefix, rest) = trimmed.split_once(infix)?;
     let (remote_path, _) = rest.split_once(suffix)?;
     let remote_path = remote_path.trim();
@@ -1114,7 +1145,7 @@ fn normalize_submit_conflict_message(message: &str) -> Option<String> {
         return None;
     }
     Some(format!(
-        "Error: {job_prefix}{infix}{remote_path}: use --force to submit anyway"
+        "Error: {job_prefix}{infix}{remote_path}: use --force to run anyway"
     ))
 }
 
@@ -1180,7 +1211,7 @@ async fn validate_cluster_live(
 #[derive(Default)]
 struct SilentStreamOutput {
     stream: StreamCapture,
-    submit: SubmitCapture,
+    submit: RunCapture,
 }
 
 #[tonic::async_trait]
@@ -1205,11 +1236,11 @@ impl StreamOutputPort for SilentStreamOutput {
         Ok(())
     }
 
-    async fn on_submit_status(&mut self, _status: &proto::SubmitStatus) -> AppResult<()> {
+    async fn on_run_status(&mut self, _status: &proto::RunStatus) -> AppResult<()> {
         Ok(())
     }
 
-    async fn on_submit_result(&mut self, _result: &proto::SubmitResult) -> AppResult<()> {
+    async fn on_run_result(&mut self, _result: &proto::RunResult) -> AppResult<()> {
         Ok(())
     }
 
@@ -1217,7 +1248,7 @@ impl StreamOutputPort for SilentStreamOutput {
         std::mem::take(&mut self.stream)
     }
 
-    fn take_submit_capture(&mut self) -> SubmitCapture {
+    fn take_run_capture(&mut self) -> RunCapture {
         std::mem::take(&mut self.submit)
     }
 }

@@ -29,12 +29,14 @@ pub struct Cli {
 pub enum Cmd {
     /// Check that the daemon is reachable.
     Ping,
-    /// Operations on jobs: submit job, inspect its status, and retrieve its outputs and results.
+    /// Run either a local directory or a versioned blueprint.
+    Run(RunArgs),
+    /// Operations on jobs: run jobs, inspect status, and retrieve outputs/results.
     Job(JobArgs),
     /// Operations on clusters: add, delete, poll, and manage clusters.
     Cluster(ClusterArgs),
-    /// Operations on local projects and Orbitfile metadata.
-    Project(ProjectArgs),
+    /// Operations on local blueprints and Orbitfile metadata.
+    Blueprint(BlueprintArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
 }
@@ -51,10 +53,46 @@ pub struct JobArgs {
     pub cmd: JobCmd,
 }
 
+#[derive(Args, Debug)]
+pub struct RunArgs {
+    /// Path to a local directory, or blueprint ref <name:tag>.
+    /// Orbit resolves directories first; if not a directory, it resolves as a blueprint.
+    pub target: String,
+    /// Cluster name.
+    #[arg(long = "on", value_name = "CLUSTER")]
+    pub cluster: Option<String>,
+    /// Path to the sbatch script to run.
+    #[arg(long, value_name = "PATH")]
+    pub sbatchscript: Option<String>,
+    /// Apply a template preset before prompting for missing fields.
+    #[arg(long)]
+    pub preset: Option<String>,
+    /// Template field override in KEY=VALUE form (repeatable).
+    #[arg(long, value_name = "KEY=VALUE", action = clap::ArgAction::Append)]
+    pub field: Vec<String>,
+    /// Accept default template values without prompting (interactive mode only).
+    #[arg(long)]
+    pub fill_defaults: bool,
+    #[arg(long)]
+    pub remote_path: Option<String>,
+    /// Always create a new remote directory, even if this local path was run before.
+    #[arg(long)]
+    pub new_directory: bool,
+    /// Allow running into a remote directory even if another job is running there.
+    #[arg(long)]
+    pub force: bool,
+    /// Include paths matching PATTERN.
+    #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+    pub include: Vec<String>,
+    /// Exclude paths matching PATTERN.
+    #[arg(long, value_name = "PATTERN", action = clap::ArgAction::Append)]
+    pub exclude: Vec<String>,
+}
+
 #[derive(Subcommand, Debug)]
 pub enum JobCmd {
-    /// Submit a project to a cluster.
-    Submit(SubmitArgs),
+    /// Run a local directory on a cluster.
+    Run(JobRunArgs),
     /// List jobs.
     List(ListJobsArgs),
     /// Show job details.
@@ -117,7 +155,7 @@ pub struct ListJobsArgs {
     #[arg(long)]
     pub cluster: Option<String>,
     #[arg(long)]
-    pub project: Option<String>,
+    pub blueprint: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -161,35 +199,35 @@ pub struct ClusterArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ProjectArgs {
+pub struct BlueprintArgs {
     #[command(subcommand)]
-    pub cmd: ProjectCmd,
+    pub cmd: BlueprintCmd,
 }
 
 #[derive(Subcommand, Debug)]
-pub enum ProjectCmd {
-    /// Initialize a project root and Orbitfile.
-    Init(ProjectInitArgs),
-    /// Build a project tarball and register it locally.
-    Build(ProjectBuildArgs),
-    /// Submit a registered project by project name.
-    Submit(ProjectSubmitArgs),
-    /// List registered projects.
-    List(ProjectListArgs),
-    /// Delete a project from the local registry.
-    Delete(ProjectDeleteArgs),
+pub enum BlueprintCmd {
+    /// Initialize a blueprint root and Orbitfile.
+    Init(BlueprintInitArgs),
+    /// Build a blueprint tarball and register it locally.
+    Build(BlueprintBuildArgs),
+    /// Run a registered blueprint by blueprint name.
+    Run(BlueprintRunArgs),
+    /// List registered blueprints.
+    List(BlueprintListArgs),
+    /// Delete a blueprint from the local registry.
+    Delete(BlueprintDeleteArgs),
 }
 
 #[derive(Args, Debug)]
-pub struct ProjectInitArgs {
+pub struct BlueprintInitArgs {
     pub path: PathBuf,
-    /// Project name stored in Orbitfile and the local registry.
+    /// Blueprint name stored in Orbitfile and the local registry.
     #[arg(long)]
     pub name: Option<String>,
 }
 
 #[derive(Args, Debug)]
-pub struct ProjectBuildArgs {
+pub struct BlueprintBuildArgs {
     pub path: PathBuf,
     /// Include .git directory in the tarball.
     #[arg(long)]
@@ -197,13 +235,13 @@ pub struct ProjectBuildArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ProjectSubmitArgs {
-    /// Built project name:tag (e.g., my-project:20260112.001 or my-project:latest).
-    pub project: String,
+pub struct BlueprintRunArgs {
+    /// Built blueprint name:tag (e.g., my-blueprint:20260112.001 or my-blueprint:latest).
+    pub blueprint: String,
     /// Cluster name.
-    #[arg(long = "to", value_name = "CLUSTER")]
+    #[arg(long = "on", value_name = "CLUSTER")]
     pub cluster: Option<String>,
-    /// Path to the sbatch script to submit.
+    /// Path to the sbatch script to run.
     #[arg(long, value_name = "PATH")]
     pub sbatchscript: Option<String>,
     /// Apply a template preset before prompting for missing fields.
@@ -217,10 +255,10 @@ pub struct ProjectSubmitArgs {
     pub fill_defaults: bool,
     #[arg(long)]
     pub remote_path: Option<String>,
-    /// Always create a new remote directory, even if this local path was submitted before.
+    /// Always create a new remote directory, even if this local path was run before.
     #[arg(long)]
     pub new_directory: bool,
-    /// Allow submitting into a remote directory even if another job is running there.
+    /// Allow running into a remote directory even if another job is running there.
     #[arg(long)]
     pub force: bool,
     /// Include paths matching PATTERN.
@@ -232,11 +270,11 @@ pub struct ProjectSubmitArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ProjectListArgs {}
+pub struct BlueprintListArgs {}
 
 #[derive(Args, Debug)]
-pub struct ProjectDeleteArgs {
-    /// Project name or name:tag.
+pub struct BlueprintDeleteArgs {
+    /// Blueprint name or name:tag.
     pub name: String,
     /// Skip the confirmation prompt.
     #[arg(long, short = 'y')]
@@ -305,12 +343,12 @@ pub struct DeleteClusterArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct SubmitArgs {
+pub struct JobRunArgs {
     pub local_path: String,
     /// Cluster name.
-    #[arg(long = "to", value_name = "CLUSTER")]
+    #[arg(long = "on", value_name = "CLUSTER")]
     pub cluster: Option<String>,
-    /// Path to the sbatch script to submit.
+    /// Path to the sbatch script to run.
     #[arg(long, value_name = "PATH")]
     pub sbatchscript: Option<String>,
     /// Apply a template preset before prompting for missing fields.
@@ -324,16 +362,16 @@ pub struct SubmitArgs {
     pub fill_defaults: bool,
     #[arg(long)]
     pub remote_path: Option<String>,
-    /// Always create a new remote directory, even if this local path was submitted before.
+    /// Always create a new remote directory, even if this local path was run before.
     #[arg(long)]
     pub new_directory: bool,
-    /// Allow submitting into a remote directory even if another job is running there.
+    /// Allow running into a remote directory even if another job is running there.
     #[arg(long)]
     pub force: bool,
     /// Include paths matching PATTERN.
     /// Rules are checked in the order they appear across --include/--exclude;
     /// the first match wins, and unmatched paths are included.
-    /// Patterns match the path relative to the submit root with '/' separators.
+    /// Patterns match the path relative to the run root with '/' separators.
     /// A pattern without '/' matches the basename anywhere; a pattern with '/'
     /// but no leading '/' is treated as `**/PATTERN`.
     /// A leading '/' anchors to the root, and a trailing '/' matches directories
@@ -343,7 +381,7 @@ pub struct SubmitArgs {
     /// Exclude paths matching PATTERN.
     /// Rules are checked in the order they appear across --include/--exclude;
     /// the first match wins, and unmatched paths are included.
-    /// Patterns match the path relative to the submit root with '/' separators.
+    /// Patterns match the path relative to the run root with '/' separators.
     /// A pattern without '/' matches the basename anywhere; a pattern with '/'
     /// but no leading '/' is treated as `**/PATTERN`.
     /// A leading '/' anchors to the root, and a trailing '/' matches directories
@@ -492,26 +530,26 @@ mod tests {
     }
 
     #[test]
-    fn project_delete_yes_defaults_to_false() {
-        let args = Cli::parse_from(["orbit", "project", "delete", "proj-a"]);
+    fn blueprint_delete_yes_defaults_to_false() {
+        let args = Cli::parse_from(["orbit", "blueprint", "delete", "proj-a"]);
         match args.cmd {
-            Cmd::Project(project) => match project.cmd {
-                ProjectCmd::Delete(delete) => assert!(!delete.yes),
-                _ => panic!("expected project delete command"),
+            Cmd::Blueprint(blueprint) => match blueprint.cmd {
+                BlueprintCmd::Delete(delete) => assert!(!delete.yes),
+                _ => panic!("expected blueprint delete command"),
             },
-            _ => panic!("expected project command"),
+            _ => panic!("expected blueprint command"),
         }
     }
 
     #[test]
-    fn project_delete_yes_sets_true() {
-        let args = Cli::parse_from(["orbit", "project", "delete", "proj-a", "--yes"]);
+    fn blueprint_delete_yes_sets_true() {
+        let args = Cli::parse_from(["orbit", "blueprint", "delete", "proj-a", "--yes"]);
         match args.cmd {
-            Cmd::Project(project) => match project.cmd {
-                ProjectCmd::Delete(delete) => assert!(delete.yes),
-                _ => panic!("expected project delete command"),
+            Cmd::Blueprint(blueprint) => match blueprint.cmd {
+                BlueprintCmd::Delete(delete) => assert!(delete.yes),
+                _ => panic!("expected blueprint delete command"),
             },
-            _ => panic!("expected project command"),
+            _ => panic!("expected blueprint command"),
         }
     }
 
@@ -657,11 +695,11 @@ mod tests {
     }
 
     #[test]
-    fn job_list_project_defaults_to_none() {
+    fn job_list_blueprint_defaults_to_none() {
         let args = Cli::parse_from(["orbit", "job", "list"]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
-                JobCmd::List(list) => assert!(list.project.is_none()),
+                JobCmd::List(list) => assert!(list.blueprint.is_none()),
                 _ => panic!("expected job list command"),
             },
             _ => panic!("expected job command"),
@@ -669,11 +707,11 @@ mod tests {
     }
 
     #[test]
-    fn job_list_parses_project_flag() {
-        let args = Cli::parse_from(["orbit", "job", "list", "--project", "demo"]);
+    fn job_list_parses_blueprint_flag() {
+        let args = Cli::parse_from(["orbit", "job", "list", "--blueprint", "demo"]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
-                JobCmd::List(list) => assert_eq!(list.project.as_deref(), Some("demo")),
+                JobCmd::List(list) => assert_eq!(list.blueprint.as_deref(), Some("demo")),
                 _ => panic!("expected job list command"),
             },
             _ => panic!("expected job command"),
@@ -681,27 +719,27 @@ mod tests {
     }
 
     #[test]
-    fn job_submit_parses_cluster_from_to_flag() {
-        let args = Cli::parse_from(["orbit", "job", "submit", "--to", "winery", "."]);
+    fn job_run_parses_cluster_from_on_flag() {
+        let args = Cli::parse_from(["orbit", "job", "run", "--on", "winery", "."]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
-                JobCmd::Submit(submit) => {
+                JobCmd::Run(submit) => {
                     assert_eq!(submit.cluster.as_deref(), Some("winery"));
                     assert_eq!(submit.local_path, ".");
                 }
-                _ => panic!("expected job submit command"),
+                _ => panic!("expected job run command"),
             },
             _ => panic!("expected job command"),
         }
     }
 
     #[test]
-    fn job_submit_parses_sbatchscript_flag() {
+    fn job_run_parses_sbatchscript_flag() {
         let args = Cli::parse_from([
             "orbit",
             "job",
-            "submit",
-            "--to",
+            "run",
+            "--on",
             "winery",
             "--sbatchscript",
             "scripts/submit.sbatch",
@@ -709,7 +747,7 @@ mod tests {
         ]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
-                JobCmd::Submit(submit) => {
+                JobCmd::Run(submit) => {
                     assert_eq!(submit.cluster.as_deref(), Some("winery"));
                     assert_eq!(
                         submit.sbatchscript.as_deref(),
@@ -717,86 +755,79 @@ mod tests {
                     );
                     assert_eq!(submit.local_path, ".");
                 }
-                _ => panic!("expected job submit command"),
+                _ => panic!("expected job run command"),
             },
             _ => panic!("expected job command"),
         }
     }
 
     #[test]
-    fn job_submit_to_flag_is_optional() {
-        let args = Cli::parse_from(["orbit", "job", "submit", "."]);
+    fn job_run_on_flag_is_optional() {
+        let args = Cli::parse_from(["orbit", "job", "run", "."]);
         match args.cmd {
             Cmd::Job(job) => match job.cmd {
-                JobCmd::Submit(submit) => {
+                JobCmd::Run(submit) => {
                     assert!(submit.cluster.is_none());
                     assert_eq!(submit.local_path, ".");
                 }
-                _ => panic!("expected job submit command"),
+                _ => panic!("expected job run command"),
             },
             _ => panic!("expected job command"),
         }
     }
 
     #[test]
-    fn project_submit_parses_cluster_from_to_flag() {
-        let args = Cli::parse_from([
-            "orbit",
-            "project",
-            "submit",
-            "demo:latest",
-            "--to",
-            "winery",
-        ]);
+    fn blueprint_run_parses_cluster_from_on_flag() {
+        let args = Cli::parse_from(["orbit", "blueprint", "run", "demo:latest", "--on", "winery"]);
         match args.cmd {
-            Cmd::Project(project) => match project.cmd {
-                ProjectCmd::Submit(submit) => {
-                    assert_eq!(submit.project, "demo:latest");
+            Cmd::Blueprint(blueprint) => match blueprint.cmd {
+                BlueprintCmd::Run(submit) => {
+                    assert_eq!(submit.blueprint, "demo:latest");
                     assert_eq!(submit.cluster.as_deref(), Some("winery"));
                 }
-                _ => panic!("expected project submit command"),
+                _ => panic!("expected blueprint run command"),
             },
-            _ => panic!("expected project command"),
+            _ => panic!("expected blueprint command"),
         }
     }
 
     #[test]
-    fn project_submit_parses_sbatchscript_flag() {
+    fn blueprint_run_parses_sbatchscript_flag() {
         let args = Cli::parse_from([
             "orbit",
-            "project",
-            "submit",
+            "blueprint",
+            "run",
             "demo:latest",
-            "--to",
+            "--on",
             "winery",
             "--sbatchscript",
             "submit.sbatch",
         ]);
         match args.cmd {
-            Cmd::Project(project) => match project.cmd {
-                ProjectCmd::Submit(submit) => {
-                    assert_eq!(submit.project, "demo:latest");
+            Cmd::Blueprint(blueprint) => match blueprint.cmd {
+                BlueprintCmd::Run(submit) => {
+                    assert_eq!(submit.blueprint, "demo:latest");
                     assert_eq!(submit.cluster.as_deref(), Some("winery"));
                     assert_eq!(submit.sbatchscript.as_deref(), Some("submit.sbatch"));
                 }
-                _ => panic!("expected project submit command"),
+                _ => panic!("expected blueprint run command"),
             },
-            _ => panic!("expected project command"),
+            _ => panic!("expected blueprint command"),
         }
     }
 
     #[test]
-    fn project_submit_to_flag_is_optional() {
-        let args = Cli::parse_from(["orbit", "project", "submit", "demo:latest"]);
+    fn blueprint_run_on_flag_is_optional() {
+        let args = Cli::parse_from(["orbit", "blueprint", "run", "demo:latest"]);
         match args.cmd {
-            Cmd::Project(project) => match project.cmd {
-                ProjectCmd::Submit(submit) => {
-                    assert_eq!(submit.project, "demo:latest");
+            Cmd::Blueprint(blueprint) => match blueprint.cmd {
+                BlueprintCmd::Run(submit) => {
+                    assert_eq!(submit.blueprint, "demo:latest");
                     assert!(submit.cluster.is_none());
                 }
-                _ => panic!("expected project submit command"),
+                _ => panic!("expected blueprint run command"),
             },
-            _ => panic!("expected project command"),
+            _ => panic!("expected blueprint command"),
         }
     }
 }

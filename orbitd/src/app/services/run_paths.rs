@@ -5,7 +5,7 @@ use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::services::remote_path::resolve_relative;
 use std::path::PathBuf;
 
-pub fn resolve_submit_remote_path(
+pub fn resolve_run_remote_path(
     remote_path: Option<&str>,
     default_base_path: &str,
     random_suffix: &str,
@@ -44,17 +44,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resolve_submit_remote_path_handles_variants() {
-        let err = resolve_submit_remote_path(Some(""), "/base", "run").unwrap_err();
+    fn resolve_run_remote_path_handles_variants() {
+        let err = resolve_run_remote_path(Some(""), "/base", "run").unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
 
-        let absolute = resolve_submit_remote_path(Some("/abs/path"), "/base", "run").unwrap();
+        let absolute = resolve_run_remote_path(Some("/abs/path"), "/base", "run").unwrap();
         assert_eq!(absolute, "/abs/path");
 
-        let relative = resolve_submit_remote_path(Some("jobs/run"), "/base", "run").unwrap();
+        let relative = resolve_run_remote_path(Some("jobs/run"), "/base", "run").unwrap();
         assert_eq!(relative, "/base/jobs/run");
 
-        let generated = resolve_submit_remote_path(None, "/base", "run").unwrap();
+        let generated = resolve_run_remote_path(None, "/base", "run").unwrap();
         assert_eq!(generated, "/base/run");
     }
 
@@ -64,5 +64,5 @@ mod tests {
         assert_eq!(path, "/base/run/scripts/job.sbatch");
     }
 
-    // No submit success formatter tests; the final submit result is encoded in RPC events.
+    // No run success formatter tests; the final run result is encoded in RPC events.
 }

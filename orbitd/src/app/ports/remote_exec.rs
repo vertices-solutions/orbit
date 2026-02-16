@@ -4,7 +4,7 @@
 use async_trait::async_trait;
 
 use crate::app::errors::AppResult;
-use crate::app::ports::{MfaPort, StreamOutputPort, SubmitStreamOutputPort};
+use crate::app::ports::{MfaPort, RunStreamOutputPort, StreamOutputPort};
 use crate::app::types::SshConfig;
 
 #[derive(Debug, Clone)]
@@ -38,7 +38,7 @@ pub trait RemoteExecPort: Send + Sync {
     async fn ensure_connected_submit(
         &self,
         config: &SshConfig,
-        stream: &dyn SubmitStreamOutputPort,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
     ) -> AppResult<()>;
 

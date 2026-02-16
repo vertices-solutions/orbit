@@ -7,8 +7,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration as StdDuration, Instant};
 
 use proto::{
-    StreamEvent, SubmitResult, SubmitStatus, SubmitStreamEvent, stream_event, submit_result,
-    submit_status, submit_stream_event,
+    RunResult, RunStatus, RunStreamEvent, StreamEvent, run_result, run_status, run_stream_event,
+    stream_event,
 };
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -21,17 +21,16 @@ use walkdir::WalkDir;
 
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
 use crate::app::ports::{
-    ClockPort, ClusterStorePort, FileSyncPort, JobStorePort, LocalFilesystemPort, MfaPort,
-    NetworkProbePort, ProjectStorePort, RemoteExecPort, StreamOutputPort, SubmitStreamOutputPort,
-    TelemetryEvent, TelemetryPort,
+    BlueprintStorePort, ClockPort, ClusterStorePort, FileSyncPort, JobStorePort,
+    LocalFilesystemPort, MfaPort, NetworkProbePort, RemoteExecPort, RunStreamOutputPort,
+    StreamOutputPort, TelemetryEvent, TelemetryPort,
 };
 use crate::app::services::{
-    managers, os, project_building, random, remote_path, sbatch, shell, slurm, submit_paths,
-    templates,
+    managers, os, project_building, random, remote_path, run_paths, sbatch, shell, slurm, templates,
 };
 use crate::app::types::{
-    Address, ClusterStatus, HostRecord, JobRecord, NewHost, NewJob, NewProjectBuild, ProjectRecord,
-    SshConfig, SyncOptions,
+    Address, BlueprintRecord, ClusterStatus, HostRecord, JobRecord, NewBlueprintBuild, NewHost,
+    NewJob, SshConfig, SyncOptions,
 };
 
 const CLEANUP_CANCEL_POLL_INTERVAL: TokioDuration = TokioDuration::from_secs(2);
@@ -45,7 +44,7 @@ const TARBALL_HASH_FUNCTION_BLAKE3: &str = "blake3";
 pub struct UseCases {
     pub(crate) clusters: std::sync::Arc<dyn ClusterStorePort>,
     pub(crate) jobs: std::sync::Arc<dyn JobStorePort>,
-    pub(crate) projects: std::sync::Arc<dyn ProjectStorePort>,
+    pub(crate) projects: std::sync::Arc<dyn BlueprintStorePort>,
     pub(crate) remote_exec: std::sync::Arc<dyn RemoteExecPort>,
     pub(crate) file_sync: std::sync::Arc<dyn FileSyncPort>,
     pub(crate) local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
@@ -59,7 +58,7 @@ impl UseCases {
     pub fn new(
         clusters: std::sync::Arc<dyn ClusterStorePort>,
         jobs: std::sync::Arc<dyn JobStorePort>,
-        projects: std::sync::Arc<dyn ProjectStorePort>,
+        projects: std::sync::Arc<dyn BlueprintStorePort>,
         remote_exec: std::sync::Arc<dyn RemoteExecPort>,
         file_sync: std::sync::Arc<dyn FileSyncPort>,
         local_fs: std::sync::Arc<dyn LocalFilesystemPort>,
@@ -145,10 +144,10 @@ impl UseCases {
     pub async fn list_jobs(
         &self,
         name_filter: Option<&str>,
-        project_filter: Option<&str>,
+        blueprint_filter: Option<&str>,
     ) -> AppResult<Vec<JobRecord>> {
         let cluster_name = name_filter.map(str::to_string);
-        let project_name = normalize_project_filter(project_filter)?;
+        let blueprint_name = normalize_blueprint_filter(blueprint_filter)?;
 
         let mut jobs = if let Some(name) = name_filter {
             let Some(host) = self.clusters.get_by_name(name).await? else {
@@ -162,15 +161,15 @@ impl UseCases {
             self.jobs.list_all_jobs().await?
         };
 
-        if let Some(filter) = project_name.as_deref() {
-            jobs.retain(|job| job.project_name.as_deref() == Some(filter));
+        if let Some(filter) = blueprint_name.as_deref() {
+            jobs.retain(|job| job.blueprint_name.as_deref() == Some(filter));
         }
 
         self.telemetry.event(
             "jobs.listed",
             TelemetryEvent {
                 cluster: cluster_name,
-                project: project_name,
+                project: blueprint_name,
                 ..TelemetryEvent::default()
             },
         );
@@ -207,7 +206,7 @@ impl UseCases {
             let stream = NoopStreamOutput;
             let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
             drop(mfa_tx);
-            let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+            let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
             self.remote_exec
                 .ensure_connected(&config, &stream, &mut mfa_port)
                 .await
@@ -301,7 +300,7 @@ impl UseCases {
             let stream = NoopStreamOutput;
             let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
             drop(mfa_tx);
-            let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+            let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
             self.remote_exec
                 .ensure_connected(&config, &stream, &mut mfa_port)
                 .await
@@ -357,26 +356,26 @@ impl UseCases {
         Ok(slurm::parse_sshare_accounts(&output))
     }
 
-    pub async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
-        let project = self.projects.upsert_project(name, path).await?;
+    pub async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<BlueprintRecord> {
+        let blueprint = self.projects.upsert_blueprint(name, path).await?;
         self.telemetry.event(
             "project.upserted",
             TelemetryEvent {
-                project: Some(project.name.clone()),
+                project: Some(blueprint.name.clone()),
                 ..TelemetryEvent::default()
             },
         );
-        Ok(project)
+        Ok(blueprint)
     }
 
-    pub async fn get_project_by_name(&self, name: &str) -> AppResult<ProjectRecord> {
+    pub async fn get_blueprint_by_name(&self, name: &str) -> AppResult<BlueprintRecord> {
         let trimmed = name.trim();
-        if let Some((project_name, tag)) = split_project_ref(trimmed) {
+        if let Some((blueprint_name, tag)) = split_blueprint_ref(trimmed) {
             if tag == "latest" {
-                return self.get_latest_project_build(project_name).await;
+                return self.get_latest_blueprint_build(blueprint_name).await;
             }
         }
-        match self.projects.get_project_by_name(trimmed).await? {
+        match self.projects.get_blueprint_by_name(trimmed).await? {
             Some(project) => Ok(project),
             None => Err(AppError::new(
                 AppErrorKind::InvalidArgument,
@@ -385,14 +384,14 @@ impl UseCases {
         }
     }
 
-    pub async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>> {
-        let projects = self.projects.list_projects().await?;
+    pub async fn list_blueprints(&self) -> AppResult<Vec<BlueprintRecord>> {
+        let blueprints = self.projects.list_blueprints().await?;
         self.telemetry
             .event("projects.listed", TelemetryEvent::default());
-        Ok(projects)
+        Ok(blueprints)
     }
 
-    pub async fn delete_project(&self, name: &str) -> AppResult<bool> {
+    pub async fn delete_blueprint(&self, name: &str) -> AppResult<bool> {
         let trimmed = name.trim();
         if trimmed.is_empty() {
             return Err(AppError::new(
@@ -400,14 +399,14 @@ impl UseCases {
                 codes::INVALID_ARGUMENT,
             ));
         }
-        // If delete_all is true - all (local) project versions will be deleted
+        // If delete_all is true, all local blueprint versions are deleted.
         let (base_name, delete_name, delete_all) =
-            if let Some((project_name, tag)) = split_project_ref(trimmed) {
-                let base = project_name.to_string();
+            if let Some((blueprint_name, tag)) = split_blueprint_ref(trimmed) {
+                let base = blueprint_name.to_string();
                 if tag == "latest" {
-                    let latest = self.get_latest_project_build(project_name).await?;
+                    let latest = self.get_latest_blueprint_build(blueprint_name).await?;
                     let version_tag = latest.version_tag.clone().ok_or_else(|| {
-                        invalid_argument("latest project build is missing version tag")
+                        invalid_argument("latest blueprint build is missing version tag")
                     })?;
                     (base, format!("{}:{}", latest.name, version_tag), false)
                 } else {
@@ -419,13 +418,13 @@ impl UseCases {
         let running_jobs = self.jobs.list_running_jobs().await?;
         if running_jobs
             .iter()
-            .any(|job| job.project_name.as_deref() == Some(base_name.as_str()))
+            .any(|job| job.blueprint_name.as_deref() == Some(base_name.as_str()))
         {
             return Err(AppError::with_message(
                 AppErrorKind::Conflict,
                 codes::CONFLICT,
                 format!(
-                    "deleting project '{trimmed}' is prohibited because it has running jobs; \
+                    "deleting blueprint '{trimmed}' is prohibited because it has running jobs; \
 find jobs for '{base_name}' and cancel them with `job cancel`"
                 ),
             ));
@@ -433,24 +432,24 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
 
         let mut tarball_paths: Vec<PathBuf> = Vec::new();
         if delete_all {
-            // Enumerating tarballs for the project
-            let projects = self.projects.list_projects().await?;
-            for project in projects {
-                if project.name == base_name {
-                    if let Some(version_tag) = project.version_tag.as_deref() {
-                        let project_ref = format!("{}:{version_tag}", project.name);
-                        tarball_paths.push(tarball_path_for_project_ref(
+            // Enumerating tarballs for the blueprint
+            let blueprints = self.projects.list_blueprints().await?;
+            for blueprint in blueprints {
+                if blueprint.name == base_name {
+                    if let Some(version_tag) = blueprint.version_tag.as_deref() {
+                        let blueprint_ref = format!("{}:{version_tag}", blueprint.name);
+                        tarball_paths.push(tarball_path_for_blueprint_ref(
                             &self.tarballs_dir,
-                            &project_ref,
+                            &blueprint_ref,
                         ));
                     }
                 }
             }
         } else if !delete_name.is_empty() {
-            if let Some(project) = self.projects.get_project_by_name(&delete_name).await? {
-                tarball_paths.push(tarball_path_for_project_record(
+            if let Some(blueprint) = self.projects.get_blueprint_by_name(&delete_name).await? {
+                tarball_paths.push(tarball_path_for_blueprint_record(
                     &self.tarballs_dir,
-                    &project,
+                    &blueprint,
                 )?);
             }
         }
@@ -470,10 +469,10 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
 
         let deleted = if delete_all {
             self.projects
-                .delete_projects_by_base_name(&base_name)
+                .delete_blueprints_by_base_name(&base_name)
                 .await?
         } else {
-            self.projects.delete_project_by_name(&delete_name).await?
+            self.projects.delete_blueprint_by_name(&delete_name).await?
         };
         if deleted > 0 {
             self.telemetry.event(
@@ -487,20 +486,24 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         Ok(deleted > 0)
     }
 
-    pub async fn build_project(&self, path: &str, package_git: bool) -> AppResult<ProjectRecord> {
-        let resolved = resolve_project_path(self.local_fs.as_ref(), path).await?;
-        let project_root = discover_orbitfile_root(&resolved)?
-            .ok_or_else(|| invalid_argument("project build requires an Orbitfile"))?;
-        let orbitfile_path = project_root.join(ORBITFILE_NAME);
+    pub async fn build_blueprint(
+        &self,
+        path: &str,
+        package_git: bool,
+    ) -> AppResult<BlueprintRecord> {
+        let resolved = resolve_blueprint_path(self.local_fs.as_ref(), path).await?;
+        let blueprint_root = discover_orbitfile_root(&resolved)?
+            .ok_or_else(|| invalid_argument("blueprint build requires an Orbitfile"))?;
+        let orbitfile_path = blueprint_root.join(ORBITFILE_NAME);
         let orbitfile_metadata = load_orbitfile_metadata(&orbitfile_path)?;
         let OrbitfileMetadata {
-            name: project_name,
+            name: blueprint_name,
             default_retrieve_path,
             submit_sbatch_script: raw_submit_sbatch_script,
             sync_include,
             sync_exclude,
         } = orbitfile_metadata;
-        validate_project_name(&project_name)?;
+        validate_blueprint_name(&blueprint_name)?;
 
         let tarballs_dir = std::fs::canonicalize(&self.tarballs_dir).map_err(|err| {
             local_error(format!(
@@ -508,45 +511,46 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
                 self.tarballs_dir.display()
             ))
         })?;
-        if tarballs_dir.starts_with(&project_root) {
+        if tarballs_dir.starts_with(&blueprint_root) {
             return Err(invalid_argument(format!(
-                "tarballs_dir '{}' cannot be inside project root '{}'",
+                "tarballs_dir '{}' cannot be inside blueprint root '{}'",
                 tarballs_dir.display(),
-                project_root.display()
+                blueprint_root.display()
             )));
         }
 
         let submit_sbatch_script = match raw_submit_sbatch_script.as_deref() {
             Some(value) => Some(resolve_orbitfile_sbatch_script(
-                &project_root,
-                &project_root,
+                &blueprint_root,
+                &blueprint_root,
                 value,
             )?),
             None => None,
         };
-        let sbatch_scripts = collect_sbatch_scripts(&project_root)?;
+        let sbatch_scripts = collect_sbatch_scripts(&blueprint_root)?;
         if submit_sbatch_script.is_none() && sbatch_scripts.is_empty() {
             return Err(invalid_argument(format!(
                 "no .sbatch files found under '{}'; set [submit].sbatch_script or add a .sbatch file",
-                project_root.display()
+                blueprint_root.display()
             )));
         }
 
-        let (_version_tag, project_ref) = self.next_project_version_tag(&project_name).await?;
-        let tarball_path = tarball_path_for_project_ref(&self.tarballs_dir, &project_ref);
+        let (_version_tag, blueprint_ref) =
+            self.next_blueprint_version_tag(&blueprint_name).await?;
+        let tarball_path = tarball_path_for_blueprint_ref(&self.tarballs_dir, &blueprint_ref);
 
         let template_config_json = templates::load_template_config_json(&orbitfile_path)?;
 
-        let root_name = project_root
+        let root_name = blueprint_root
             .file_name()
             .and_then(|name| name.to_str())
-            .ok_or_else(|| invalid_argument("project path has no directory name"))?;
-        project_building::create_tarball(&project_root, root_name, &tarball_path, package_git)?;
+            .ok_or_else(|| invalid_argument("blueprint path has no directory name"))?;
+        project_building::create_tarball(&blueprint_root, root_name, &tarball_path, package_git)?;
         let tarball_hash = project_building::blake3_file_hash(&tarball_path)?;
 
-        let build = NewProjectBuild {
-            name: project_ref,
-            path: project_root.display().to_string(),
+        let build = NewBlueprintBuild {
+            name: blueprint_ref,
+            path: blueprint_root.display().to_string(),
             tarball_hash,
             tarball_hash_function: TARBALL_HASH_FUNCTION_BLAKE3.to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -557,15 +561,15 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
             sync_include,
             sync_exclude,
         };
-        let project = self.projects.upsert_project_build(&build).await?;
+        let blueprint = self.projects.upsert_blueprint_build(&build).await?;
         self.telemetry.event(
             "project.built",
             TelemetryEvent {
-                project: Some(project_name),
+                project: Some(blueprint_name),
                 ..TelemetryEvent::default()
             },
         );
-        Ok(project)
+        Ok(blueprint)
     }
 
     pub async fn delete_cluster(&self, name: &str, force: bool) -> AppResult<bool> {
@@ -941,7 +945,7 @@ cancel them with `job cancel` or pass --force"
             }
         };
         let telemetry_base = TelemetryEvent {
-            project: job.project_name.clone(),
+            project: job.blueprint_name.clone(),
             cluster: Some(job.name.clone()),
             job_id: Some(input.job_id),
             remote_path: Some(job.remote_path.clone()),
@@ -965,7 +969,7 @@ cancel them with `job cancel` or pass --force"
                         AppErrorKind::InvalidArgument,
                         codes::INVALID_ARGUMENT,
                         format!(
-                            "No default retrieve path set for job {}; pass a path or define [retrieve].default_path in Orbitfile at submit time.",
+                            "No default retrieve path set for job {}; pass a path or define [retrieve].default_path in Orbitfile at run time.",
                             input.job_id
                         ),
                     ));
@@ -1487,7 +1491,7 @@ cancel them with `job cancel` or pass --force"
         };
 
         let telemetry_base = TelemetryEvent {
-            project: job.project_name.clone(),
+            project: job.blueprint_name.clone(),
             cluster: Some(job.name.clone()),
             job_id: Some(input.job_id),
             remote_path: Some(job.remote_path.clone()),
@@ -1800,14 +1804,14 @@ cancel them with `job cancel` or pass --force"
         Ok(())
     }
 
-    pub async fn submit_job(
+    pub async fn run_job(
         &self,
-        input: SubmitJobInput,
-        stream: &dyn SubmitStreamOutputPort,
+        input: RunJobInput,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
         cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
-        let submit_input = SubmitInput {
+        let submit_input = RunInput {
             local_path: input.local_path,
             remote_path: input.remote_path,
             name: input.name,
@@ -1815,8 +1819,8 @@ cancel them with `job cancel` or pass --force"
             filters: input.filters,
             new_directory: input.new_directory,
             force: input.force,
-            project_name: input.project_name,
-            project_tag: None,
+            blueprint_name: input.blueprint_name,
+            blueprint_tag: None,
             default_retrieve_path: input.default_retrieve_path,
             template_values_json: input.template_values_json,
         };
@@ -1824,14 +1828,14 @@ cancel them with `job cancel` or pass --force"
             .await
     }
 
-    pub async fn submit_project(
+    pub async fn run_blueprint(
         &self,
-        input: SubmitProjectInput,
-        stream: &dyn SubmitStreamOutputPort,
+        input: RunBlueprintInput,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
         cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
-        let submit_input = SubmitInput {
+        let submit_input = RunInput {
             local_path: String::new(),
             remote_path: input.remote_path,
             name: input.name,
@@ -1839,8 +1843,8 @@ cancel them with `job cancel` or pass --force"
             filters: input.filters,
             new_directory: input.new_directory,
             force: input.force,
-            project_name: Some(input.project_name),
-            project_tag: Some(input.project_tag),
+            blueprint_name: Some(input.blueprint_name),
+            blueprint_tag: Some(input.blueprint_tag),
             default_retrieve_path: input.default_retrieve_path,
             template_values_json: input.template_values_json,
         };
@@ -1850,17 +1854,17 @@ cancel them with `job cancel` or pass --force"
 
     async fn submit_inner(
         &self,
-        input: SubmitInput,
-        stream: &dyn SubmitStreamOutputPort,
+        input: RunInput,
+        stream: &dyn RunStreamOutputPort,
         mfa: &mut dyn MfaPort,
         mut cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
         let mut input = input;
         let cluster_name = input.name.clone();
-        let project_name = input.project_name.clone();
+        let blueprint_name = input.blueprint_name.clone();
         let submit_span = tracing::info_span!(
             "job_submit",
-            project = project_name.as_deref(),
+            project = blueprint_name.as_deref(),
             cluster = %cluster_name,
             job_name = tracing::field::Empty
         );
@@ -1872,7 +1876,7 @@ cancel them with `job cancel` or pass --force"
                     "job.submit.failed",
                     TelemetryEvent {
                         cluster: Some(cluster_name.clone()),
-                        project: project_name.clone(),
+                        project: blueprint_name.clone(),
                         ..TelemetryEvent::default()
                     },
                 );
@@ -1887,12 +1891,12 @@ cancel them with `job cancel` or pass --force"
         })?;
         let telemetry_base = TelemetryEvent {
             cluster: Some(cluster_name.clone()),
-            project: project_name.clone(),
+            project: blueprint_name.clone(),
             user: Some(host.username.clone()),
             ..TelemetryEvent::default()
         };
 
-        if input.project_tag.is_none() && input.local_path.trim().is_empty() {
+        if input.blueprint_tag.is_none() && input.local_path.trim().is_empty() {
             return Err(invalid_argument("local path is required"));
         }
 
@@ -1900,33 +1904,33 @@ cancel them with `job cancel` or pass --force"
         let mut template_values_json = None;
         let mut _template_guard = None;
         let mut _tarball_guard: Option<TempDir> = None;
-        if let Some(project_tag) = input.project_tag.as_deref() {
-            let project_name = input
-                .project_name
+        if let Some(blueprint_tag) = input.blueprint_tag.as_deref() {
+            let blueprint_name = input
+                .blueprint_name
                 .clone()
-                .ok_or_else(|| invalid_argument("project tag provided without project name"))?;
-            let project = if project_tag == "latest" {
-                self.get_latest_project_build(&project_name).await?
+                .ok_or_else(|| invalid_argument("blueprint tag provided without blueprint name"))?;
+            let blueprint = if blueprint_tag == "latest" {
+                self.get_latest_blueprint_build(&blueprint_name).await?
             } else {
-                let project_ref = format!("{project_name}:{project_tag}");
+                let blueprint_ref = format!("{blueprint_name}:{blueprint_tag}");
                 self.projects
-                    .get_project_by_name(&project_ref)
+                    .get_blueprint_by_name(&blueprint_ref)
                     .await?
                     .ok_or_else(|| AppError::new(AppErrorKind::InvalidArgument, codes::NOT_FOUND))?
             };
-            input.local_path = project.path.clone();
-            let tarball_path = tarball_path_for_project_record(&self.tarballs_dir, &project)?;
+            input.local_path = blueprint.path.clone();
+            let tarball_path = tarball_path_for_blueprint_record(&self.tarballs_dir, &blueprint)?;
             if !tarball_path.is_file() {
                 return Err(AppError::with_message(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
-                    format!("project tarball not found at {}", tarball_path.display()),
+                    format!("blueprint tarball not found at {}", tarball_path.display()),
                 ));
             }
             let temp_dir = TempDir::new()
                 .map_err(|err| local_error(format!("failed to create temp dir: {err}")))?;
             project_building::unpack_tarball(&tarball_path, temp_dir.path())?;
-            let expected_root = Path::new(&project.path)
+            let expected_root = Path::new(&blueprint.path)
                 .file_name()
                 .and_then(|name| name.to_str());
             sync_root = project_building::resolve_extracted_root(temp_dir.path(), expected_root)?;
@@ -1958,12 +1962,12 @@ cancel them with `job cancel` or pass --force"
             None => {
                 let resolved = match input.remote_path.as_deref() {
                     Some(v) if PathBuf::from(v).is_absolute() => {
-                        submit_paths::resolve_submit_remote_path(Some(v), v, "")?
+                        run_paths::resolve_run_remote_path(Some(v), v, "")?
                     }
                     other => {
                         let default_base_path = self.get_default_base_path(&input.name).await?;
                         let random_suffix = random::generate_run_directory_name();
-                        submit_paths::resolve_submit_remote_path(
+                        run_paths::resolve_run_remote_path(
                             other,
                             &default_base_path,
                             &random_suffix,
@@ -1987,7 +1991,7 @@ cancel them with `job cancel` or pass --force"
                 .await?
             {
                 let detail = format!(
-                    "job {job_id} is still running in {remote_path}; use --force to submit anyway"
+                    "job {job_id} is still running in {remote_path}; use --force to run anyway"
                 );
                 self.telemetry
                     .event("job.submit.failed", telemetry_context.clone());
@@ -2000,11 +2004,11 @@ cancel them with `job cancel` or pass --force"
         }
 
         if stream
-            .send(SubmitStreamEvent {
-                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
+            .send(RunStreamEvent {
+                event: Some(run_stream_event::Event::RunStatus(RunStatus {
                     name: input.name.clone(),
                     remote_path: remote_path.clone(),
-                    phase: submit_status::Phase::Resolved as i32,
+                    phase: run_status::Phase::Resolved as i32,
                 })),
             })
             .await
@@ -2046,11 +2050,11 @@ cancel them with `job cancel` or pass --force"
         }
 
         if stream
-            .send(SubmitStreamEvent {
-                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
+            .send(RunStreamEvent {
+                event: Some(run_stream_event::Event::RunStatus(RunStatus {
                     name: input.name.clone(),
                     remote_path: remote_path.clone(),
-                    phase: submit_status::Phase::TransferStart as i32,
+                    phase: run_status::Phase::TransferStart as i32,
                 })),
             })
             .await
@@ -2081,9 +2085,9 @@ cancel them with `job cancel` or pass --force"
         };
         if let Err(_) = sync_result {
             let _ = stream
-                .send(SubmitStreamEvent {
-                    event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
-                        status: submit_result::Status::Failed as i32,
+                .send(RunStreamEvent {
+                    event: Some(run_stream_event::Event::RunResult(RunResult {
+                        status: run_result::Status::Failed as i32,
                         job_id: None,
                         detail: codes::REMOTE_ERROR.to_string(),
                     })),
@@ -2095,11 +2099,11 @@ cancel them with `job cancel` or pass --force"
         }
 
         if stream
-            .send(SubmitStreamEvent {
-                event: Some(submit_stream_event::Event::SubmitStatus(SubmitStatus {
+            .send(RunStreamEvent {
+                event: Some(run_stream_event::Event::RunStatus(RunStatus {
                     name: input.name.clone(),
                     remote_path: remote_path.clone(),
-                    phase: submit_status::Phase::TransferDone as i32,
+                    phase: run_status::Phase::TransferDone as i32,
                 })),
             })
             .await
@@ -2116,7 +2120,7 @@ cancel them with `job cancel` or pass --force"
         }
 
         let remote_sbatch_script_path =
-            submit_paths::resolve_remote_sbatch_path(&remote_path, &input.sbatchscript);
+            run_paths::resolve_remote_sbatch_path(&remote_path, &input.sbatchscript);
         let sbatch_command =
             slurm::path_to_sbatch_command(&remote_sbatch_script_path, Some(&remote_path));
         let exec_result = tokio::select! {
@@ -2129,9 +2133,9 @@ cancel them with `job cancel` or pass --force"
             Ok(v) => v,
             Err(_) => {
                 let _ = stream
-                    .send(SubmitStreamEvent {
-                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
-                            status: submit_result::Status::Failed as i32,
+                    .send(RunStreamEvent {
+                        event: Some(run_stream_event::Event::RunResult(RunResult {
+                            status: run_result::Status::Failed as i32,
                             job_id: None,
                             detail: codes::REMOTE_ERROR.to_string(),
                         })),
@@ -2156,9 +2160,9 @@ cancel them with `job cancel` or pass --force"
                 err_message.trim().to_string()
             };
             let _ = stream
-                .send(SubmitStreamEvent {
-                    event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
-                        status: submit_result::Status::Failed as i32,
+                .send(RunStreamEvent {
+                    event: Some(run_stream_event::Event::RunResult(RunResult {
+                        status: run_result::Status::Failed as i32,
                         job_id: None,
                         detail: codes::REMOTE_ERROR.to_string(),
                     })),
@@ -2173,9 +2177,9 @@ cancel them with `job cancel` or pass --force"
         let out_string = String::from_utf8_lossy(&capture.stdout);
         let Some(scheduler_id) = slurm::parse_job_id(&out_string) else {
             let _ = stream
-                .send(SubmitStreamEvent {
-                    event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
-                        status: submit_result::Status::Failed as i32,
+                .send(RunStreamEvent {
+                    event: Some(run_stream_event::Event::RunResult(RunResult {
+                        status: run_result::Status::Failed as i32,
                         job_id: None,
                         detail: codes::REMOTE_ERROR.to_string(),
                     })),
@@ -2258,7 +2262,7 @@ cancel them with `job cancel` or pass --force"
             remote_path: remote_path.clone(),
             stdout_path,
             stderr_path,
-            project_name: input.project_name.clone(),
+            blueprint_name: input.blueprint_name.clone(),
             default_retrieve_path: input.default_retrieve_path.clone(),
             template_values: template_values_json,
         };
@@ -2266,9 +2270,9 @@ cancel them with `job cancel` or pass --force"
         match self.jobs.insert_job(&job).await {
             Ok(job_id) => {
                 let _ = stream
-                    .send(SubmitStreamEvent {
-                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
-                            status: submit_result::Status::Submitted as i32,
+                    .send(RunStreamEvent {
+                        event: Some(run_stream_event::Event::RunResult(RunResult {
+                            status: run_result::Status::Submitted as i32,
                             job_id: Some(job_id),
                             detail: String::new(),
                         })),
@@ -2284,9 +2288,9 @@ cancel them with `job cancel` or pass --force"
             }
             Err(_) => {
                 let _ = stream
-                    .send(SubmitStreamEvent {
-                        event: Some(submit_stream_event::Event::SubmitResult(SubmitResult {
-                            status: submit_result::Status::Failed as i32,
+                    .send(RunStreamEvent {
+                        event: Some(run_stream_event::Event::RunResult(RunResult {
+                            status: run_result::Status::Failed as i32,
                             job_id: None,
                             detail: codes::INTERNAL_ERROR.to_string(),
                         })),
@@ -2466,7 +2470,7 @@ cancel them with `job cancel` or pass --force"
                 let stream = NoopStreamOutput;
                 let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
                 drop(mfa_tx);
-                let mut mfa_port = SimpleMfaPort { receiver: mfa_rx };
+                let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
                 if let Err(err) = self
                     .remote_exec
                     .ensure_connected(&config, &stream, &mut mfa_port)
@@ -2979,7 +2983,7 @@ pub struct CleanupJobInput {
 }
 
 #[derive(Clone, Debug)]
-pub struct SubmitJobInput {
+pub struct RunJobInput {
     pub local_path: String,
     pub remote_path: Option<String>,
     pub name: String,
@@ -2987,15 +2991,15 @@ pub struct SubmitJobInput {
     pub filters: Vec<crate::app::types::SyncFilterRule>,
     pub new_directory: bool,
     pub force: bool,
-    pub project_name: Option<String>,
+    pub blueprint_name: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub template_values_json: Option<String>,
 }
 
 #[derive(Clone, Debug)]
-pub struct SubmitProjectInput {
-    pub project_name: String,
-    pub project_tag: String,
+pub struct RunBlueprintInput {
+    pub blueprint_name: String,
+    pub blueprint_tag: String,
     pub remote_path: Option<String>,
     pub name: String,
     pub sbatchscript: String,
@@ -3007,7 +3011,7 @@ pub struct SubmitProjectInput {
 }
 
 #[derive(Clone, Debug)]
-struct SubmitInput {
+struct RunInput {
     pub local_path: String,
     pub remote_path: Option<String>,
     pub name: String,
@@ -3015,8 +3019,8 @@ struct SubmitInput {
     pub filters: Vec<crate::app::types::SyncFilterRule>,
     pub new_directory: bool,
     pub force: bool,
-    pub project_name: Option<String>,
-    pub project_tag: Option<String>,
+    pub blueprint_name: Option<String>,
+    pub blueprint_tag: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub template_values_json: Option<String>,
 }
@@ -3055,11 +3059,11 @@ struct ClusterUpsertInput {
     emit_progress: bool,
 }
 
-struct SimpleMfaPort {
+struct GrpcMfaPort {
     receiver: mpsc::Receiver<proto::MfaAnswer>,
 }
 
-impl MfaPort for SimpleMfaPort {
+impl MfaPort for GrpcMfaPort {
     fn receiver(&mut self) -> &mut mpsc::Receiver<proto::MfaAnswer> {
         &mut self.receiver
     }
@@ -3523,7 +3527,7 @@ fn local_error(message: impl Into<String>) -> AppError {
     AppError::with_message(AppErrorKind::Internal, codes::LOCAL_ERROR, message)
 }
 
-async fn resolve_project_path(fs: &dyn LocalFilesystemPort, raw: &str) -> AppResult<PathBuf> {
+async fn resolve_blueprint_path(fs: &dyn LocalFilesystemPort, raw: &str) -> AppResult<PathBuf> {
     let input = PathBuf::from(raw);
     let path = if input.is_absolute() {
         input
@@ -3531,7 +3535,7 @@ async fn resolve_project_path(fs: &dyn LocalFilesystemPort, raw: &str) -> AppRes
         fs.current_dir().await?.join(input)
     };
     std::fs::canonicalize(&path)
-        .map_err(|err| local_error(format!("failed to resolve project path: {err}")))
+        .map_err(|err| local_error(format!("failed to resolve blueprint path: {err}")))
 }
 
 fn discover_orbitfile_root(start: &Path) -> AppResult<Option<PathBuf>> {
@@ -3541,7 +3545,7 @@ fn discover_orbitfile_root(start: &Path) -> AppResult<Option<PathBuf>> {
         start
             .parent()
             .map(Path::to_path_buf)
-            .ok_or_else(|| invalid_argument("project path has no parent directory"))?
+            .ok_or_else(|| invalid_argument("run path has no parent directory"))?
     };
 
     loop {
@@ -3559,7 +3563,7 @@ fn discover_orbitfile_root(start: &Path) -> AppResult<Option<PathBuf>> {
 #[derive(Deserialize)]
 struct RawOrbitfile {
     #[serde(default)]
-    project: Option<RawProject>,
+    blueprint: Option<RawBlueprint>,
     #[serde(default)]
     retrieve: Option<RawRetrieve>,
     #[serde(default)]
@@ -3569,7 +3573,7 @@ struct RawOrbitfile {
 }
 
 #[derive(Deserialize)]
-struct RawProject {
+struct RawBlueprint {
     name: String,
 }
 
@@ -3614,12 +3618,12 @@ fn load_orbitfile_metadata(orbitfile_path: &Path) -> AppResult<OrbitfileMetadata
             orbitfile_path.display()
         ))
     })?;
-    let project = raw
-        .project
-        .ok_or_else(|| invalid_argument("Orbitfile is missing [project]"))?;
-    let name = project.name.trim().to_string();
+    let blueprint = raw
+        .blueprint
+        .ok_or_else(|| invalid_argument("Orbitfile is missing [blueprint]"))?;
+    let name = blueprint.name.trim().to_string();
     if name.is_empty() {
-        return Err(invalid_argument("Orbitfile is missing [project].name"));
+        return Err(invalid_argument("Orbitfile is missing [blueprint].name"));
     }
 
     let default_retrieve_path = trim_optional(raw.retrieve.and_then(|v| v.default_path));
@@ -3641,16 +3645,18 @@ fn load_orbitfile_metadata(orbitfile_path: &Path) -> AppResult<OrbitfileMetadata
     })
 }
 
-fn validate_project_name(name: &str) -> AppResult<()> {
+fn validate_blueprint_name(name: &str) -> AppResult<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
-        return Err(invalid_argument("project name cannot be empty"));
+        return Err(invalid_argument("blueprint name cannot be empty"));
     }
     let valid = trimmed
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
     if !valid {
-        return Err(invalid_argument("project name must match ^[A-Za-z0-9_-]+$"));
+        return Err(invalid_argument(
+            "blueprint name must match ^[A-Za-z0-9_-]+$",
+        ));
     }
     Ok(())
 }
@@ -3709,7 +3715,8 @@ fn resolve_orbitfile_sbatch_script(
 fn collect_sbatch_scripts(root: &Path) -> AppResult<Vec<String>> {
     let mut scripts = Vec::new();
     for entry in WalkDir::new(root).follow_links(false) {
-        let entry = entry.map_err(|err| local_error(format!("failed to walk project: {err}")))?;
+        let entry =
+            entry.map_err(|err| local_error(format!("failed to walk blueprint root: {err}")))?;
         if entry.file_type().is_symlink() || !entry.file_type().is_file() {
             continue;
         }
@@ -3752,7 +3759,7 @@ fn normalize_patterns(values: Vec<String>, field: &str) -> AppResult<Vec<String>
     Ok(out)
 }
 
-fn split_project_ref(value: &str) -> Option<(&str, &str)> {
+fn split_blueprint_ref(value: &str) -> Option<(&str, &str)> {
     let trimmed = value.trim();
     let (name, tag) = trimmed.split_once(':')?;
     let name = name.trim();
@@ -3764,35 +3771,39 @@ fn split_project_ref(value: &str) -> Option<(&str, &str)> {
     }
 }
 
-fn tarball_file_hash_from_project_ref(project_ref: &str) -> String {
-    // project name:project tag ref
+fn tarball_file_hash_from_blueprint_ref(blueprint_ref: &str) -> String {
+    // blueprint name:tag ref
     let mut hasher = Sha256::new();
-    hasher.update(project_ref);
+    hasher.update(blueprint_ref);
     format!("{:x}", hasher.finalize())
 }
 
-fn tarball_path_for_project_ref(tarballs_dir: &Path, project_ref: &str) -> PathBuf {
-    // tarball path from project reference (hashes project name:tag, joins tarballs dir to it)
-    let file_hash = tarball_file_hash_from_project_ref(project_ref);
+fn tarball_path_for_blueprint_ref(tarballs_dir: &Path, blueprint_ref: &str) -> PathBuf {
+    // tarball path from blueprint reference (hashes blueprint name:tag, joins tarballs dir to it)
+    let file_hash = tarball_file_hash_from_blueprint_ref(blueprint_ref);
     tarballs_dir.join(format!("{file_hash}.tar.zst"))
 }
 
-fn tarball_path_for_project_record(
+fn tarball_path_for_blueprint_record(
     tarballs_dir: &Path,
-    project: &ProjectRecord,
+    blueprint: &BlueprintRecord,
 ) -> AppResult<PathBuf> {
-    let version_tag = project
+    let version_tag = blueprint
         .version_tag
         .as_deref()
-        .ok_or_else(|| invalid_argument("project build is missing version tag"))?;
-    let project_ref = format!("{}:{version_tag}", project.name);
-    Ok(tarball_path_for_project_ref(tarballs_dir, &project_ref))
+        .ok_or_else(|| invalid_argument("blueprint build is missing version tag"))?;
+    let blueprint_ref = format!("{}:{version_tag}", blueprint.name);
+    Ok(tarball_path_for_blueprint_ref(tarballs_dir, &blueprint_ref))
 }
 
 impl UseCases {
-    async fn get_latest_project_build(&self, project_name: &str) -> AppResult<ProjectRecord> {
-        match self.projects.get_latest_project_build(project_name).await? {
-            Some(project) => Ok(project),
+    async fn get_latest_blueprint_build(&self, blueprint_name: &str) -> AppResult<BlueprintRecord> {
+        match self
+            .projects
+            .get_latest_blueprint_build(blueprint_name)
+            .await?
+        {
+            Some(blueprint) => Ok(blueprint),
             None => Err(AppError::new(
                 AppErrorKind::InvalidArgument,
                 codes::NOT_FOUND,
@@ -3800,7 +3811,10 @@ impl UseCases {
         }
     }
 
-    async fn next_project_version_tag(&self, project_name: &str) -> AppResult<(String, String)> {
+    async fn next_blueprint_version_tag(
+        &self,
+        blueprint_name: &str,
+    ) -> AppResult<(String, String)> {
         let now = self.clock.now_utc();
         let date = format!(
             "{:04}{:02}{:02}",
@@ -3810,13 +3824,13 @@ impl UseCases {
         );
         let max = self
             .projects
-            .max_build_number_for_date(project_name, &date)
+            .max_build_number_for_date(blueprint_name, &date)
             .await?;
         let next = match max {
             Some(value) => {
                 if value >= 999 {
                     return Err(invalid_argument(format!(
-                        "build number exhausted for {project_name} on {date}"
+                        "build number exhausted for {blueprint_name} on {date}"
                     )));
                 }
                 value + 1
@@ -3824,8 +3838,8 @@ impl UseCases {
             None => 0,
         };
         let version_tag = format!("{date}.{next:03}");
-        let project_ref = format!("{project_name}:{version_tag}");
-        Ok((version_tag, project_ref))
+        let blueprint_ref = format!("{blueprint_name}:{version_tag}");
+        Ok((version_tag, blueprint_ref))
     }
 }
 
@@ -3844,12 +3858,12 @@ fn is_unsafe_cleanup_path(remote_path: &str) -> bool {
     normalized.as_os_str().is_empty() || normalized == Path::new(std::path::MAIN_SEPARATOR_STR)
 }
 
-fn normalize_project_filter(project_filter: Option<&str>) -> AppResult<Option<String>> {
-    match project_filter {
+fn normalize_blueprint_filter(blueprint_filter: Option<&str>) -> AppResult<Option<String>> {
+    match blueprint_filter {
         Some(value) => {
             let trimmed = value.trim();
             if trimmed.is_empty() {
-                return Err(invalid_argument("project name filter cannot be empty"));
+                return Err(invalid_argument("blueprint name filter cannot be empty"));
             }
             Ok(Some(trimmed.to_string()))
         }
@@ -3902,7 +3916,7 @@ mod tests {
         async fn ensure_connected_submit(
             &self,
             _config: &SshConfig,
-            _stream: &dyn SubmitStreamOutputPort,
+            _stream: &dyn RunStreamOutputPort,
             _mfa: &mut dyn MfaPort,
         ) -> AppResult<()> {
             panic!("ensure_connected_submit should not be called in list_jobs tests");
@@ -3964,7 +3978,7 @@ mod tests {
         async fn ensure_connected_submit(
             &self,
             _config: &SshConfig,
-            _stream: &dyn SubmitStreamOutputPort,
+            _stream: &dyn RunStreamOutputPort,
             _mfa: &mut dyn MfaPort,
         ) -> AppResult<()> {
             panic!("ensure_connected_submit should not be called in delete_cluster tests");
@@ -4050,7 +4064,7 @@ mod tests {
         async fn ensure_connected_submit(
             &self,
             _config: &SshConfig,
-            _stream: &dyn SubmitStreamOutputPort,
+            _stream: &dyn RunStreamOutputPort,
             _mfa: &mut dyn MfaPort,
         ) -> AppResult<()> {
             panic!("ensure_connected_submit should not be called in list_partitions tests");
@@ -4122,7 +4136,7 @@ mod tests {
         async fn ensure_connected_submit(
             &self,
             _config: &SshConfig,
-            _stream: &dyn SubmitStreamOutputPort,
+            _stream: &dyn RunStreamOutputPort,
             _mfa: &mut dyn MfaPort,
         ) -> AppResult<()> {
             panic!("ensure_connected_submit should not be called in base-path validation tests");
@@ -4160,7 +4174,7 @@ mod tests {
             _local_dir: &Path,
             _remote_dir: &str,
             _options: SyncOptions,
-            _stream: &dyn SubmitStreamOutputPort,
+            _stream: &dyn RunStreamOutputPort,
             _mfa: &mut dyn MfaPort,
         ) -> AppResult<()> {
             panic!("sync_dir should not be called in list_jobs tests");
@@ -4201,7 +4215,7 @@ mod tests {
         }
     }
 
-    fn sample_job(host_id: i64, local_path: &str, project_name: Option<&str>) -> NewJob {
+    fn sample_job(host_id: i64, local_path: &str, blueprint_name: Option<&str>) -> NewJob {
         NewJob {
             scheduler_id: None,
             host_id,
@@ -4209,7 +4223,7 @@ mod tests {
             remote_path: format!("/remote/{local_path}"),
             stdout_path: format!("/remote/{local_path}/slurm.out"),
             stderr_path: None,
-            project_name: project_name.map(str::to_string),
+            blueprint_name: blueprint_name.map(str::to_string),
             default_retrieve_path: None,
             template_values: None,
         }
@@ -4228,7 +4242,7 @@ mod tests {
         let db = Arc::new(crate::adapters::db::SqliteStoreAdapter::new(store));
         let clusters: Arc<dyn ClusterStorePort> = db.clone();
         let jobs: Arc<dyn JobStorePort> = db.clone();
-        let projects: Arc<dyn ProjectStorePort> = db;
+        let projects: Arc<dyn BlueprintStorePort> = db;
         let file_sync: Arc<dyn FileSyncPort> = Arc::new(NoopFileSync);
         let local_fs: Arc<dyn LocalFilesystemPort> = Arc::new(crate::adapters::fs::LocalFilesystem);
         let network: Arc<dyn NetworkProbePort> = Arc::new(crate::adapters::network::NetworkAdapter);
@@ -4253,7 +4267,7 @@ mod tests {
         build_usecases_with_remote_exec(remote_exec).await
     }
 
-    async fn seed_jobs_for_project_filtering(usecases: &UseCases) {
+    async fn seed_jobs_for_blueprint_filtering(usecases: &UseCases) {
         let host_a_id = usecases
             .clusters
             .upsert_host(&sample_host("cluster-a"))
@@ -4288,9 +4302,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_jobs_filters_by_project_without_cluster_filter() {
+    async fn list_jobs_filters_by_blueprint_without_cluster_filter() {
         let usecases = build_usecases_for_list_jobs_tests().await;
-        seed_jobs_for_project_filtering(&usecases).await;
+        seed_jobs_for_blueprint_filtering(&usecases).await;
 
         let jobs = usecases
             .list_jobs(None, Some("demo-project"))
@@ -4299,7 +4313,7 @@ mod tests {
         assert_eq!(jobs.len(), 2);
         assert!(
             jobs.iter()
-                .all(|job| job.project_name.as_deref() == Some("demo-project"))
+                .all(|job| job.blueprint_name.as_deref() == Some("demo-project"))
         );
         let mut cluster_names: Vec<&str> = jobs.iter().map(|job| job.name.as_str()).collect();
         cluster_names.sort_unstable();
@@ -4307,9 +4321,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_jobs_filters_by_project_with_cluster_filter() {
+    async fn list_jobs_filters_by_blueprint_with_cluster_filter() {
         let usecases = build_usecases_for_list_jobs_tests().await;
-        seed_jobs_for_project_filtering(&usecases).await;
+        seed_jobs_for_blueprint_filtering(&usecases).await;
 
         let jobs = usecases
             .list_jobs(Some("cluster-a"), Some("demo-project"))
@@ -4317,7 +4331,7 @@ mod tests {
             .expect("list jobs");
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].name, "cluster-a");
-        assert_eq!(jobs[0].project_name.as_deref(), Some("demo-project"));
+        assert_eq!(jobs[0].blueprint_name.as_deref(), Some("demo-project"));
     }
 
     #[tokio::test]
@@ -4908,17 +4922,17 @@ mod tests {
     }
 
     #[test]
-    fn normalize_project_filter_accepts_none_and_trims() {
-        assert_eq!(normalize_project_filter(None).unwrap(), None);
+    fn normalize_blueprint_filter_accepts_none_and_trims() {
+        assert_eq!(normalize_blueprint_filter(None).unwrap(), None);
         assert_eq!(
-            normalize_project_filter(Some("  demo-project  ")).unwrap(),
+            normalize_blueprint_filter(Some("  demo-project  ")).unwrap(),
             Some("demo-project".to_string())
         );
     }
 
     #[test]
-    fn normalize_project_filter_rejects_empty_value() {
-        let err = normalize_project_filter(Some("   ")).unwrap_err();
+    fn normalize_blueprint_filter_rejects_empty_value() {
+        let err = normalize_blueprint_filter(Some("   ")).unwrap_err();
         assert_eq!(err.code(), codes::INVALID_ARGUMENT);
     }
 }

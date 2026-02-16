@@ -113,10 +113,10 @@ mod tests {
         let err = AppError::with_message(
             AppErrorKind::Conflict,
             codes::CONFLICT,
-            "project already exists",
+            "blueprint already exists",
         );
-        assert_eq!(err.message(), "project already exists");
-        assert_eq!(format!("{err}"), "project already exists");
+        assert_eq!(err.message(), "blueprint already exists");
+        assert_eq!(format!("{err}"), "blueprint already exists");
     }
 
     #[test]

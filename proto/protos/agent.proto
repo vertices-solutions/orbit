@@ -36,7 +36,7 @@ message StreamEvent {
   }
 }
 
-message SubmitStatus {
+message RunStatus {
   enum Phase {
     PHASE_UNSPECIFIED = 0;
     RESOLVED = 1;
@@ -48,7 +48,7 @@ message SubmitStatus {
   Phase phase = 3;
 }
 
-message SubmitResult {
+message RunResult {
   enum Status {
     STATUS_UNSPECIFIED = 0;
     SUBMITTED = 1;
@@ -59,16 +59,16 @@ message SubmitResult {
   string detail = 3;
 }
 
-// Server->client stream items while submitting a job.
-message SubmitStreamEvent {
+// Server->client stream items while running a job.
+message RunStreamEvent {
   oneof event {
     bytes stdout = 1; // Chunk from STDOUT
     bytes stderr = 2; // Chunk from STDERR
     int32 exit_code = 3; // Exit code (emitted once when known)
     MfaPrompt mfa = 4; // MFA prompt round
     string error = 5; // Fatal error (connection/auth/exec)
-    SubmitStatus submit_status = 6; // Submit progress updates
-    SubmitResult submit_result = 7; // Submit final status
+    RunStatus run_status = 6; // Run progress updates
+    RunResult run_result = 7; // Run final status
   }
 }
 
@@ -137,46 +137,46 @@ message CleanupJobRequest {
   }
 }
 
-message SubmitJobRequestInit {
-  string local_path = 1; // local project path
-  optional string remote_path = 2; // path to where to locate the remote project
+message RunJobRequestInit {
+  string local_path = 1; // local run path
+  optional string remote_path = 2; // path to where to locate the remote run
   string name = 3; // cluster name - should be something easy to remember
   string sbatchscript = 4;
-  repeated SubmitPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
+  repeated RunPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
   bool new_directory = 6; // ignore prior remote dir for this local path
   bool force = 7; // allow reuse of a running remote directory
-  optional string project_name = 8; // project identifier from Orbitfile
+  optional string blueprint_name = 8; // blueprint identifier from Orbitfile
   optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
   optional string template_values_json = 10; // template values JSON map from Orbitfile
 }
 
-message SubmitProjectRequestInit {
-  string project_name = 1; // registered project name
-  string project_tag = 2; // project version tag (name:tag submit)
+message RunBlueprintRequestInit {
+  string blueprint_name = 1; // registered blueprint name
+  string blueprint_tag = 2; // blueprint version tag (name:tag run)
   string name = 3; // cluster name - should be something easy to remember
   string sbatchscript = 4;
-  repeated SubmitPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
+  repeated RunPathFilterRule filters = 5; // ordered include/exclude rules, rsync-style
   bool new_directory = 6; // ignore prior remote dir for this local path
   bool force = 7; // allow reuse of a running remote directory
-  optional string remote_path = 8; // path to where to locate the remote project
+  optional string remote_path = 8; // path to where to locate the remote blueprint
   optional string default_retrieve_path = 9; // default retrieve path from Orbitfile
   optional string template_values_json = 10; // template values JSON map from Orbitfile
 }
 
-enum SubmitPathFilterAction {
-  SUBMIT_PATH_FILTER_ACTION_UNSPECIFIED = 0;
+enum RunPathFilterAction {
+  RUN_PATH_FILTER_ACTION_UNSPECIFIED = 0;
   INCLUDE = 1;
   EXCLUDE = 2;
 }
 
-message SubmitPathFilterRule {
-  SubmitPathFilterAction action = 1;
+message RunPathFilterRule {
+  RunPathFilterAction action = 1;
   string pattern = 2;
 }
 
 message AddClusterInit {
   string name = 1; // memorable cluster name
-  string username = 2; // path to where to locate the remote project
+  string username = 2; // SSH username
   oneof host {
     string hostname = 3; // hostname or IP address
     string ipaddr = 4;
@@ -268,7 +268,7 @@ message ListClustersUnitResponse {
 
 message ListJobsRequest {
   optional string name = 1;
-  optional string project_name = 2;
+  optional string blueprint_name = 2;
 }
 
 message ListClustersResponse {
@@ -335,15 +335,15 @@ message ListJobsUnitResponse {
   string local_path = 8; // Local directory used for submission
   string remote_path = 9; // Remote directory used for submission
   optional string scheduler_state = 10; // Scheduler state when known (PENDING, RUNNING)
-  optional string project_name = 11; // project identifier from Orbitfile at submit time
-  optional string default_retrieve_path = 12; // default retrieve path stored at submit time
+  optional string blueprint_name = 11; // blueprint identifier from Orbitfile at run time
+  optional string default_retrieve_path = 12; // default retrieve path stored at run time
 }
 
 message ListJobsResponse {
   repeated ListJobsUnitResponse jobs = 1;
 }
 
-message ProjectRecord {
+message BlueprintRecord {
   string name = 1;
   string path = 2;
   string created_at = 3;
@@ -361,59 +361,59 @@ message ProjectRecord {
   optional string tarball_hash_function = 15;
 }
 
-message BuildProjectRequest {
-  string path = 1; // project root to package
+message BuildBlueprintRequest {
+  string path = 1; // blueprint root to package
   bool package_git = 2; // include .git in tarball
   reserved 3;
 }
 
-message BuildProjectResponse {
-  ProjectRecord project = 1;
+message BuildBlueprintResponse {
+  BlueprintRecord blueprint = 1;
 }
 
-message UpsertProjectRequest {
+message UpsertBlueprintRequest {
   string name = 1;
   string path = 2;
 }
 
-message UpsertProjectResponse {
-  ProjectRecord project = 1;
+message UpsertBlueprintResponse {
+  BlueprintRecord blueprint = 1;
 }
 
-message GetProjectRequest {
+message GetBlueprintRequest {
   string name = 1;
 }
 
-message GetProjectResponse {
-  ProjectRecord project = 1;
+message GetBlueprintResponse {
+  BlueprintRecord blueprint = 1;
 }
 
-message ListProjectsRequest {}
+message ListBlueprintsRequest {}
 
-message ListProjectsResponse {
-  repeated ProjectRecord projects = 1;
+message ListBlueprintsResponse {
+  repeated BlueprintRecord blueprints = 1;
 }
 
-message DeleteProjectRequest {
+message DeleteBlueprintRequest {
   string name = 1;
 }
 
-message DeleteProjectResponse {
+message DeleteBlueprintResponse {
   bool deleted = 1;
 }
 
 // Client -> Server
-message SubmitJobRequest {
+message RunJobRequest {
   oneof msg {
-    SubmitJobRequestInit init = 1; // Initial file path submission
+    RunJobRequestInit init = 1; // Initial file path submission
     MfaAnswer mfa = 2;
   }
 }
 
 // Client -> Server
-message SubmitProjectRequest {
+message RunBlueprintRequest {
   oneof msg {
-    SubmitProjectRequestInit init = 1; // Initial project submission
+    RunBlueprintRequestInit init = 1; // Initial blueprint submission
     MfaAnswer mfa = 2;
   }
 }
@@ -443,8 +443,8 @@ service Agent {
   rpc JobLogs(stream JobLogsRequest) returns (stream StreamEvent);
   rpc CancelJob(stream CancelJobRequest) returns (stream StreamEvent);
   rpc CleanupJob(stream CleanupJobRequest) returns (stream StreamEvent);
-  rpc SubmitJob(stream SubmitJobRequest) returns (stream SubmitStreamEvent);
-  rpc SubmitProject(stream SubmitProjectRequest) returns (stream SubmitStreamEvent);
+  rpc RunJob(stream RunJobRequest) returns (stream RunStreamEvent);
+  rpc RunBlueprint(stream RunBlueprintRequest) returns (stream RunStreamEvent);
   rpc AddCluster(stream AddClusterRequest) returns (stream StreamEvent);
   rpc ResolveHomeDir(stream ResolveHomeDirRequest) returns (stream StreamEvent);
   rpc ListClusters(ListClustersRequest) returns (ListClustersResponse);
@@ -453,9 +453,9 @@ service Agent {
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
-  rpc UpsertProject(UpsertProjectRequest) returns (UpsertProjectResponse);
-  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
-  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
-  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
-  rpc BuildProject(BuildProjectRequest) returns (BuildProjectResponse);
+  rpc UpsertBlueprint(UpsertBlueprintRequest) returns (UpsertBlueprintResponse);
+  rpc GetBlueprint(GetBlueprintRequest) returns (GetBlueprintResponse);
+  rpc ListBlueprints(ListBlueprintsRequest) returns (ListBlueprintsResponse);
+  rpc DeleteBlueprint(DeleteBlueprintRequest) returns (DeleteBlueprintResponse);
+  rpc BuildBlueprint(BuildBlueprintRequest) returns (BuildBlueprintResponse);
 }

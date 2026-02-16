@@ -492,7 +492,7 @@ fn resolve_templated_files(
         let relative = PathBuf::from(trimmed);
         if relative.is_absolute() {
             return Err(invalid_argument(format!(
-                "template file '{trimmed}' must be relative to the project root"
+                "template file '{trimmed}' must be relative to the blueprint root"
             )));
         }
         let abs = project_root.join(&relative);
@@ -504,7 +504,7 @@ fn resolve_templated_files(
         }
         let rel = abs.strip_prefix(submit_root).map_err(|_| {
             invalid_argument(format!(
-                "template file '{}' is outside the submit root '{}'",
+                "template file '{}' is outside the run root '{}'",
                 abs.display(),
                 submit_root.display()
             ))

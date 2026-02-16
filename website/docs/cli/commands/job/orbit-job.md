@@ -1,9 +1,9 @@
 ---
 title: "orbit job"
-description: "Operations on jobs: submit job, inspect its status, and retrieve its outputs and results"
+description: "Operations on jobs: run jobs, inspect status, and retrieve outputs/results"
 ---
 
-Operations on jobs: submit job, inspect its status, and retrieve its outputs and results
+Operations on jobs: run jobs, inspect status, and retrieve outputs/results
 
 Parent command: [`orbit`](../orbit)
 
@@ -16,7 +16,7 @@ Parent command: [`orbit`](../orbit)
 
 ## Subcommands
 
-- [`orbit job submit`](./orbit-job-submit): Submit a project to a cluster
+- [`orbit job run`](./orbit-job-run): Run a local directory on a cluster
 - [`orbit job list`](./orbit-job-list): List jobs
 - [`orbit job get`](./orbit-job-get): Show job details
 - [`orbit job logs`](./orbit-job-logs): Show job logs

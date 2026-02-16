@@ -44,7 +44,7 @@ pub(super) fn job_to_json(item: &ListJobsUnitResponse) -> serde_json::Value {
         "local_path": item.local_path.as_str(),
         "remote_path": item.remote_path.as_str(),
         "name": item.name.as_str(),
-        "project_name": item.project_name.as_deref(),
+        "blueprint_name": item.blueprint_name.as_deref(),
         "default_retrieve_path": item.default_retrieve_path.as_deref(),
         "status": status,
         "is_completed": item.is_completed,
@@ -98,7 +98,7 @@ mod tests {
             scheduler_state: scheduler_state.map(|s| s.to_string()),
             local_path: "/tmp/project".to_string(),
             remote_path: "/remote/project".to_string(),
-            project_name: Some("project-a".to_string()),
+            blueprint_name: Some("project-a".to_string()),
             default_retrieve_path: Some("/tmp/retrieve".to_string()),
         }
     }
@@ -151,7 +151,7 @@ mod tests {
         assert_eq!(json["job_id"].as_i64(), Some(42));
         assert_eq!(json["local_path"], "/tmp/project");
         assert_eq!(json["remote_path"], "/remote/project");
-        assert_eq!(json["project_name"], "project-a");
+        assert_eq!(json["blueprint_name"], "project-a");
         assert_eq!(json["default_retrieve_path"], "/tmp/retrieve");
         assert_eq!(json["status"], "queued");
         assert_eq!(json["is_completed"], false);
@@ -164,7 +164,7 @@ mod tests {
     #[test]
     fn job_to_json_maps_completed_job_optional_fields() {
         let mut job = sample_job(true, Some("COMPLETED"), None);
-        job.project_name = None;
+        job.blueprint_name = None;
         job.default_retrieve_path = None;
         job.scheduler_id = None;
 
@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(json["status"], "completed");
         assert_eq!(json["terminal_state"], "COMPLETED");
         assert!(json["scheduler_state"].is_null());
-        assert!(json["project_name"].is_null());
+        assert!(json["blueprint_name"].is_null());
         assert!(json["default_retrieve_path"].is_null());
         assert_eq!(json["finished_at"], "2024-01-01T01:00:00Z");
         assert!(json["scheduler_id"].is_null());

@@ -5,7 +5,7 @@
 use anyhow::Result;
 use anyhow::anyhow;
 #[cfg(test)]
-use proto::{MfaAnswer, SubmitStreamEvent};
+use proto::{MfaAnswer, RunStreamEvent};
 use russh::client::Config;
 use russh::keys::known_hosts::{learn_known_hosts, learn_known_hosts_path};
 use std::net::SocketAddr;
@@ -138,7 +138,7 @@ fn verify_server_key(
 pub(crate) struct SessionManagerTestHooks {
     ensure_connected: Arc<
         dyn Fn(
-                &mpsc::Sender<Result<SubmitStreamEvent, tonic::Status>>,
+                &mpsc::Sender<Result<RunStreamEvent, tonic::Status>>,
                 &mut mpsc::Receiver<MfaAnswer>,
             ) -> BoxFuture<'static, Result<()>>
             + Send

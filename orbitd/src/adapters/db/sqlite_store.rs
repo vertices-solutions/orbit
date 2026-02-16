@@ -7,8 +7,10 @@ use async_trait::async_trait;
 
 use crate::adapters::db::{HostStore, HostStoreError};
 use crate::app::errors::{AppError, AppErrorKind, AppResult, codes};
-use crate::app::ports::{ClusterStorePort, JobStorePort, ProjectStorePort};
-use crate::app::types::{HostRecord, JobRecord, NewHost, NewJob, NewProjectBuild, ProjectRecord};
+use crate::app::ports::{BlueprintStorePort, ClusterStorePort, JobStorePort};
+use crate::app::types::{
+    BlueprintRecord, HostRecord, JobRecord, NewBlueprintBuild, NewHost, NewJob,
+};
 
 #[derive(Clone)]
 pub struct SqliteStoreAdapter {
@@ -29,11 +31,11 @@ fn map_store_error(err: HostStoreError) -> AppError {
     match err {
         HostStoreError::EmptyName
         | HostStoreError::InvalidAddress
-        | HostStoreError::EmptyProjectName
-        | HostStoreError::EmptyProjectPath => {
+        | HostStoreError::EmptyBlueprintName
+        | HostStoreError::EmptyBlueprintPath => {
             AppError::new(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT)
         }
-        HostStoreError::ProjectPathConflict {
+        HostStoreError::BlueprintPathConflict {
             name,
             existing_path,
             new_path,
@@ -41,7 +43,7 @@ fn map_store_error(err: HostStoreError) -> AppError {
             AppErrorKind::Conflict,
             codes::CONFLICT,
             format!(
-                "project '{}' is already registered at '{}'; cannot register '{}'",
+                "blueprint '{}' is already registered at '{}'; cannot register '{}'",
                 name, existing_path, new_path
             ),
         ),
@@ -250,15 +252,15 @@ impl JobStorePort for SqliteStoreAdapter {
 }
 
 #[async_trait]
-impl ProjectStorePort for SqliteStoreAdapter {
+impl BlueprintStorePort for SqliteStoreAdapter {
     #[tracing::instrument(
         level = "debug",
         skip(self, name, path),
-        fields(op = "upsert_project", table = "projects")
+        fields(op = "upsert_blueprint", table = "blueprints")
     )]
-    async fn upsert_project(&self, name: &str, path: &str) -> AppResult<ProjectRecord> {
+    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<BlueprintRecord> {
         self.store
-            .upsert_project(name, path)
+            .upsert_blueprint(name, path)
             .await
             .map_err(map_store_error)
     }
@@ -266,11 +268,14 @@ impl ProjectStorePort for SqliteStoreAdapter {
     #[tracing::instrument(
         level = "debug",
         skip(self, build),
-        fields(op = "upsert_project_build", table = "projects")
+        fields(op = "upsert_blueprint_build", table = "blueprints")
     )]
-    async fn upsert_project_build(&self, build: &NewProjectBuild) -> AppResult<ProjectRecord> {
+    async fn upsert_blueprint_build(
+        &self,
+        build: &NewBlueprintBuild,
+    ) -> AppResult<BlueprintRecord> {
         self.store
-            .upsert_project_build(build)
+            .upsert_blueprint_build(build)
             .await
             .map_err(map_store_error)
     }
@@ -278,26 +283,26 @@ impl ProjectStorePort for SqliteStoreAdapter {
     #[tracing::instrument(
         level = "debug",
         skip(self, name),
-        fields(op = "get_project_by_name", table = "projects")
+        fields(op = "get_blueprint_by_name", table = "blueprints")
     )]
-    async fn get_project_by_name(&self, name: &str) -> AppResult<Option<ProjectRecord>> {
+    async fn get_blueprint_by_name(&self, name: &str) -> AppResult<Option<BlueprintRecord>> {
         self.store
-            .get_project_by_name(name)
+            .get_blueprint_by_name(name)
             .await
             .map_err(map_store_error)
     }
 
     #[tracing::instrument(
         level = "debug",
-        skip(self, project_name),
-        fields(op = "get_latest_project_build", table = "projects")
+        skip(self, blueprint_name),
+        fields(op = "get_latest_blueprint_build", table = "blueprints")
     )]
-    async fn get_latest_project_build(
+    async fn get_latest_blueprint_build(
         &self,
-        project_name: &str,
-    ) -> AppResult<Option<ProjectRecord>> {
+        blueprint_name: &str,
+    ) -> AppResult<Option<BlueprintRecord>> {
         self.store
-            .get_latest_project_build(project_name)
+            .get_latest_blueprint_build(blueprint_name)
             .await
             .map_err(map_store_error)
     }
@@ -305,20 +310,20 @@ impl ProjectStorePort for SqliteStoreAdapter {
     #[tracing::instrument(
         level = "debug",
         skip(self),
-        fields(op = "list_projects", table = "projects")
+        fields(op = "list_blueprints", table = "blueprints")
     )]
-    async fn list_projects(&self) -> AppResult<Vec<ProjectRecord>> {
-        self.store.list_projects().await.map_err(map_store_error)
+    async fn list_blueprints(&self) -> AppResult<Vec<BlueprintRecord>> {
+        self.store.list_blueprints().await.map_err(map_store_error)
     }
 
     #[tracing::instrument(
         level = "debug",
         skip(self, name),
-        fields(op = "delete_project_by_name", table = "projects")
+        fields(op = "delete_blueprint_by_name", table = "blueprints")
     )]
-    async fn delete_project_by_name(&self, name: &str) -> AppResult<usize> {
+    async fn delete_blueprint_by_name(&self, name: &str) -> AppResult<usize> {
         self.store
-            .delete_project_by_name(name)
+            .delete_blueprint_by_name(name)
             .await
             .map_err(map_store_error)
     }
@@ -326,27 +331,27 @@ impl ProjectStorePort for SqliteStoreAdapter {
     #[tracing::instrument(
         level = "debug",
         skip(self, name),
-        fields(op = "delete_projects_by_base_name", table = "projects")
+        fields(op = "delete_blueprints_by_base_name", table = "blueprints")
     )]
-    async fn delete_projects_by_base_name(&self, name: &str) -> AppResult<usize> {
+    async fn delete_blueprints_by_base_name(&self, name: &str) -> AppResult<usize> {
         self.store
-            .delete_projects_by_base_name(name)
+            .delete_blueprints_by_base_name(name)
             .await
             .map_err(map_store_error)
     }
 
     #[tracing::instrument(
         level = "debug",
-        skip(self, project_name),
-        fields(op = "max_build_number_for_date", table = "projects")
+        skip(self, blueprint_name),
+        fields(op = "max_build_number_for_date", table = "blueprints")
     )]
     async fn max_build_number_for_date(
         &self,
-        project_name: &str,
+        blueprint_name: &str,
         date_prefix: &str,
     ) -> AppResult<Option<u16>> {
         self.store
-            .max_build_number_for_date(project_name, date_prefix)
+            .max_build_number_for_date(blueprint_name, date_prefix)
             .await
             .map_err(map_store_error)
     }

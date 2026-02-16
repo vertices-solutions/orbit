@@ -293,7 +293,7 @@ fn is_slurm_state_terminal(state: &str) -> bool {
     )
 }
 
-// returns a command to be executed on cluster to submit the job
+// Returns a command to execute on the cluster to run the job.
 pub fn path_to_sbatch_command(p: &str, remote_base_path: Option<&str>) -> String {
     let escaped_script = sh_escape(p);
     if let Some(chdir_path) = remote_base_path {

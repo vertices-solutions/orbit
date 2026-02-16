@@ -1,6 +1,6 @@
 ---
 title: Quickstart
-description: Install Orbit, submit your first job, initialize your first project, and submit it in under 5 minutes.
+description: Install Orbit, run your first job, initialize your first blueprint, and run it in under 5 minutes.
 ---
 
 This guide will get you started with Orbit in less than 5 minutes.
@@ -9,6 +9,6 @@ This guide will get you started with Orbit in less than 5 minutes.
 - **Main concepts** you need to know to use orbit (~60 seconds)
 - **Install orbit** on MacOS or Linux with Homebrew and start orbitd daemon.
 - **Add a cluster** tog get started using it with Orbit
-- **Clone an example project** 
-- **Submit an example project to your cluster**
+- **Clone an example blueprint**
+- **Run an example blueprint on your cluster**
 - **See job's logs, retrieve its results**
