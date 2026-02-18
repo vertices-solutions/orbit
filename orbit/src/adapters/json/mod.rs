@@ -287,19 +287,27 @@ fn stream_capture_json(capture: &StreamCapture) -> Value {
 fn submit_capture_json(
     capture: &RunCapture,
     cluster: &str,
-    local_path: &str,
+    local_path: Option<&str>,
+    blueprint: Option<&str>,
     sbatchscript: &str,
 ) -> Value {
-    json!({
+    let mut value = json!({
         "job_id": capture.job_id,
         "remote_path": capture.remote_path,
-        "local_path": local_path,
         "cluster": cluster,
         "sbatchscript": sbatchscript,
         "status": "submitted",
         "stdout": bytes_to_string(&capture.stdout),
         "stderr": bytes_to_string(&capture.stderr),
-    })
+    });
+    // It's either local path or blueprint
+    if let Some(path) = local_path {
+        value["local_path"] = json!(path);
+    }
+    if let Some(name) = blueprint {
+        value["blueprint"] = json!(name);
+    }
+    value
 }
 
 fn result_to_json(result: &CommandResult) -> Value {
@@ -314,9 +322,16 @@ fn result_to_json(result: &CommandResult) -> Value {
         CommandResult::JobSubmit {
             cluster,
             local_path,
+            blueprint,
             sbatchscript,
             capture,
-        } => submit_capture_json(capture, cluster, local_path, sbatchscript),
+        } => submit_capture_json(
+            capture,
+            cluster,
+            local_path.as_deref(),
+            blueprint.as_deref(),
+            sbatchscript,
+        ),
         CommandResult::JobLogs { capture } => stream_capture_json(capture),
         CommandResult::JobCancel { job_id, capture } => json!({
             "job_id": job_id,
@@ -427,7 +442,6 @@ fn result_to_json(result: &CommandResult) -> Value {
         CommandResult::BlueprintBuild { blueprint } => json!({
             "name": blueprint.name,
             "versionTag": blueprint.version_tag,
-            "path": blueprint.path,
             "tarballHash": blueprint.tarball_hash,
             "tarballHashFunction": blueprint.tarball_hash_function,
             "toolVersion": blueprint.tool_version,
@@ -447,7 +461,6 @@ fn result_to_json(result: &CommandResult) -> Value {
                 .map(|blueprint| {
                     json!({
                         "name": blueprint.name,
-                        "path": blueprint.path,
                         "latest_tag": blueprint.latest_tag,
                         "tags": blueprint.tags,
                         "updated_at": blueprint.updated_at,

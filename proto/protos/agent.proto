@@ -366,7 +366,7 @@ message ListJobsResponse {
 
 message BlueprintRecord {
   string name = 1;
-  string path = 2;
+  reserved 2;
   string created_at = 3;
   string updated_at = 4;
   optional string version_tag = 5;
@@ -394,7 +394,7 @@ message BuildBlueprintResponse {
 
 message UpsertBlueprintRequest {
   string name = 1;
-  string path = 2;
+  reserved 2;
 }
 
 message UpsertBlueprintResponse {

@@ -81,7 +81,7 @@ pub trait OrbitdPort: Send + Sync {
     ) -> AppResult<Vec<ListJobsUnitResponse>>;
     async fn list_partitions(&self, name: &str) -> AppResult<Vec<String>>;
     async fn list_accounts(&self, name: &str) -> AppResult<Vec<String>>;
-    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<proto::BlueprintRecord>;
+    async fn upsert_blueprint(&self, name: &str) -> AppResult<proto::BlueprintRecord>;
     async fn get_blueprint(&self, name: &str) -> AppResult<proto::BlueprintRecord>;
     async fn list_blueprints(&self) -> AppResult<Vec<proto::BlueprintRecord>>;
     async fn delete_blueprint(&self, name: &str) -> AppResult<bool>;

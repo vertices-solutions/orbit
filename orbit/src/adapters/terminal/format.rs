@@ -313,10 +313,15 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
         .unwrap_or_else(|| "-".to_string());
     let completed_str = job_status(item);
     let blueprint = item.blueprint_name.as_deref().unwrap_or("none");
+    let local_path = if item.local_path.trim().is_empty() {
+        "-"
+    } else {
+        item.local_path.as_str()
+    };
     format!(
         "job_id: {}\nlocal_path: {}\nremote_path: {}\nname: {}\nblueprint: {}\nstatus: {}\nterminal_state: {}\ncreated: {}\nfinished: {}\nscheduler_id: {}\n",
         item.job_id,
-        item.local_path.as_str(),
+        local_path,
         item.remote_path.as_str(),
         item.name,
         blueprint,
@@ -329,8 +334,8 @@ pub(super) fn format_job_details(item: &ListJobsUnitResponse) -> String {
 }
 
 pub(super) fn format_blueprints_table(blueprints: &[BlueprintListItem]) -> String {
-    let headers = ["name", "latest tag", "path", "updated"];
-    let mut rows: Vec<(String, String, String, String)> = Vec::new();
+    let headers = ["name", "latest tag", "updated"];
+    let mut rows: Vec<(String, String, String)> = Vec::new();
     for blueprint in blueprints {
         rows.push((
             blueprint.name.clone(),
@@ -338,47 +343,40 @@ pub(super) fn format_blueprints_table(blueprints: &[BlueprintListItem]) -> Strin
                 .latest_tag
                 .clone()
                 .unwrap_or_else(|| "-".to_string()),
-            blueprint.path.clone(),
             blueprint.updated_at.clone(),
         ));
     }
 
-    let mut widths: [usize; 4] = [
+    let mut widths: [usize; 3] = [
         str_width(headers[0]),
         str_width(headers[1]),
         str_width(headers[2]),
-        str_width(headers[3]),
     ];
     for row in &rows {
         widths[0] = widths[0].max(str_width(&row.0));
         widths[1] = widths[1].max(str_width(&row.1));
         widths[2] = widths[2].max(str_width(&row.2));
-        widths[3] = widths[3].max(str_width(&row.3));
     }
 
     let mut output = String::new();
     output.push_str(&format!(
-        "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
+        "{:<w0$}  {:<w1$}  {:<w2$}\n",
         headers[0],
         headers[1],
         headers[2],
-        headers[3],
         w0 = widths[0],
         w1 = widths[1],
         w2 = widths[2],
-        w3 = widths[3],
     ));
     for row in rows {
         output.push_str(&format!(
-            "{:<w0$}  {:<w1$}  {:<w2$}  {:<w3$}\n",
+            "{:<w0$}  {:<w1$}  {:<w2$}\n",
             row.0,
             row.1,
             row.2,
-            row.3,
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
-            w3 = widths[3],
         ));
     }
     output

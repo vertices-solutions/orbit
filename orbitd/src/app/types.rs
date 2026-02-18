@@ -134,7 +134,7 @@ pub struct NewJob {
     pub scheduler_id: Option<i64>,
     /// Host row id on which the job is submitted.
     pub host_id: i64,
-    pub local_path: String,
+    pub local_path: Option<String>,
     pub remote_path: String,
     pub stdout_path: String,
     pub stderr_path: Option<String>,
@@ -167,7 +167,6 @@ pub struct JobRecord {
 #[cfg_attr(feature = "serde", derive(Serialize, Deserialize))]
 pub struct BlueprintRecord {
     pub name: String,
-    pub path: String,
     pub created_at: String,
     pub updated_at: String,
     pub version_tag: Option<String>,
@@ -185,7 +184,6 @@ pub struct BlueprintRecord {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewBlueprintBuild {
     pub name: String,
-    pub path: String,
     pub tarball_hash: String,
     pub tarball_hash_function: String,
     pub tool_version: String,

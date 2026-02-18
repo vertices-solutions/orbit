@@ -29,14 +29,12 @@ pub enum HostStoreError {
     EmptyName,
     #[error("empty blueprint name")]
     EmptyBlueprintName,
-    #[error("empty blueprint path")]
-    EmptyBlueprintPath,
-    #[error("blueprint '{name}' already exists with path '{existing_path}'")]
-    BlueprintPathConflict {
-        name: String,
-        existing_path: String,
-        new_path: String,
-    },
+    #[error("empty blueprint tarball hash")]
+    EmptyBlueprintTarballHash,
+    #[error("empty blueprint tarball hash function")]
+    EmptyBlueprintTarballHashFunction,
+    #[error("empty blueprint tool version")]
+    EmptyBlueprintToolVersion,
     #[error("host not found: {0}")]
     HostNotFound(String),
 }
@@ -224,7 +222,7 @@ impl HostStore {
             id integer primary key autoincrement,
             scheduler_id integer,
             host_id integer not null references hosts(id) on delete cascade,
-            local_path TEXT NOT NULL,
+            local_path TEXT,
             remote_path TEXT NOT NULL,
             stdout_path TEXT NOT NULL,
             stderr_path TEXT,
@@ -235,25 +233,16 @@ impl HostStore {
             created_at text not null default (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
             completed_at text,
             terminal_state text,
-            scheduler_state text);
+            scheduler_state text,
+            check (local_path is not null or blueprint_name is not null));
             CREATE INDEX IF NOT EXISTS idx_jobs_host_id ON jobs(host_id);
             CREATE INDEX IF NOT EXISTS idx_jobs_scheduler_id_host_id ON jobs(scheduler_id,host_id);
+            
     "#,
         )
         .execute(&self.pool)
         .await?;
 
-        let columns: Vec<String> = sqlx::query("PRAGMA table_info(jobs)")
-            .fetch_all(&self.pool)
-            .await?
-            .into_iter()
-            .filter_map(|row| row.try_get::<String, _>("name").ok())
-            .collect();
-        if !columns.iter().any(|name| name == "template_values") {
-            sqlx::query("ALTER TABLE jobs ADD COLUMN template_values TEXT")
-                .execute(&self.pool)
-                .await?;
-        }
         Ok(())
     }
 
@@ -263,7 +252,6 @@ impl HostStore {
             r#"
             CREATE TABLE IF NOT EXISTS blueprints (
               name TEXT PRIMARY KEY,
-              path TEXT NOT NULL,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               tarball_hash TEXT,
@@ -281,6 +269,61 @@ impl HostStore {
         )
         .execute(&self.pool)
         .await?;
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(blueprints)")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect();
+        if columns.iter().any(|column| column == "path") {
+            let mut tx = self.pool.begin().await?;
+            sqlx::query(
+                r#"
+                CREATE TABLE blueprints_new (
+                  name TEXT PRIMARY KEY,
+                  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                  updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+                  tarball_hash TEXT,
+                  tarball_hash_function TEXT NOT NULL DEFAULT 'blake3',
+                  tool_version TEXT,
+                  template_config_json TEXT,
+                  submit_sbatch_script TEXT,
+                  sbatch_scripts TEXT,
+                  default_retrieve_path TEXT,
+                  sync_include TEXT,
+                  sync_exclude TEXT
+                )
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(
+                r#"
+                INSERT INTO blueprints_new(
+                  name, created_at, updated_at, tarball_hash, tarball_hash_function,
+                  tool_version, template_config_json, submit_sbatch_script, sbatch_scripts,
+                  default_retrieve_path, sync_include, sync_exclude
+                )
+                SELECT
+                  name, created_at, updated_at, tarball_hash, COALESCE(tarball_hash_function, 'blake3'),
+                  tool_version, template_config_json, submit_sbatch_script, sbatch_scripts,
+                  default_retrieve_path, sync_include, sync_exclude
+                FROM blueprints
+                "#,
+            )
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query("DROP TABLE blueprints")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("ALTER TABLE blueprints_new RENAME TO blueprints")
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("CREATE INDEX idx_blueprints_updated_at ON blueprints(updated_at DESC)")
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+        }
         Ok(())
     }
     /// Insert a new host. Returns the new row id.
@@ -523,53 +566,25 @@ impl HostStore {
         Ok(())
     }
 
-    pub async fn upsert_blueprint(&self, name: &str, path: &str) -> Result<BlueprintRecord> {
+    pub async fn upsert_blueprint(&self, name: &str) -> Result<BlueprintRecord> {
         let trimmed_name = name.trim();
-        let trimmed_path = path.trim();
         if trimmed_name.is_empty() {
             return Err(HostStoreError::EmptyBlueprintName);
-        }
-        if trimmed_path.is_empty() {
-            return Err(HostStoreError::EmptyBlueprintPath);
-        }
-
-        if let Some(existing) = self.get_blueprint_by_name(trimmed_name).await? {
-            if existing.path != trimmed_path {
-                return Err(HostStoreError::BlueprintPathConflict {
-                    name: trimmed_name.to_string(),
-                    existing_path: existing.path,
-                    new_path: trimmed_path.to_string(),
-                });
-            }
-            let row = sqlx::query(
-                r#"
-                UPDATE blueprints
-                   SET updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-                 WHERE name = ?1
-                 RETURNING name, path, created_at, updated_at,
-                           tarball_hash, tarball_hash_function, tool_version, template_config_json,
-                           submit_sbatch_script, sbatch_scripts,
-                           default_retrieve_path, sync_include, sync_exclude
-                "#,
-            )
-            .bind(trimmed_name)
-            .fetch_one(&self.pool)
-            .await?;
-            return Ok(row_to_blueprint(row));
         }
 
         let row = sqlx::query(
             r#"
-            INSERT INTO blueprints(name, path)
-            VALUES (?1, ?2)
-            RETURNING name, path, created_at, updated_at,
+            INSERT INTO blueprints(name)
+            VALUES (?1)
+            ON CONFLICT(name) DO UPDATE SET
+              updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+            RETURNING name, created_at, updated_at,
                       tarball_hash, tarball_hash_function, tool_version, template_config_json,
                       submit_sbatch_script, sbatch_scripts,
                       default_retrieve_path, sync_include, sync_exclude
             "#,
         )
         .bind(trimmed_name)
-        .bind(trimmed_path)
         .fetch_one(&self.pool)
         .await?;
         Ok(row_to_blueprint(row))
@@ -580,21 +595,17 @@ impl HostStore {
         build: &NewBlueprintBuild,
     ) -> Result<BlueprintRecord> {
         let trimmed_name = build.name.trim();
-        let trimmed_path = build.path.trim();
         if trimmed_name.is_empty() {
             return Err(HostStoreError::EmptyBlueprintName);
         }
-        if trimmed_path.is_empty() {
-            return Err(HostStoreError::EmptyBlueprintPath);
-        }
         if build.tarball_hash.trim().is_empty() {
-            return Err(HostStoreError::EmptyBlueprintPath);
+            return Err(HostStoreError::EmptyBlueprintTarballHash);
         }
         if build.tarball_hash_function.trim().is_empty() {
-            return Err(HostStoreError::EmptyBlueprintPath);
+            return Err(HostStoreError::EmptyBlueprintTarballHashFunction);
         }
         if build.tool_version.trim().is_empty() {
-            return Err(HostStoreError::EmptyBlueprintPath);
+            return Err(HostStoreError::EmptyBlueprintToolVersion);
         }
 
         let sbatch_scripts = serialize_string_list(&build.sbatch_scripts)?;
@@ -605,7 +616,6 @@ impl HostStore {
             r#"
             INSERT INTO blueprints(
               name,
-              path,
               tarball_hash,
               tarball_hash_function,
               tool_version,
@@ -615,9 +625,8 @@ impl HostStore {
               default_retrieve_path,
               sync_include,
               sync_exclude
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
             ON CONFLICT(name) DO UPDATE SET
-              path = excluded.path,
               tarball_hash = excluded.tarball_hash,
               tarball_hash_function = excluded.tarball_hash_function,
               tool_version = excluded.tool_version,
@@ -628,14 +637,13 @@ impl HostStore {
               sync_include = excluded.sync_include,
               sync_exclude = excluded.sync_exclude,
               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-            RETURNING name, path, created_at, updated_at,
+            RETURNING name, created_at, updated_at,
                       tarball_hash, tarball_hash_function, tool_version, template_config_json,
                       submit_sbatch_script, sbatch_scripts,
                       default_retrieve_path, sync_include, sync_exclude
             "#,
         )
         .bind(trimmed_name)
-        .bind(trimmed_path)
         .bind(build.tarball_hash.trim())
         .bind(build.tarball_hash_function.trim())
         .bind(build.tool_version.trim())
@@ -654,7 +662,7 @@ impl HostStore {
     pub async fn get_blueprint_by_name(&self, name: &str) -> Result<Option<BlueprintRecord>> {
         let row = sqlx::query(
             r#"
-            SELECT name, path, created_at, updated_at,
+            SELECT name, created_at, updated_at,
                    tarball_hash, tarball_hash_function, tool_version, template_config_json,
                    submit_sbatch_script, sbatch_scripts,
                    default_retrieve_path, sync_include, sync_exclude
@@ -677,7 +685,7 @@ impl HostStore {
         let latest_name = format!("{blueprint_name}:latest");
         let row = sqlx::query(
             r#"
-            SELECT name, path, created_at, updated_at,
+            SELECT name, created_at, updated_at,
                    tarball_hash, tarball_hash_function, tool_version, template_config_json,
                    submit_sbatch_script, sbatch_scripts,
                    default_retrieve_path, sync_include, sync_exclude
@@ -698,7 +706,7 @@ impl HostStore {
     pub async fn list_blueprints(&self) -> Result<Vec<BlueprintRecord>> {
         let rows = sqlx::query(
             r#"
-            SELECT name, path, created_at, updated_at,
+            SELECT name, created_at, updated_at,
                    tarball_hash, tarball_hash_function, tool_version, template_config_json,
                    submit_sbatch_script, sbatch_scripts,
                    default_retrieve_path, sync_include, sync_exclude
@@ -1310,7 +1318,6 @@ fn row_to_blueprint(row: sqlx::sqlite::SqliteRow) -> BlueprintRecord {
     );
     BlueprintRecord {
         name,
-        path: row.try_get("path").unwrap(),
         created_at: row.try_get("created_at").unwrap(),
         updated_at: row.try_get("updated_at").unwrap(),
         version_tag,
@@ -1336,7 +1343,11 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
         is_completed: row.try_get("is_completed").unwrap(),
         terminal_state: row.try_get("terminal_state").unwrap(),
         scheduler_state: row.try_get("scheduler_state").unwrap(),
-        local_path: row.try_get("local_path").unwrap(),
+        local_path: row
+            .try_get::<Option<String>, _>("local_path")
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
         remote_path: row.try_get("remote_path").unwrap(),
         stdout_path: row.try_get("stdout_path").unwrap(),
         stderr_path: row.try_get("stderr_path").ok().flatten(),
@@ -1640,7 +1651,7 @@ mod tests {
         let job = NewJob {
             scheduler_id: Some(42),
             host_id: host_row.id,
-            local_path: "/tmp/local".into(),
+            local_path: Some("/tmp/local".into()),
             remote_path: "/remote/run".into(),
             stdout_path: "/remote/run/slurm-42.out".into(),
             stderr_path: Some("/remote/run/slurm-42.out".into()),
@@ -1674,7 +1685,7 @@ mod tests {
         let job = NewJob {
             scheduler_id: Some(77),
             host_id: host_row.id,
-            local_path: "/tmp/local".into(),
+            local_path: Some("/tmp/local".into()),
             remote_path: "/remote/run".into(),
             stdout_path: "/remote/run/slurm-77.out".into(),
             stderr_path: None,
@@ -1701,7 +1712,7 @@ mod tests {
         let job1 = NewJob {
             scheduler_id: Some(40),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run1".into(),
             stdout_path: "/remote/run1/slurm-40.out".into(),
             stderr_path: None,
@@ -1712,7 +1723,7 @@ mod tests {
         let job2 = NewJob {
             scheduler_id: Some(41),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run2".into(),
             stdout_path: "/remote/run2/slurm-41.out".into(),
             stderr_path: None,
@@ -1746,7 +1757,7 @@ mod tests {
         let job1 = NewJob {
             scheduler_id: Some(50),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run1".into(),
             stdout_path: "/remote/run1/slurm-50.out".into(),
             stderr_path: None,
@@ -1757,7 +1768,7 @@ mod tests {
         let job2 = NewJob {
             scheduler_id: Some(51),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run2".into(),
             stdout_path: "/remote/run2/slurm-51.out".into(),
             stderr_path: None,
@@ -1768,7 +1779,7 @@ mod tests {
         let job3 = NewJob {
             scheduler_id: Some(52),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run3".into(),
             stdout_path: "/remote/run3/slurm-52.out".into(),
             stderr_path: None,
@@ -1779,7 +1790,7 @@ mod tests {
         let job4 = NewJob {
             scheduler_id: Some(53),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run4".into(),
             stdout_path: "/remote/run4/slurm-53.out".into(),
             stderr_path: None,
@@ -1828,7 +1839,7 @@ mod tests {
         let job1 = NewJob {
             scheduler_id: Some(60),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run1".into(),
             stdout_path: "/remote/run1/slurm-60.out".into(),
             stderr_path: None,
@@ -1839,7 +1850,7 @@ mod tests {
         let job2 = NewJob {
             scheduler_id: Some(61),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run2".into(),
             stdout_path: "/remote/run2/slurm-61.out".into(),
             stderr_path: None,
@@ -1850,7 +1861,7 @@ mod tests {
         let job3 = NewJob {
             scheduler_id: Some(62),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run3".into(),
             stdout_path: "/remote/run3/slurm-62.out".into(),
             stderr_path: None,
@@ -1861,7 +1872,7 @@ mod tests {
         let job4 = NewJob {
             scheduler_id: Some(63),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run4".into(),
             stdout_path: "/remote/run4/slurm-63.out".into(),
             stderr_path: None,
@@ -1904,7 +1915,7 @@ mod tests {
         let job = NewJob {
             scheduler_id: Some(200),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run".into(),
             stdout_path: "/remote/run/slurm-200.out".into(),
             stderr_path: None,
@@ -1941,7 +1952,7 @@ mod tests {
         let job_none = NewJob {
             scheduler_id: Some(210),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run-none".into(),
             stdout_path: "/remote/run-none/slurm-210.out".into(),
             stderr_path: None,
@@ -1952,7 +1963,7 @@ mod tests {
         let job_a = NewJob {
             scheduler_id: Some(211),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/run-a".into(),
             stdout_path: "/remote/run-a/slurm-211.out".into(),
             stderr_path: None,
@@ -1995,7 +2006,7 @@ mod tests {
         let job_none = NewJob {
             scheduler_id: Some(220),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/bp-none".into(),
             stdout_path: "/remote/bp-none/slurm-220.out".into(),
             stderr_path: None,
@@ -2006,7 +2017,7 @@ mod tests {
         let job_a = NewJob {
             scheduler_id: Some(221),
             host_id: host_row.id,
-            local_path: "/tmp/project".into(),
+            local_path: Some("/tmp/project".into()),
             remote_path: "/remote/bp-a".into(),
             stdout_path: "/remote/bp-a/slurm-221.out".into(),
             stderr_path: None,
@@ -2049,7 +2060,7 @@ mod tests {
         let job = NewJob {
             scheduler_id: Some(42),
             host_id: host_row.id,
-            local_path: "/tmp/local-a".into(),
+            local_path: Some("/tmp/local-a".into()),
             remote_path: "/remote/run-a".into(),
             stdout_path: "/remote/run-a/slurm-42.out".into(),
             stderr_path: Some("/remote/run-a/slurm-42.out".into()),
@@ -2075,7 +2086,7 @@ mod tests {
         let job = NewJob {
             scheduler_id: Some(42),
             host_id: host_row.id,
-            local_path: "/tmp/local-a".into(),
+            local_path: Some("/tmp/local-a".into()),
             remote_path: "/remote/run-a".into(),
             stdout_path: "/remote/run-a/slurm-42.out".into(),
             stderr_path: Some("/remote/run-a/slurm-42.out".into()),
@@ -2103,7 +2114,7 @@ mod tests {
         let job1 = NewJob {
             scheduler_id: Some(101),
             host_id: host_row.id,
-            local_path: "/tmp/local1".into(),
+            local_path: Some("/tmp/local1".into()),
             remote_path: "/remote/run1".into(),
             stdout_path: "/remote/run1/slurm-101.out".into(),
             stderr_path: Some("/remote/run1/slurm-101.out".into()),
@@ -2114,7 +2125,7 @@ mod tests {
         let job2 = NewJob {
             scheduler_id: Some(102),
             host_id: host_row.id,
-            local_path: "/tmp/local2".into(),
+            local_path: Some("/tmp/local2".into()),
             remote_path: "/remote/run2".into(),
             stdout_path: "/remote/run2/slurm-102.out".into(),
             stderr_path: Some("/remote/run2/slurm-102.out".into()),
@@ -2146,7 +2157,7 @@ mod tests {
         let db = HostStore::open_memory().await.unwrap();
 
         let created = db
-            .upsert_blueprint("proj-a", "/tmp/proj-a")
+            .upsert_blueprint("proj-a")
             .await
             .expect("project created");
         assert_eq!(created.name, "proj-a");
@@ -2168,13 +2179,12 @@ mod tests {
     async fn delete_blueprints_by_base_name_removes_all_tags() {
         let db = HostStore::open_memory().await.unwrap();
 
-        db.upsert_blueprint("proj-a", "/tmp/proj-a")
+        db.upsert_blueprint("proj-a")
             .await
             .expect("project created");
 
         let build_a = NewBlueprintBuild {
             name: "proj-a:20250101.001".to_string(),
-            path: "/tmp/proj-a".to_string(),
             tarball_hash: "hash-a".to_string(),
             tarball_hash_function: "blake3".to_string(),
             tool_version: "1.0.0".to_string(),
@@ -2189,7 +2199,6 @@ mod tests {
 
         let build_b = NewBlueprintBuild {
             name: "proj-a:20250101.002".to_string(),
-            path: "/tmp/proj-a".to_string(),
             tarball_hash: "hash-b".to_string(),
             tarball_hash_function: "blake3".to_string(),
             tool_version: "1.0.0".to_string(),

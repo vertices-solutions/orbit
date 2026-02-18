@@ -47,7 +47,6 @@ pub struct BlueprintInitAction {
 #[derive(Debug, Clone)]
 pub struct BlueprintListItem {
     pub name: String,
-    pub path: String,
     pub latest_tag: Option<String>,
     pub tags: Vec<String>,
     pub updated_at: String,
@@ -69,7 +68,8 @@ pub enum CommandResult {
     },
     JobSubmit {
         cluster: String,
-        local_path: String,
+        local_path: Option<String>,
+        blueprint: Option<String>,
         sbatchscript: String,
         capture: RunCapture,
     },

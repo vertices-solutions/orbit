@@ -401,8 +401,8 @@ impl UseCases {
         Ok(())
     }
 
-    pub async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<BlueprintRecord> {
-        let blueprint = self.projects.upsert_blueprint(name, path).await?;
+    pub async fn upsert_blueprint(&self, name: &str) -> AppResult<BlueprintRecord> {
+        let blueprint = self.projects.upsert_blueprint(name).await?;
         self.telemetry.event(
             "project.upserted",
             TelemetryEvent {
@@ -595,7 +595,6 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
 
         let build = NewBlueprintBuild {
             name: blueprint_ref,
-            path: blueprint_root.display().to_string(),
             tarball_hash,
             tarball_hash_function: TARBALL_HASH_FUNCTION_BLAKE3.to_string(),
             tool_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1903,7 +1902,7 @@ cancel them with `job cancel` or pass --force"
         mut cancel_rx: watch::Receiver<bool>,
     ) -> AppResult<()> {
         // Because the majority of logic for blueprints and jobs are reused, both are handled through the single interface right now
-        let mut input = input;
+        let input = input;
         let cluster_name = input.name.clone();
         let blueprint_name = input.blueprint_name.clone();
         let submit_span = tracing::info_span!(
@@ -1962,7 +1961,6 @@ cancel them with `job cancel` or pass --force"
                     .await?
                     .ok_or_else(|| AppError::new(AppErrorKind::InvalidArgument, codes::NOT_FOUND))?
             };
-            input.local_path = blueprint.path.clone();
             let tarball_path = tarball_path_for_blueprint_record(&self.tarballs_dir, &blueprint)?;
             if !tarball_path.is_file() {
                 return Err(AppError::with_message(
@@ -1974,10 +1972,7 @@ cancel them with `job cancel` or pass --force"
             let temp_dir = TempDir::new()
                 .map_err(|err| local_error(format!("failed to create temp dir: {err}")))?;
             project_building::unpack_tarball(&tarball_path, temp_dir.path())?;
-            let expected_root = Path::new(&blueprint.path)
-                .file_name()
-                .and_then(|name| name.to_str());
-            sync_root = project_building::resolve_extracted_root(temp_dir.path(), expected_root)?;
+            sync_root = project_building::resolve_extracted_root(temp_dir.path(), None)?;
             _tarball_guard = Some(temp_dir);
         }
 
@@ -2372,7 +2367,11 @@ cancel them with `job cancel` or pass --force"
         let job = NewJob {
             scheduler_id: Some(scheduler_id),
             host_id: host.id,
-            local_path: input.local_path.clone(),
+            local_path: if is_blueprint_submission {
+                None
+            } else {
+                Some(input.local_path.clone())
+            },
             remote_path: remote_path.clone(),
             stdout_path,
             stderr_path,
@@ -4399,7 +4398,7 @@ mod tests {
         NewJob {
             scheduler_id: None,
             host_id,
-            local_path: local_path.to_string(),
+            local_path: Some(local_path.to_string()),
             remote_path: format!("/remote/{local_path}"),
             stdout_path: format!("/remote/{local_path}/slurm.out"),
             stderr_path: None,
@@ -4494,7 +4493,7 @@ mod tests {
         let running_job = NewJob {
             scheduler_id: Some(401),
             host_id,
-            local_path: local_path.clone(),
+            local_path: Some(local_path.clone()),
             remote_path: "/remote/project".to_string(),
             stdout_path: "/remote/project/slurm-401.out".to_string(),
             stderr_path: None,
@@ -4570,7 +4569,6 @@ mod tests {
             .projects
             .upsert_blueprint_build(&NewBlueprintBuild {
                 name: blueprint_ref,
-                path: source_root.to_string_lossy().into_owned(),
                 tarball_hash: "test-hash".to_string(),
                 tarball_hash_function: "blake3".to_string(),
                 tool_version: "test".to_string(),
@@ -4587,7 +4585,7 @@ mod tests {
         let running_job = NewJob {
             scheduler_id: Some(402),
             host_id,
-            local_path: source_root.to_string_lossy().into_owned(),
+            local_path: None,
             remote_path: "/remote/blueprint".to_string(),
             stdout_path: "/remote/blueprint/slurm-402.out".to_string(),
             stderr_path: None,

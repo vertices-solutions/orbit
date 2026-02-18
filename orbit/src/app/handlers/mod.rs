@@ -116,6 +116,7 @@ pub async fn handle_job_run(ctx: &AppContext, cmd: JobRunCommand) -> AppResult<C
     let resolved_local_path = resolver.resolve_local(&cmd.local_path)?;
     let discovered_blueprint =
         discover_blueprint_from_run_root(ctx.fs.as_ref(), &resolved_local_path)?;
+    let discovered_blueprint_name = discovered_blueprint.as_ref().map(|bp| bp.name.clone());
     let sbatch_selector =
         SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
     let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
@@ -212,7 +213,8 @@ pub async fn handle_job_run(ctx: &AppContext, cmd: JobRunCommand) -> AppResult<C
 
     Ok(CommandResult::JobSubmit {
         cluster: cluster.name,
-        local_path: resolved_local_path_display,
+        local_path: Some(resolved_local_path_display),
+        blueprint: discovered_blueprint_name,
         sbatchscript,
         capture,
     })
@@ -829,9 +831,9 @@ pub async fn handle_blueprint_run(
     validate_cluster_live(ctx, &cluster).await?;
 
     let blueprint = ctx.orbitd.get_blueprint(&cmd.blueprint).await?;
-    let blueprint_root = PathBuf::from(&blueprint.path);
     let sbatch_selector =
         SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
+    let template_project_root = ctx.fs.current_dir()?;
 
     let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
         explicit.to_string()
@@ -855,7 +857,7 @@ pub async fn handle_blueprint_run(
                 cmd.template_preset.as_deref(),
                 &cmd.template_fields,
                 cmd.fill_defaults,
-                &blueprint_root,
+                &template_project_root,
                 ctx.fs.as_ref(),
                 ctx.interaction.as_ref(),
                 ctx.output.as_ref(),
@@ -884,7 +886,9 @@ pub async fn handle_blueprint_run(
     ctx.output
         .success(&format!("Selected sbatch script: {sbatchscript}"))
         .await?;
-    ctx.output.success("Blueprint source: tarball").await?;
+    ctx.output
+        .success(&format!("Blueprint: {}", blueprint.name))
+        .await?;
 
     let mut stream_output = ctx.output.stream_output(StreamKind::Run);
     let capture = ctx
@@ -910,7 +914,8 @@ pub async fn handle_blueprint_run(
 
     Ok(CommandResult::JobSubmit {
         cluster: cluster.name,
-        local_path: blueprint.path.clone(),
+        local_path: None,
+        blueprint: Some(blueprint.name.clone()),
         sbatchscript,
         capture,
     })
@@ -1090,9 +1095,7 @@ fn summarize_blueprints(blueprints: Vec<proto::BlueprintRecord>) -> Vec<Blueprin
         tags: Vec<String>,
         latest_tag: Option<String>,
         latest_updated: Option<String>,
-        latest_path: Option<String>,
         fallback_updated: String,
-        fallback_path: String,
     }
 
     let mut grouped: BTreeMap<String, SummaryBuilder> = BTreeMap::new();
@@ -1105,14 +1108,11 @@ fn summarize_blueprints(blueprints: Vec<proto::BlueprintRecord>) -> Vec<Blueprin
                 tags: Vec::new(),
                 latest_tag: None,
                 latest_updated: None,
-                latest_path: None,
                 fallback_updated: blueprint.updated_at.clone(),
-                fallback_path: blueprint.path.clone(),
             });
 
         if blueprint.updated_at > entry.fallback_updated {
             entry.fallback_updated = blueprint.updated_at.clone();
-            entry.fallback_path = blueprint.path.clone();
         }
 
         if let Some(tag) = blueprint.version_tag.clone() {
@@ -1124,7 +1124,6 @@ fn summarize_blueprints(blueprints: Vec<proto::BlueprintRecord>) -> Vec<Blueprin
             if is_newest {
                 entry.latest_tag = Some(tag);
                 entry.latest_updated = Some(blueprint.updated_at.clone());
-                entry.latest_path = Some(blueprint.path.clone());
             }
         }
     }
@@ -1133,13 +1132,9 @@ fn summarize_blueprints(blueprints: Vec<proto::BlueprintRecord>) -> Vec<Blueprin
     for (_, mut entry) in grouped {
         entry.tags.sort();
         entry.tags.dedup();
-        let (path, updated_at) = match entry.latest_updated {
-            Some(updated) => (entry.latest_path.unwrap_or(entry.fallback_path), updated),
-            None => (entry.fallback_path, entry.fallback_updated),
-        };
+        let updated_at = entry.latest_updated.unwrap_or(entry.fallback_updated);
         output.push(BlueprintListItem {
             name: entry.name,
-            path,
             latest_tag: entry.latest_tag,
             tags: entry.tags,
             updated_at,

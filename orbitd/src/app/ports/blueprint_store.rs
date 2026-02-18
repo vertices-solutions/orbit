@@ -9,7 +9,7 @@ use crate::app::types::{BlueprintRecord, NewBlueprintBuild};
 #[async_trait]
 /// Persistence boundary for local blueprint registry records.
 pub trait BlueprintStorePort: Send + Sync {
-    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<BlueprintRecord>;
+    async fn upsert_blueprint(&self, name: &str) -> AppResult<BlueprintRecord>;
     async fn upsert_blueprint_build(&self, build: &NewBlueprintBuild)
     -> AppResult<BlueprintRecord>;
     async fn get_blueprint_by_name(&self, name: &str) -> AppResult<Option<BlueprintRecord>>;

@@ -83,7 +83,6 @@ pub fn job_record_to_response(jr: &JobRecord) -> ListJobsUnitResponse {
 pub fn blueprint_record_to_response(blueprint: &BlueprintRecord) -> proto::BlueprintRecord {
     proto::BlueprintRecord {
         name: blueprint.name.clone(),
-        path: blueprint.path.clone(),
         created_at: blueprint.created_at.clone(),
         updated_at: blueprint.updated_at.clone(),
         version_tag: blueprint.version_tag.clone(),
@@ -244,7 +243,6 @@ mod tests {
     fn blueprint_record_to_response_maps_all_fields() {
         let project = BlueprintRecord {
             name: "proj".to_string(),
-            path: "/tmp/project".to_string(),
             created_at: "2026-02-07T00:00:00Z".to_string(),
             updated_at: "2026-02-07T01:00:00Z".to_string(),
             version_tag: Some("v1".to_string()),
@@ -261,7 +259,6 @@ mod tests {
 
         let response = blueprint_record_to_response(&project);
         assert_eq!(response.name, "proj");
-        assert_eq!(response.path, "/tmp/project");
         assert_eq!(response.created_at, "2026-02-07T00:00:00Z");
         assert_eq!(response.updated_at, "2026-02-07T01:00:00Z");
         assert_eq!(response.version_tag.as_deref(), Some("v1"));

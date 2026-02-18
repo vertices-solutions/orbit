@@ -210,11 +210,10 @@ impl OrbitdPort for GrpcOrbitdPort {
             .collect())
     }
 
-    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<proto::BlueprintRecord> {
+    async fn upsert_blueprint(&self, name: &str) -> AppResult<proto::BlueprintRecord> {
         let mut client = self.connect().await?;
         let request = UpsertBlueprintRequest {
             name: name.to_string(),
-            path: path.to_string(),
         };
         let response = match timeout(Duration::from_secs(5), client.upsert_blueprint(request)).await
         {

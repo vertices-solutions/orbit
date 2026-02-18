@@ -32,21 +32,11 @@ fn map_store_error(err: HostStoreError) -> AppError {
         HostStoreError::EmptyName
         | HostStoreError::InvalidAddress
         | HostStoreError::EmptyBlueprintName
-        | HostStoreError::EmptyBlueprintPath => {
+        | HostStoreError::EmptyBlueprintTarballHash
+        | HostStoreError::EmptyBlueprintTarballHashFunction
+        | HostStoreError::EmptyBlueprintToolVersion => {
             AppError::new(AppErrorKind::InvalidArgument, codes::INVALID_ARGUMENT)
         }
-        HostStoreError::BlueprintPathConflict {
-            name,
-            existing_path,
-            new_path,
-        } => AppError::with_message(
-            AppErrorKind::Conflict,
-            codes::CONFLICT,
-            format!(
-                "blueprint '{}' is already registered at '{}'; cannot register '{}'",
-                name, existing_path, new_path
-            ),
-        ),
         HostStoreError::HostNotFound(_) => {
             AppError::new(AppErrorKind::InvalidArgument, codes::NOT_FOUND)
         }
@@ -306,12 +296,12 @@ impl JobStorePort for SqliteStoreAdapter {
 impl BlueprintStorePort for SqliteStoreAdapter {
     #[tracing::instrument(
         level = "debug",
-        skip(self, name, path),
+        skip(self, name),
         fields(op = "upsert_blueprint", table = "blueprints")
     )]
-    async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<BlueprintRecord> {
+    async fn upsert_blueprint(&self, name: &str) -> AppResult<BlueprintRecord> {
         self.store
-            .upsert_blueprint(name, path)
+            .upsert_blueprint(name)
             .await
             .map_err(map_store_error)
     }

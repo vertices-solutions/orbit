@@ -1523,13 +1523,12 @@ impl Agent for GrpcAgent {
         let req = request.into_inner();
         let blueprint = self
             .usecases
-            .upsert_blueprint(&req.name, &req.path)
+            .upsert_blueprint(&req.name)
             .await
             .map_err(status_from_app_error)?;
         tracing::info!(
-            "upsert_blueprint remote_addr={remote_addr} name={} path={}",
-            blueprint.name,
-            blueprint.path
+            "upsert_blueprint remote_addr={remote_addr} name={}",
+            blueprint.name
         );
         Ok(Response::new(UpsertBlueprintResponse {
             blueprint: Some(blueprint_record_to_response(&blueprint)),
@@ -1551,9 +1550,8 @@ impl Agent for GrpcAgent {
             .await
             .map_err(status_from_app_error)?;
         tracing::info!(
-            "get_blueprint remote_addr={remote_addr} name={} path={}",
-            blueprint.name,
-            blueprint.path
+            "get_blueprint remote_addr={remote_addr} name={}",
+            blueprint.name
         );
         Ok(Response::new(GetBlueprintResponse {
             blueprint: Some(blueprint_record_to_response(&blueprint)),
@@ -1618,9 +1616,8 @@ impl Agent for GrpcAgent {
             .await
             .map_err(status_from_app_error)?;
         tracing::info!(
-            "build_blueprint remote_addr={remote_addr} name={} path={}",
-            blueprint.name,
-            blueprint.path
+            "build_blueprint remote_addr={remote_addr} name={}",
+            blueprint.name
         );
         Ok(Response::new(BuildBlueprintResponse {
             blueprint: Some(blueprint_record_to_response(&blueprint)),
