@@ -2,14 +2,15 @@
 // Copyright (C) 2026 Alex Sizykh
 
 use proto::{ListClustersUnitResponse, ListJobsUnitResponse};
+use serde_json::json;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
 use crate::app::AppContext;
 use crate::app::commands::*;
 use crate::app::errors::{
-    AppError, AppResult, ErrorContext, ErrorType, describe_error_code, error_type_for_remote_code,
-    format_server_error,
+    AppError, AppResult, ErrorContext, ErrorType, SBATCH_SUBMIT_FAILED_CODE, describe_error_code,
+    error_type_for_remote_code, format_server_error, split_error_detail,
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
@@ -1213,6 +1214,22 @@ fn run_error(capture: &RunCapture) -> AppError {
     if let Some(detail) = capture.detail.as_deref() {
         let trimmed = detail.trim();
         if !trimmed.is_empty() {
+            if let Some((code, message)) = split_error_detail(trimmed)
+                && code == SBATCH_SUBMIT_FAILED_CODE
+            {
+                let sbatch_message = message.trim();
+                let mut err = AppError::with_exit_code(
+                    ErrorType::SbatchSubmitFailed,
+                    if sbatch_message.is_empty() {
+                        "ERROR: failed to submit remote job:".to_string()
+                    } else {
+                        format!("ERROR: failed to submit remote job:\n{sbatch_message}")
+                    },
+                    exit_code,
+                );
+                err = err.with_details(json!(sbatch_message));
+                return err;
+            }
             return AppError::with_exit_code(
                 ErrorType::RemoteError,
                 format_server_error(trimmed),
@@ -1362,7 +1379,10 @@ impl StreamOutputPort for SilentStreamOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClusterSetUpdate, parse_cluster_set_setting};
+    use super::{ClusterSetUpdate, parse_cluster_set_setting, run_error};
+    use crate::app::commands::RunCapture;
+    use crate::app::errors::{ErrorType, SBATCH_SUBMIT_FAILED_CODE};
+    use serde_json::json;
 
     #[test]
     fn parse_cluster_set_setting_accepts_default_true() {
@@ -1386,5 +1406,27 @@ mod tests {
     fn parse_cluster_set_setting_rejects_missing_separator() {
         let err = parse_cluster_set_setting("host").expect_err("expected parse failure");
         assert!(err.message.contains("expected KEY=VALUE"));
+    }
+
+    #[test]
+    fn run_error_maps_sbatch_submit_failure_and_details() {
+        let capture = RunCapture {
+            detail: Some(format!(
+                "{SBATCH_SUBMIT_FAILED_CODE}\nsbatch: error: Batch job submission failed"
+            )),
+            exit_code: Some(1),
+            ..RunCapture::default()
+        };
+
+        let err = run_error(&capture);
+        assert_eq!(err.kind, ErrorType::SbatchSubmitFailed);
+        assert_eq!(
+            err.message,
+            "ERROR: failed to submit remote job:\nsbatch: error: Batch job submission failed"
+        );
+        assert_eq!(
+            err.details,
+            Some(json!("sbatch: error: Batch job submission failed"))
+        );
     }
 }

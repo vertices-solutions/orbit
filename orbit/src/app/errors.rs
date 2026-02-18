@@ -20,6 +20,7 @@ pub enum ErrorType {
     DaemonUnavailable,
     NetworkError,
     RemoteError,
+    SbatchSubmitFailed,
     LocalError,
     InternalError,
 }
@@ -37,6 +38,7 @@ impl ErrorType {
             ErrorType::DaemonUnavailable => "DAEMON_UNAVAILABLE",
             ErrorType::NetworkError => "NETWORK_ERROR",
             ErrorType::RemoteError => "REMOTE_ERROR",
+            ErrorType::SbatchSubmitFailed => "SBATCH_SUBMIT_FAILED",
             ErrorType::LocalError => "LOCAL_ERROR",
             ErrorType::InternalError => "INTERNAL_ERROR",
         }
@@ -120,6 +122,10 @@ impl AppError {
         Self::new(ErrorType::RemoteError, message)
     }
 
+    pub fn sbatch_submit_failed(message: impl Into<String>) -> Self {
+        Self::new(ErrorType::SbatchSubmitFailed, message)
+    }
+
     pub fn local_error(message: impl Into<String>) -> Self {
         Self::new(ErrorType::LocalError, message)
     }
@@ -156,6 +162,7 @@ pub fn error_type_for_remote_code(code: &str, context: ErrorContext) -> ErrorTyp
         "invalid_argument" => ErrorType::InvalidArgument,
         "permission_denied" => ErrorType::PermissionDenied,
         "conflict" => ErrorType::Conflict,
+        SBATCH_SUBMIT_FAILED_CODE => ErrorType::SbatchSubmitFailed,
         "not_found" => match context {
             ErrorContext::Cluster => ErrorType::ClusterNotFound,
             ErrorContext::Job => ErrorType::JobNotFound,
@@ -174,8 +181,18 @@ const CONFLICT: &str = "conflict";
 const INTERNAL_ERROR: &str = "internal_error";
 const CANCELED: &str = "canceled";
 const REMOTE_ERROR: &str = "remote_error";
+pub const SBATCH_SUBMIT_FAILED_CODE: &str = "sbatch_submit_failed";
 const LOCAL_ERROR: &str = "local_error";
 const PERMISSION_DENIED: &str = "permission_denied";
+
+pub(crate) fn split_error_detail(raw: &str) -> Option<(&str, &str)> {
+    let (code, message) = raw.split_once('\n')?;
+    let code = code.trim();
+    if code.is_empty() {
+        return None;
+    }
+    Some((code, message))
+}
 
 pub(crate) fn format_server_error(raw: &str) -> String {
     if let Some(message) = describe_error_code(raw) {
@@ -197,8 +214,33 @@ pub(crate) fn describe_error_code(code: &str) -> Option<&'static str> {
         INTERNAL_ERROR => Some("Internal server error."),
         CANCELED => Some("Operation canceled."),
         REMOTE_ERROR => Some("Remote operation failed."),
+        SBATCH_SUBMIT_FAILED_CODE => Some("Failed to submit remote job."),
         LOCAL_ERROR => Some("Local operation failed."),
         PERMISSION_DENIED => Some("Permission denied."),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ErrorContext, ErrorType, SBATCH_SUBMIT_FAILED_CODE, error_type_for_remote_code,
+        split_error_detail,
+    };
+
+    #[test]
+    fn maps_sbatch_submit_failed_remote_code() {
+        assert_eq!(
+            error_type_for_remote_code(SBATCH_SUBMIT_FAILED_CODE, ErrorContext::Job),
+            ErrorType::SbatchSubmitFailed
+        );
+    }
+
+    #[test]
+    fn split_error_detail_parses_code_and_message() {
+        let detail = "sbatch_submit_failed\nsbatch: error: invalid partition";
+        let (code, message) = split_error_detail(detail).expect("parsed detail");
+        assert_eq!(code, SBATCH_SUBMIT_FAILED_CODE);
+        assert_eq!(message, "sbatch: error: invalid partition");
     }
 }

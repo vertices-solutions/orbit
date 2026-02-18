@@ -13,7 +13,9 @@ use std::io::Write;
 use crate::app::commands::{
     BlueprintInitAction, CommandResult, InitActionStatus, RunCapture, StreamCapture,
 };
-use crate::app::errors::{AppError, AppResult, format_server_error};
+use crate::app::errors::{
+    AppError, AppResult, SBATCH_SUBMIT_FAILED_CODE, format_server_error, split_error_detail,
+};
 use crate::app::ports::{
     InteractionPort, OutputPort, PromptFeedbackPort, PromptLine, StreamKind, StreamOutputPort,
 };
@@ -506,6 +508,10 @@ impl StreamOutputPort for TerminalStreamOutput {
                 let detail = result.detail.trim();
                 if detail.is_empty() {
                     eprintln!("failed");
+                } else if let Some((code, _)) = split_error_detail(detail)
+                    && code == SBATCH_SUBMIT_FAILED_CODE
+                {
+                    // run_error renders the final user-facing sbatch submit error once.
                 } else {
                     eprintln!("failed: {}", format_server_error(detail));
                 }

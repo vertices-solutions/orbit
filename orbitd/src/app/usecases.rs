@@ -2268,12 +2268,13 @@ cancel them with `job cancel` or pass --force"
             } else {
                 err_message.trim().to_string()
             };
+            let run_detail = format!("{}\n{detail}", codes::SBATCH_SUBMIT_FAILED);
             let _ = stream
                 .send(RunStreamEvent {
                     event: Some(run_stream_event::Event::RunResult(RunResult {
                         status: run_result::Status::Failed as i32,
                         job_id: None,
-                        detail: codes::REMOTE_ERROR.to_string(),
+                        detail: run_detail,
                     })),
                 })
                 .await;

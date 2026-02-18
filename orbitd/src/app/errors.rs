@@ -13,6 +13,7 @@ pub mod codes {
     pub const INTERNAL_ERROR: &str = "internal_error";
     pub const CANCELED: &str = "canceled";
     pub const REMOTE_ERROR: &str = "remote_error";
+    pub const SBATCH_SUBMIT_FAILED: &str = "sbatch_submit_failed";
     pub const LOCAL_ERROR: &str = "local_error";
 }
 
