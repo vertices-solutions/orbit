@@ -374,6 +374,23 @@ impl RemoteExecPort for SshAdapter {
         name = "ssh",
         level = "debug",
         skip(self),
+        fields(op = "send_keepalive", session = %session_name)
+    )]
+    async fn send_keepalive(&self, session_name: &str) -> AppResult<()> {
+        let session = self.sessions.get(session_name).await.ok_or_else(|| {
+            AppError::with_message(
+                AppErrorKind::NotFound,
+                codes::NOT_FOUND,
+                format!("cluster '{session_name}' is not connected"),
+            )
+        })?;
+        session.send_keepalive().await.map_err(map_connect_error)
+    }
+
+    #[tracing::instrument(
+        name = "ssh",
+        level = "debug",
+        skip(self),
         fields(op = "is_connected", session = %session_name)
     )]
     async fn is_connected(&self, session_name: &str) -> AppResult<bool> {

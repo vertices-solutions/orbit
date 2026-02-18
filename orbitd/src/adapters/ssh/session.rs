@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 Alex Sizykh
 
-#[cfg(test)]
-use anyhow::Result;
-use anyhow::anyhow;
+use anyhow::{Result, anyhow};
 #[cfg(test)]
 use proto::{MfaAnswer, RunStreamEvent};
 use russh::client::Config;
@@ -193,6 +191,18 @@ impl SessionManager {
             Some(h) if h.is_closed() => true,
             Some(_) => false,
         }
+    }
+
+    pub async fn send_keepalive(&self) -> Result<()> {
+        let handle_field = self.handle.lock().await;
+        let handle = handle_field
+            .as_ref()
+            .ok_or_else(|| anyhow!("SSH handle lost before keepalive"))?;
+        if handle.is_closed() {
+            return Err(anyhow!("SSH handle is closed"));
+        }
+        handle.send_keepalive(true).await?;
+        Ok(())
     }
 
     pub fn is_connected_nonblocking(&self) -> bool {

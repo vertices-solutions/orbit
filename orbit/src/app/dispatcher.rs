@@ -35,6 +35,9 @@ impl Dispatcher {
                 ClusterCommand::Ls(cmd) => handlers::handle_cluster_ls(&self.ctx, cmd).await,
                 ClusterCommand::Add(cmd) => handlers::handle_cluster_add(&self.ctx, cmd).await,
                 ClusterCommand::Set(cmd) => handlers::handle_cluster_set(&self.ctx, cmd).await,
+                ClusterCommand::Connect(cmd) => {
+                    handlers::handle_cluster_connect(&self.ctx, cmd).await
+                }
                 ClusterCommand::Delete(cmd) => {
                     handlers::handle_cluster_delete(&self.ctx, cmd).await
                 }

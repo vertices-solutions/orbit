@@ -120,6 +120,9 @@ pub enum CommandResult {
         name: String,
         updated_fields: Vec<(String, String)>,
     },
+    ClusterConnect {
+        name: String,
+    },
     ClusterDelete {
         name: String,
     },

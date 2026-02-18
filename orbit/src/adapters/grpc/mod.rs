@@ -29,15 +29,16 @@ use crate::app::ports::{
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, BuildBlueprintRequest, CancelJobRequest,
-    CancelJobRequestInit, CleanupJobRequest, CleanupJobRequestInit, DeleteBlueprintRequest,
-    DeleteClusterRequest, GetBlueprintRequest, JobLogsRequest, JobLogsRequestInit,
-    ListAccountsRequest, ListBlueprintsRequest, ListClustersRequest, ListJobsRequest,
-    ListPartitionsRequest, LsRequest, LsRequestInit, ResolveHomeDirRequest,
-    ResolveHomeDirRequestInit, RetrieveJobRequest, RetrieveJobRequestInit, RunBlueprintRequest,
-    RunJobRequest, RunPathFilterRule, SetClusterInit, SetClusterRequest, UpsertBlueprintRequest,
-    add_cluster_init, add_cluster_request, add_cluster_scratch_selection, resolve_home_dir_request,
-    resolve_home_dir_request_init, run_blueprint_request, run_job_request, run_stream_event,
-    set_cluster_request, stream_event,
+    CancelJobRequestInit, CleanupJobRequest, CleanupJobRequestInit, ConnectClusterInit,
+    ConnectClusterRequest, ConnectClusterStreamEvent, DeleteBlueprintRequest, DeleteClusterRequest,
+    GetBlueprintRequest, JobLogsRequest, JobLogsRequestInit, ListAccountsRequest,
+    ListBlueprintsRequest, ListClustersRequest, ListJobsRequest, ListPartitionsRequest, LsRequest,
+    LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
+    RetrieveJobRequestInit, RunBlueprintRequest, RunJobRequest, RunPathFilterRule, SetClusterInit,
+    SetClusterRequest, UpsertBlueprintRequest, add_cluster_init, add_cluster_request,
+    add_cluster_scratch_selection, connect_cluster_request, connect_cluster_stream_event,
+    resolve_home_dir_request, resolve_home_dir_request_init, run_blueprint_request,
+    run_job_request, run_stream_event, set_cluster_request, stream_event,
 };
 use run_errors::parse_remote_path_failure;
 
@@ -1170,6 +1171,41 @@ impl OrbitdPort for GrpcOrbitdPort {
         .await
     }
 
+    async fn connect_cluster(
+        &self,
+        name: String,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture> {
+        let mut client = self.connect().await?;
+        let (tx_ans, rx_ans) = mpsc::channel::<ConnectClusterRequest>(16);
+        let outbound = ReceiverStream::new(rx_ans);
+        let init = ConnectClusterInit { name };
+        tx_ans
+            .send(ConnectClusterRequest {
+                msg: Some(connect_cluster_request::Msg::Init(init)),
+            })
+            .await
+            .map_err(|_| AppError::internal_error("failed to send connect cluster init"))?;
+        let response = client
+            .connect_cluster(Request::new(outbound))
+            .await
+            .map_err(app_error_from_status)?;
+        let inbound = response.into_inner();
+        handle_connect_cluster_stream(inbound, output, interaction, move |answers| {
+            let tx_ans = tx_ans.clone();
+            async move {
+                tx_ans
+                    .send(ConnectClusterRequest {
+                        msg: Some(proto::connect_cluster_request::Msg::Mfa(answers)),
+                    })
+                    .await
+                    .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
+            }
+        })
+        .await
+    }
+
     async fn resolve_home_dir(
         &self,
         name: Option<String>,
@@ -1464,11 +1500,67 @@ where
             Ok(proto::StreamEvent { event: None }) => {}
             Err(status) => {
                 let remote_code = remote_code_for_status(status.code());
+                let detail = status.message().trim();
+                if !detail.is_empty() && describe_error_code(detail).is_none() {
+                    let detail_line = format!("{detail}\n");
+                    output.on_stderr(detail_line.as_bytes()).await?;
+                }
                 output.on_error(remote_code).await?;
                 output.on_exit_code(map_error_code(remote_code)).await?;
                 break;
             }
         }
+    }
+
+    Ok(output.take_stream_capture())
+}
+
+async fn handle_connect_cluster_stream<S, F, Fut>(
+    mut inbound: S,
+    output: &mut dyn StreamOutputPort,
+    interaction: &dyn InteractionPort,
+    mut send_mfa: F,
+) -> AppResult<StreamCapture>
+where
+    S: tokio_stream::Stream<Item = Result<ConnectClusterStreamEvent, Status>> + Unpin,
+    F: FnMut(proto::MfaAnswer) -> Fut,
+    Fut: Future<Output = AppResult<()>>,
+{
+    let mut saw_terminal = false;
+    while let Some(item) = inbound.next().await {
+        match item {
+            Ok(ConnectClusterStreamEvent { event: Some(ev) }) => match ev {
+                connect_cluster_stream_event::Event::Mfa(mfa) => {
+                    let answers = interaction.prompt_mfa(&mfa).await?;
+                    send_mfa(answers).await?;
+                }
+                connect_cluster_stream_event::Event::Done(_done) => {
+                    output.on_exit_code(0).await?;
+                    saw_terminal = true;
+                    break;
+                }
+            },
+            Ok(ConnectClusterStreamEvent { event: None }) => {}
+            Err(status) => {
+                let remote_code = remote_code_for_status(status.code());
+                let detail = status.message().trim();
+                if !detail.is_empty() && describe_error_code(detail).is_none() {
+                    let detail_line = format!("{detail}\n");
+                    output.on_stderr(detail_line.as_bytes()).await?;
+                }
+                output.on_error(remote_code).await?;
+                output
+                    .on_exit_code(cluster_connect_error_exit_code(remote_code))
+                    .await?;
+                saw_terminal = true;
+                break;
+            }
+        }
+    }
+
+    if !saw_terminal {
+        output.on_error("remote_error").await?;
+        output.on_exit_code(1).await?;
     }
 
     Ok(output.take_stream_capture())
@@ -1517,6 +1609,11 @@ where
             },
             Ok(proto::RunStreamEvent { event: None }) => {}
             Err(status) => {
+                let detail = status.message().trim();
+                if !detail.is_empty() && describe_error_code(detail).is_none() {
+                    let detail_line = format!("{detail}\n");
+                    output.on_stderr(detail_line.as_bytes()).await?;
+                }
                 output
                     .on_error(remote_code_for_status(status.code()))
                     .await?;
@@ -1530,6 +1627,14 @@ where
 }
 
 fn job_logs_error_exit_code(err: &str) -> i32 {
+    match err {
+        "invalid_argument" => 2,
+        "not_found" => 3,
+        _ => 1,
+    }
+}
+
+fn cluster_connect_error_exit_code(err: &str) -> i32 {
     match err {
         "invalid_argument" => 2,
         "not_found" => 3,

@@ -33,7 +33,7 @@ pub enum Cmd {
     Run(RunArgs),
     /// Operations on jobs: run jobs, inspect status, and retrieve outputs/results.
     Job(JobArgs),
-    /// Operations on clusters: add, delete, poll, and manage clusters.
+    /// Operations on clusters: add, connect, delete, poll, and manage clusters.
     Cluster(ClusterArgs),
     /// Operations on local blueprints and Orbitfile metadata.
     Blueprint(BlueprintArgs),
@@ -287,6 +287,8 @@ pub enum ClusterCmd {
     Add(AddClusterArgs),
     /// Update cluster parameters.
     Set(SetClusterArgs),
+    /// Connect to a cluster and validate the SSH session.
+    Connect(ConnectClusterArgs),
     /// Delete a cluster and its job records.
     Delete(DeleteClusterArgs),
 }
@@ -313,6 +315,12 @@ pub struct SetClusterArgs {
     /// Supported keys: host, username, port, identity_path, default_base_path, default.
     #[arg(value_name = "KEY=VALUE")]
     pub setting: String,
+}
+
+#[derive(Args, Debug)]
+pub struct ConnectClusterArgs {
+    /// Cluster name to connect.
+    pub name: String,
 }
 
 #[derive(Args, Debug)]
@@ -655,6 +663,26 @@ mod tests {
     #[test]
     fn cluster_set_requires_on_flag() {
         let args = Cli::try_parse_from(["orbit", "cluster", "set", "default=true"]);
+        assert!(args.is_err());
+    }
+
+    #[test]
+    fn cluster_connect_parses_name() {
+        let args = Cli::parse_from(["orbit", "cluster", "connect", "cluster-a"]);
+        match args.cmd {
+            Cmd::Cluster(cluster) => match cluster.cmd {
+                ClusterCmd::Connect(connect) => {
+                    assert_eq!(connect.name, "cluster-a");
+                }
+                _ => panic!("expected cluster connect command"),
+            },
+            _ => panic!("expected cluster command"),
+        }
+    }
+
+    #[test]
+    fn cluster_connect_requires_name() {
+        let args = Cli::try_parse_from(["orbit", "cluster", "connect"]);
         assert!(args.is_err());
     }
 

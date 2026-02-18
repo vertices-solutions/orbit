@@ -196,6 +196,13 @@ pub trait OrbitdPort: Send + Sync {
         interaction: &dyn InteractionPort,
     ) -> AppResult<StreamCapture>;
 
+    async fn connect_cluster(
+        &self,
+        name: String,
+        output: &mut dyn StreamOutputPort,
+        interaction: &dyn InteractionPort,
+    ) -> AppResult<StreamCapture>;
+
     async fn resolve_home_dir(
         &self,
         name: Option<String>,

@@ -133,6 +133,9 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 cluster: args.cluster,
                 setting: args.setting,
             }),
+            ClusterCmd::Connect(args) => {
+                ClusterCommand::Connect(ConnectClusterCommand { name: args.name })
+            }
             ClusterCmd::Delete(args) => ClusterCommand::Delete(DeleteClusterCommand {
                 name: args.name,
                 yes: args.yes,
@@ -245,6 +248,23 @@ mod tests {
                 assert_eq!(set.setting, "default=true");
             }
             _ => panic!("expected cluster set command"),
+        }
+    }
+
+    #[test]
+    fn command_from_cli_maps_cluster_connect_name() {
+        let command = cli_command();
+        let matches = command
+            .try_get_matches_from(["orbit", "cluster", "connect", "cluster-a"])
+            .expect("parse matches");
+        let cli = Cli::from_arg_matches(&matches).expect("parse cli");
+
+        let command = command_from_cli(cli, &matches);
+        match command {
+            Command::Cluster(ClusterCommand::Connect(connect)) => {
+                assert_eq!(connect.name, "cluster-a");
+            }
+            _ => panic!("expected cluster connect command"),
         }
     }
 }

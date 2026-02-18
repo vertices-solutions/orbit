@@ -356,6 +356,51 @@ impl UseCases {
         Ok(slurm::parse_sshare_accounts(&output))
     }
 
+    pub async fn connect_cluster(
+        &self,
+        name: &str,
+        stream: &dyn StreamOutputPort,
+        mfa: &mut dyn MfaPort,
+    ) -> AppResult<()> {
+        let cluster_name = name.trim();
+        if cluster_name.is_empty() {
+            return Err(AppError::new(
+                AppErrorKind::InvalidArgument,
+                codes::INVALID_ARGUMENT,
+            ));
+        }
+
+        let host = match self.clusters.get_by_name(cluster_name).await? {
+            Some(host) => host,
+            None => {
+                return Err(AppError::with_message(
+                    AppErrorKind::NotFound,
+                    codes::NOT_FOUND,
+                    format!("cluster '{cluster_name}' not found"),
+                ));
+            }
+        };
+        let config = self.config_for_host(&host).await?;
+
+        if self.remote_exec.needs_connect(&config).await? {
+            self.remote_exec
+                .ensure_connected(&config, stream, mfa)
+                .await?;
+        } else {
+            self.remote_exec.send_keepalive(&host.name).await?;
+        }
+
+        self.telemetry.event(
+            "cluster.connected",
+            TelemetryEvent {
+                cluster: Some(host.name),
+                user: Some(host.username),
+                ..TelemetryEvent::default()
+            },
+        );
+        Ok(())
+    }
+
     pub async fn upsert_blueprint(&self, name: &str, path: &str) -> AppResult<BlueprintRecord> {
         let blueprint = self.projects.upsert_blueprint(name, path).await?;
         self.telemetry.event(
@@ -4003,6 +4048,10 @@ mod tests {
             panic!("directory_exists should not be called in list_jobs tests");
         }
 
+        async fn send_keepalive(&self, _session_name: &str) -> AppResult<()> {
+            panic!("send_keepalive should not be called in list_jobs tests");
+        }
+
         async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
             panic!("is_connected should not be called in list_jobs tests");
         }
@@ -4065,6 +4114,10 @@ mod tests {
             panic!("directory_exists should not be called in delete_cluster tests");
         }
 
+        async fn send_keepalive(&self, _session_name: &str) -> AppResult<()> {
+            panic!("send_keepalive should not be called in delete_cluster tests");
+        }
+
         async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
             panic!("is_connected should not be called in delete_cluster tests");
         }
@@ -4078,6 +4131,8 @@ mod tests {
         capture: Mutex<Option<AppResult<ExecCapture>>>,
         needs_connect: bool,
         ensure_connected_error: Option<AppError>,
+        ensure_connected_calls: Mutex<usize>,
+        keepalive_calls: Mutex<usize>,
     }
 
     impl ScriptedRemoteExec {
@@ -4090,7 +4145,20 @@ mod tests {
                 capture: Mutex::new(Some(capture)),
                 needs_connect,
                 ensure_connected_error,
+                ensure_connected_calls: Mutex::new(0),
+                keepalive_calls: Mutex::new(0),
             }
+        }
+
+        fn ensure_connected_calls(&self) -> usize {
+            *self
+                .ensure_connected_calls
+                .lock()
+                .expect("ensure_connected_calls lock")
+        }
+
+        fn keepalive_calls(&self) -> usize {
+            *self.keepalive_calls.lock().expect("keepalive_calls lock")
         }
     }
 
@@ -4124,6 +4192,10 @@ mod tests {
             _stream: &dyn StreamOutputPort,
             _mfa: &mut dyn MfaPort,
         ) -> AppResult<()> {
+            *self
+                .ensure_connected_calls
+                .lock()
+                .expect("ensure_connected_calls lock") += 1;
             if let Some(err) = self.ensure_connected_error.clone() {
                 return Err(err);
             }
@@ -4149,6 +4221,11 @@ mod tests {
             _remote_dir: &str,
         ) -> AppResult<bool> {
             panic!("directory_exists should not be called in list_partitions tests");
+        }
+
+        async fn send_keepalive(&self, _session_name: &str) -> AppResult<()> {
+            *self.keepalive_calls.lock().expect("keepalive_calls lock") += 1;
+            Ok(())
         }
 
         async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
@@ -4221,6 +4298,10 @@ mod tests {
             _remote_dir: &str,
         ) -> AppResult<bool> {
             panic!("directory_exists should not be called in base-path validation tests");
+        }
+
+        async fn send_keepalive(&self, _session_name: &str) -> AppResult<()> {
+            panic!("send_keepalive should not be called in base-path validation tests");
         }
 
         async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
@@ -4722,6 +4803,78 @@ mod tests {
         assert_eq!(default_hosts[0].name, "cluster-c");
         assert!(hosts.iter().any(|host| host.name == "cluster-b"));
         assert!(hosts.iter().any(|host| host.name == "cluster-c"));
+    }
+
+    #[tokio::test]
+    async fn connect_cluster_returns_not_found_for_unknown_cluster() {
+        let usecases = build_usecases_for_list_jobs_tests().await;
+        let stream = NoopStreamOutput;
+        let mut mfa = NoopMfa::new();
+
+        let err = usecases
+            .connect_cluster("unknown-cluster", &stream, &mut mfa)
+            .await
+            .expect_err("must fail");
+        assert_eq!(err.kind(), AppErrorKind::NotFound);
+        assert_eq!(err.code(), codes::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn connect_cluster_sends_keepalive_when_already_connected() {
+        let remote_exec = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            false,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec.clone()).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let stream = NoopStreamOutput;
+        let mut mfa = NoopMfa::new();
+        usecases
+            .connect_cluster("cluster-a", &stream, &mut mfa)
+            .await
+            .expect("connect should succeed");
+
+        assert_eq!(remote_exec.keepalive_calls(), 1);
+        assert_eq!(remote_exec.ensure_connected_calls(), 0);
+    }
+
+    #[tokio::test]
+    async fn connect_cluster_establishes_connection_when_disconnected() {
+        let remote_exec = Arc::new(ScriptedRemoteExec::new(
+            Ok(ExecCapture {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            true,
+            None,
+        ));
+        let usecases = build_usecases_with_remote_exec(remote_exec.clone()).await;
+        usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+
+        let stream = NoopStreamOutput;
+        let mut mfa = NoopMfa::new();
+        usecases
+            .connect_cluster("cluster-a", &stream, &mut mfa)
+            .await
+            .expect("connect should succeed");
+
+        assert_eq!(remote_exec.keepalive_calls(), 0);
+        assert_eq!(remote_exec.ensure_connected_calls(), 1);
     }
 
     const SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED: &str = concat!(

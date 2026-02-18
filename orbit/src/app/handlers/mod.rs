@@ -8,7 +8,8 @@ use std::path::PathBuf;
 use crate::app::AppContext;
 use crate::app::commands::*;
 use crate::app::errors::{
-    AppError, AppResult, ErrorContext, ErrorType, error_type_for_remote_code, format_server_error,
+    AppError, AppResult, ErrorContext, ErrorType, describe_error_code, error_type_for_remote_code,
+    format_server_error,
 };
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
@@ -612,6 +613,30 @@ pub async fn handle_cluster_set(
     })
 }
 
+pub async fn handle_cluster_connect(
+    ctx: &AppContext,
+    cmd: ConnectClusterCommand,
+) -> AppResult<CommandResult> {
+    let mut stream_output = ctx.output.stream_output(StreamKind::Generic);
+    let capture = ctx
+        .orbitd
+        .connect_cluster(
+            cmd.name.clone(),
+            &mut *stream_output,
+            ctx.interaction.as_ref(),
+        )
+        .await?;
+    if capture.exit_code.unwrap_or(0) != 0 {
+        return Err(stream_error(
+            &capture,
+            ErrorContext::Cluster,
+            "command failed",
+        ));
+    }
+
+    Ok(CommandResult::ClusterConnect { name: cmd.name })
+}
+
 #[derive(Debug)]
 enum ClusterSetUpdate {
     Host(String),
@@ -1174,6 +1199,11 @@ fn stream_error(capture: &StreamCapture, context: ErrorContext, default: &str) -
     let exit_code = capture.exit_code.unwrap_or(1);
     if let Some(code) = capture.error_code.as_deref() {
         let kind = error_type_for_remote_code(code, context);
+        if let Some(message) = message_from_bytes(&capture.stderr)
+            && describe_error_code(message.trim()).is_none()
+        {
+            return AppError::with_exit_code(kind, message, exit_code);
+        }
         let message = format_server_error(code);
         return AppError::with_exit_code(kind, message, exit_code);
     }

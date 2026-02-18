@@ -8,14 +8,15 @@ use async_trait::async_trait;
 use proto::agent_server::Agent;
 use proto::{
     AddClusterRequest, BuildBlueprintRequest, BuildBlueprintResponse, CancelJobRequest,
-    CleanupJobRequest, DeleteBlueprintRequest, DeleteBlueprintResponse, DeleteClusterRequest,
-    DeleteClusterResponse, GetBlueprintRequest, GetBlueprintResponse, JobLogsRequest,
-    ListAccountsRequest, ListAccountsResponse, ListAccountsUnitResponse, ListBlueprintsRequest,
-    ListBlueprintsResponse, ListClustersRequest, ListClustersResponse, ListJobsRequest,
-    ListJobsResponse, ListPartitionsRequest, ListPartitionsResponse, ListPartitionsUnitResponse,
-    LsRequest, MfaAnswer, PingReply, PingRequest, ResolveHomeDirRequest, RetrieveJobRequest,
-    RunBlueprintRequest, RunJobRequest, RunStreamEvent, SetClusterRequest, StreamEvent,
-    UpsertBlueprintRequest, UpsertBlueprintResponse, stream_event,
+    CleanupJobRequest, ConnectClusterRequest, ConnectClusterStreamEvent, DeleteBlueprintRequest,
+    DeleteBlueprintResponse, DeleteClusterRequest, DeleteClusterResponse, GetBlueprintRequest,
+    GetBlueprintResponse, JobLogsRequest, ListAccountsRequest, ListAccountsResponse,
+    ListAccountsUnitResponse, ListBlueprintsRequest, ListBlueprintsResponse, ListClustersRequest,
+    ListClustersResponse, ListJobsRequest, ListJobsResponse, ListPartitionsRequest,
+    ListPartitionsResponse, ListPartitionsUnitResponse, LsRequest, MfaAnswer, PingReply,
+    PingRequest, ResolveHomeDirRequest, RetrieveJobRequest, RunBlueprintRequest, RunJobRequest,
+    RunStreamEvent, SetClusterRequest, StreamEvent, UpsertBlueprintRequest,
+    UpsertBlueprintResponse, connect_cluster_stream_event, stream_event,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -39,6 +40,8 @@ pub type OutStream =
     Pin<Box<dyn Stream<Item = Result<StreamEvent, Status>> + Send + Sync + 'static>>;
 pub type RunOutStream =
     Pin<Box<dyn Stream<Item = Result<RunStreamEvent, Status>> + Send + Sync + 'static>>;
+pub type ConnectClusterOutStream =
+    Pin<Box<dyn Stream<Item = Result<ConnectClusterStreamEvent, Status>> + Send + Sync + 'static>>;
 
 #[derive(Clone)]
 pub struct GrpcAgent {
@@ -82,6 +85,35 @@ impl RunStreamOutputPort for GrpcRunStreamOutput {
             .send(Ok(event))
             .await
             .map_err(|_| AppError::new(AppErrorKind::Cancelled, codes::CANCELED))
+    }
+
+    fn is_closed(&self) -> bool {
+        self.sender.is_closed()
+    }
+}
+
+#[derive(Clone)]
+struct GrpcConnectClusterStreamOutput {
+    sender: mpsc::Sender<Result<ConnectClusterStreamEvent, Status>>,
+}
+
+#[async_trait]
+impl StreamOutputPort for GrpcConnectClusterStreamOutput {
+    async fn send(&self, event: StreamEvent) -> Result<(), AppError> {
+        let mapped = match event.event {
+            Some(stream_event::Event::Mfa(mfa)) => Some(ConnectClusterStreamEvent {
+                event: Some(connect_cluster_stream_event::Event::Mfa(mfa)),
+            }),
+            _ => None,
+        };
+
+        if let Some(event) = mapped {
+            self.sender
+                .send(Ok(event))
+                .await
+                .map_err(|_| AppError::new(AppErrorKind::Cancelled, codes::CANCELED))?;
+        }
+        Ok(())
     }
 
     fn is_closed(&self) -> bool {
@@ -205,6 +237,7 @@ impl Agent for GrpcAgent {
     type RunBlueprintStream = RunOutStream;
     type AddClusterStream = OutStream;
     type SetClusterStream = OutStream;
+    type ConnectClusterStream = ConnectClusterOutStream;
     type ResolveHomeDirStream = OutStream;
 
     async fn ping(&self, request: Request<PingRequest>) -> Result<Response<PingReply>, Status> {
@@ -1379,6 +1412,76 @@ impl Agent for GrpcAgent {
         );
 
         let out: OutStream = Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
+        Ok(Response::new(out))
+    }
+
+    async fn connect_cluster(
+        &self,
+        request: Request<tonic::Streaming<ConnectClusterRequest>>,
+    ) -> Result<Response<Self::ConnectClusterStream>, Status> {
+        let span = rpc_span(&request, "ConnectCluster");
+        let _enter = span.enter();
+        tracing::info!(target: "orbitd::rpc", "received request");
+        let remote_addr = format_remote_addr(request.remote_addr());
+        let mut inbound = request.into_inner();
+        let init = inbound
+            .message()
+            .await
+            .map_err(|_| Status::unknown(codes::INTERNAL_ERROR))?
+            .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
+
+        let name = match init.msg {
+            Some(proto::connect_cluster_request::Msg::Init(i)) => i.name,
+            _ => {
+                return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
+            }
+        };
+        tracing::info!("connect_cluster start remote_addr={remote_addr} name={name}");
+        let current_span = tracing::Span::current();
+
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<ConnectClusterStreamEvent, Status>>(64);
+        let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
+        tokio::spawn(
+            async move {
+                while let Ok(Some(item)) = inbound.message().await {
+                    if let Some(proto::connect_cluster_request::Msg::Mfa(ans)) = item.msg
+                        && mfa_tx.send(ans).await.is_err()
+                    {
+                        break;
+                    }
+                }
+            }
+            .instrument(current_span.clone()),
+        );
+
+        let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
+        let stream_output = GrpcConnectClusterStreamOutput {
+            sender: evt_tx.clone(),
+        };
+        let usecases = self.usecases.clone();
+        tokio::spawn(
+            async move {
+                if let Err(err) = usecases
+                    .connect_cluster(&name, &stream_output, &mut mfa_port)
+                    .await
+                {
+                    let _ = evt_tx.send(Err(status_from_app_error(err))).await;
+                    return;
+                }
+
+                let _ = evt_tx
+                    .send(Ok(ConnectClusterStreamEvent {
+                        event: Some(connect_cluster_stream_event::Event::Done(
+                            proto::ConnectClusterDone {},
+                        )),
+                    }))
+                    .await;
+            }
+            .instrument(current_span.clone()),
+        );
+
+        let out: ConnectClusterOutStream =
+            Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
     }
 

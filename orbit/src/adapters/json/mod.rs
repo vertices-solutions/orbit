@@ -389,6 +389,10 @@ fn result_to_json(result: &CommandResult) -> Value {
             "name": name,
             "status": "updated",
         }),
+        CommandResult::ClusterConnect { name } => json!({
+            "name": name,
+            "status": "connected",
+        }),
         CommandResult::ClusterDelete { name } => json!({
             "name": name,
             "status": "deleted",

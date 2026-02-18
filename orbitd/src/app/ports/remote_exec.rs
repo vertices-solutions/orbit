@@ -46,6 +46,8 @@ pub trait RemoteExecPort: Send + Sync {
 
     async fn directory_exists(&self, config: &SshConfig, remote_dir: &str) -> AppResult<bool>;
 
+    async fn send_keepalive(&self, session_name: &str) -> AppResult<()>;
+
     async fn is_connected(&self, session_name: &str) -> AppResult<bool>;
 
     async fn remove_session(&self, session_name: &str) -> AppResult<bool>;

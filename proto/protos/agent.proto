@@ -325,6 +325,26 @@ message SetClusterRequest {
   }
 }
 
+message ConnectClusterInit {
+  string name = 1;
+}
+
+message ConnectClusterRequest {
+  oneof msg {
+    ConnectClusterInit init = 1;
+    MfaAnswer mfa = 2;
+  }
+}
+
+message ConnectClusterDone {}
+
+message ConnectClusterStreamEvent {
+  oneof event {
+    MfaPrompt mfa = 1;
+    ConnectClusterDone done = 2;
+  }
+}
+
 message ListJobsUnitResponse {
   string name = 1;
   int64 job_id = 2;
@@ -453,6 +473,7 @@ service Agent {
   rpc ListAccounts(ListAccountsRequest) returns (ListAccountsResponse); // Helper endpoint for listing accounts
   rpc DeleteCluster(DeleteClusterRequest) returns (DeleteClusterResponse);
   rpc SetCluster(stream SetClusterRequest) returns (stream StreamEvent);
+  rpc ConnectCluster(stream ConnectClusterRequest) returns (stream ConnectClusterStreamEvent);
   rpc ListJobs(ListJobsRequest) returns (ListJobsResponse);
   rpc UpsertBlueprint(UpsertBlueprintRequest) returns (UpsertBlueprintResponse);
   rpc GetBlueprint(GetBlueprintRequest) returns (GetBlueprintResponse);

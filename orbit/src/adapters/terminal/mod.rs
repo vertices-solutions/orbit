@@ -103,6 +103,9 @@ impl OutputPort for TerminalOutput {
                     println!("Set {key}={value} successfully");
                 }
             }
+            CommandResult::ClusterConnect { name } => {
+                println!("Cluster '{}' connected.", name);
+            }
             CommandResult::ClusterDelete { name } => {
                 println!("Cluster '{}' deleted.", name);
             }
