@@ -1,28 +1,31 @@
 ---
 title: Orbitfile
-description: Orbitfile is the single TOML file for blueprint defaults, sync rules, and template-driven runs in Orbit.
+description: Orbitfile is the single TOML file for project defaults, sync rules, and template-driven runs in Orbit.
 ---
 
-`Orbitfile` is Orbit's blueprint control center.
+`Orbitfile` is Orbit's project control center.
 
-
-Keep it in your blueprint root, and Orbit will discover the nearest `Orbitfile` automatically when you run from that directory tree.
+Keep it in your project root, and Orbit will discover the nearest `Orbitfile` automatically when you run from that directory tree.
 
 ## How Orbit uses Orbitfile
 
 - `orbit run <path> --on <cluster>` or `orbit job run <path> --on <cluster>`: discovers the nearest ancestor directory containing `Orbitfile`.
-- `orbit run <blueprint:tag> --on <cluster>` or `orbit blueprint run ... --on <cluster>`: uses registered blueprint metadata from Orbitfile.
-- `orbit blueprint build`: uses Orbitfile metadata and sync rules while packaging.
+- `orbit run <blueprint:tag> --on <cluster>` or `orbit blueprint run ... --on <cluster>`: uses registered blueprint metadata captured from Orbitfile at build time.
+- `orbit blueprint build`: requires `[blueprint].name` and uses Orbitfile metadata and sync rules while packaging.
 
-This keeps runs reproducible: the same blueprint name, defaults, filters, and templating rules travel with the blueprint.
+This keeps runs reproducible: the same defaults, filters, templating rules, and (when present) blueprint identity travel with the project.
 
 ## Orbitfile sections
 
-- `[blueprint]` (required): defines `name` (must match `^[A-Za-z0-9_-]+$`).
+- `[blueprint]` (optional in general): defines `name` (must match `^[A-Za-z0-9_-]+$`).
+- `[blueprint].name` is required only when building blueprints.
 - `[retrieve]` (optional): `default_path` for `orbit job retrieve`.
 - `[submit]` (optional): `sbatch_script` default for run commands.
 - `[sync]` (optional): `include`/`exclude` rules for synced files.
 - `[template]` (optional): enables templating features.
+
+`orbit init` initializes an Orbitfile with `[blueprint]` by default, so the project is ready for blueprint builds immediately.
+If you only run local directories and do not build blueprints, you can omit the `[blueprint]` section.
 
 ## Templates
 
@@ -157,7 +160,7 @@ Template usage: `{{ resources.gpus }}` and `{{ resources.memory }}`
 
 #### `file_path`
 
-Best when a template needs a validated local filesystem path. Relative paths are resolved from blueprint root.
+Best when a template needs a validated local filesystem path. Relative paths are resolved from project root.
 
 ```toml
 [template.fields.input_file]
@@ -168,7 +171,7 @@ Template usage: `{{ input_file }}`
 
 #### `file_contents`
 
-Best when you want Orbit to read file text from a local file and inject it into rendered templates. Relative paths are resolved from blueprint root.
+Best when you want Orbit to read file text from a local file and inject it into rendered templates. Relative paths are resolved from project root.
 
 ```toml
 [template.fields.license_text]
@@ -183,7 +186,7 @@ Template usage: `{{ license_text }}`
 2. Orbit renders only those files using Tera syntax (`{{ ... }}`), UTF-8 text only, auto-escaping disabled.
 3. Files not listed there are transferred unchanged.
 
-`[template.files].paths` entries are blueprint-root-relative and must stay inside the run root.
+`[template.files].paths` entries are project-root-relative and must stay inside the run root.
 
 ### Value resolution order
 
@@ -217,5 +220,5 @@ Notes:
 ## Create an Orbitfile quickly
 
 ```bash
-orbit blueprint init . --name rna_analysis
+orbit init . --name rna_analysis
 ```

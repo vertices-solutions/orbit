@@ -14,19 +14,19 @@ use crate::app::ports::FilesystemPort;
 const ORBITFILE_NAME: &str = "Orbitfile";
 
 /// Holds include/exclude sync patterns resolved from Orbitfile.
-/// This is used to merge blueprint-level rules with CLI run filters.
+/// This is used to merge Orbitfile-level rules with CLI run filters.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct BlueprintRuleSet {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
 }
 
-/// Parsed and validated blueprint configuration loaded from Orbitfile.
-/// This is the canonical in-memory representation used by blueprint discovery and validation.
+/// Parsed and validated Orbitfile configuration loaded for project runs.
+/// The blueprint name is optional and only required for blueprint build flows.
 #[derive(Debug, Clone, PartialEq)]
-pub struct OrbitfileBlueprintConfig {
+pub struct OrbitfileProjectConfig {
     pub root: PathBuf,
-    pub name: String,
+    pub blueprint_name: Option<String>,
     pub default_retrieve_path: Option<String>,
     pub submit_sbatch_script: Option<String>,
     pub rules: BlueprintRuleSet,
@@ -198,10 +198,10 @@ pub fn upsert_orbitfile_blueprint_name(existing: Option<&str>, name: &str) -> Ap
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
 }
 
-pub fn discover_blueprint_from_run_root(
+pub fn discover_project_from_run_root(
     fs: &dyn FilesystemPort,
     submit_root: &Path,
-) -> AppResult<Option<OrbitfileBlueprintConfig>> {
+) -> AppResult<Option<OrbitfileProjectConfig>> {
     let mut cursor = if fs.is_dir(submit_root)? {
         submit_root.to_path_buf()
     } else {
@@ -214,7 +214,7 @@ pub fn discover_blueprint_from_run_root(
     loop {
         let orbitfile = cursor.join(ORBITFILE_NAME);
         if fs.is_file(&orbitfile)? {
-            let config = load_blueprint_from_root(fs, &cursor)?;
+            let config = load_project_from_root(fs, &cursor)?;
             return Ok(Some(config));
         }
         if !cursor.pop() {
@@ -224,14 +224,14 @@ pub fn discover_blueprint_from_run_root(
     Ok(None)
 }
 
-pub fn load_blueprint_from_root(
+pub fn load_project_from_root(
     fs: &dyn FilesystemPort,
-    blueprint_root: &Path,
-) -> AppResult<OrbitfileBlueprintConfig> {
-    let orbitfile_path = blueprint_root.join(ORBITFILE_NAME);
+    project_root: &Path,
+) -> AppResult<OrbitfileProjectConfig> {
+    let orbitfile_path = project_root.join(ORBITFILE_NAME);
     if !fs.is_file(&orbitfile_path)? {
         return Err(AppError::invalid_argument(format!(
-            "Blueprint has no Orbitfile at {}",
+            "Project has no Orbitfile at {}",
             orbitfile_path.display()
         )));
     }
@@ -239,9 +239,25 @@ pub fn load_blueprint_from_root(
     let bytes = fs.read_file(&orbitfile_path)?;
     let content = String::from_utf8(bytes)
         .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile encoding: {err}")))?;
-    let raw = toml::from_str::<RawOrbitfile>(&content)
-        .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?;
+    parse_orbitfile_config(&content, project_root)
+}
 
+pub fn load_blueprint_from_root(
+    fs: &dyn FilesystemPort,
+    blueprint_root: &Path,
+) -> AppResult<OrbitfileProjectConfig> {
+    let config = load_project_from_root(fs, blueprint_root)?;
+    if config.blueprint_name.is_none() {
+        return Err(AppError::invalid_argument(
+            "blueprint build requires [blueprint].name in Orbitfile",
+        ));
+    }
+    Ok(config)
+}
+
+fn parse_orbitfile_config(content: &str, project_root: &Path) -> AppResult<OrbitfileProjectConfig> {
+    let raw = toml::from_str::<RawOrbitfile>(content)
+        .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?;
     let RawOrbitfile {
         blueprint,
         retrieve,
@@ -250,10 +266,14 @@ pub fn load_blueprint_from_root(
         template,
     } = raw;
 
-    let blueprint =
-        blueprint.ok_or_else(|| AppError::invalid_argument("Orbitfile is missing [blueprint]"))?;
-    let name = blueprint.name.trim().to_string();
-    validate_blueprint_name(&name)?;
+    let blueprint_name = match blueprint {
+        Some(section) => {
+            let name = section.name.trim().to_string();
+            validate_blueprint_name(&name)?;
+            Some(name)
+        }
+        None => None,
+    };
 
     let default_retrieve_path = trim_optional(retrieve.and_then(|section| section.default_path))
         .map(|value| value.to_string());
@@ -269,9 +289,9 @@ pub fn load_blueprint_from_root(
 
     let template = parse_template_config(template)?;
 
-    Ok(OrbitfileBlueprintConfig {
-        root: blueprint_root.to_path_buf(),
-        name,
+    Ok(OrbitfileProjectConfig {
+        root: project_root.to_path_buf(),
+        blueprint_name,
         default_retrieve_path,
         submit_sbatch_script,
         rules: BlueprintRuleSet { include, exclude },
@@ -687,6 +707,41 @@ mod tests {
         assert!(content.contains("/.git/"));
         assert!(content.contains("[template.files]"));
         assert!(content.contains("paths = []"));
+    }
+
+    #[test]
+    fn parse_orbitfile_config_allows_missing_blueprint_section() {
+        let config = parse_orbitfile_config(
+            r#"
+            [submit]
+            sbatch_script = "scripts/submit.sbatch"
+
+            [sync]
+            include = ["src/**"]
+            "#,
+            std::path::Path::new("/tmp/project-a"),
+        )
+        .expect("config");
+        assert!(config.blueprint_name.is_none());
+        assert_eq!(
+            config.submit_sbatch_script.as_deref(),
+            Some("scripts/submit.sbatch")
+        );
+        assert_eq!(config.rules.include, vec!["src/**"]);
+        assert_eq!(config.root, std::path::PathBuf::from("/tmp/project-a"));
+    }
+
+    #[test]
+    fn parse_orbitfile_config_rejects_empty_blueprint_name_if_section_exists() {
+        let err = parse_orbitfile_config(
+            r#"
+            [blueprint]
+            name = "   "
+            "#,
+            std::path::Path::new("/tmp/project-a"),
+        )
+        .expect_err("expected parse failure");
+        assert!(err.message.contains("blueprint name cannot be empty"));
     }
 
     #[test]

@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/cli/commands/orbit.md",
   "sourceDirName": "cli/commands",
   "slug": "/cli/commands/orbit",
-  "permalink": "/cli/commands/orbit",
+  "permalink": "/0.14.0/cli/commands/orbit",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/commands/orbit.md",
@@ -18,6 +18,6 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "orbit ping",
-    "permalink": "/cli/commands/orbit-ping"
+    "permalink": "/0.14.0/cli/commands/orbit-ping"
   }
 }

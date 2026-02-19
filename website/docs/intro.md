@@ -16,10 +16,29 @@ It is designed for a development workflow where code and data preparation stay o
 
 
 ## Main concepts
-Orbit's primary goal is making remote clusters feel like they are just local resources on your machine. For Orbit, **Cluster** is any remote server with Slurm on it (Slurm is the most popular workload scheduler - software that enables scheduling computing workloads on a single server or on a large interconnected fleet of servers). Through Orbit, you can do computing on clusters in two primary ways:
-- **Running projects from directories**: with [orbit run](./cli/commands/orbit-run.md) or [orbit job run](./cli/commands/job/orbit-job-run.md), you can write your code locally and then run it on a remote cluster. Orbit handles transferring files to a run directory, scheduling the job, and then lets you [print logs](./cli/commands/job/orbit-job-logs.md), [check status](./cli/commands/job/orbit-job-get.md), [retrieve results](./cli/commands/job/orbit-job-retrieve.md), or [list running jobs](./cli/commands/job/orbit-job-list.md).
-- **Parametrizing your workflows**: with [Orbitfile](./orbitfile.md), you can create templates and interactively change parameters for your analysis every time you run it.
-- **Building and running blueprints**: version and reproducibly run the same analysis with different parameters. You can [initialize a blueprint](./cli/commands/blueprint/orbit-blueprint-init.md) to create an Orbitfile-backed blueprint directory.
+Orbit's primary goal is making remote clusters feel like they are just local resources on your machine. For Orbit, **Cluster** is any remote server with Slurm on it (Slurm is the most popular workload scheduler - software that enables scheduling computing workloads on a single server or on a large interconnected fleet of servers). The workflow is centered around these concepts:
+- **Project**: any analysis/code you want to run on a cluster.
+- **Directory project**: a project that exists as a local folder on your machine.
+- **Blueprint project**: a project stored by Orbit as a versioned blueprint.
+- **Job**: the result created when a project is submitted to a cluster.
+- **Orbitfile**: project configuration file. It controls sync/template/submit/retrieve behavior for project runs, and optionally carries `[blueprint].name` for blueprint builds.
+
+## How to run the code that you have
+```mermaid
+flowchart TD
+    Project["Project(any analysis you run)"] --> Directory["Your analysis is stored in a local folder"]
+    Project["Project(any analysis you run)"] --> Blueprint["Your analysis bundled in a blueprint for reproducibility and/or sharing"]
+    Directory --> Cluster
+    Blueprint --> Cluster
+    Cluster["Cluster with Slurm"] --> Job["Job is running on a cluster"]
+    Job -->Results["Inspect job status, inspect logs, retrieve job results"]
+```
+
+In practice:
+- You run projects organized in local folders or blueprints with `orbit run` - single entrypoint, or
+- Run local projects with [orbit job run](./cli/commands/job/orbit-job-run.md), or
+- Build and run blueprint projects with [orbit blueprint build](./cli/commands/blueprint/orbit-blueprint-build.md), [orbit blueprint run](./cli/commands/blueprint/orbit-blueprint-run.md);
+- Configure both flows with [Orbitfile](./orbitfile.md).
 
 To enable all that, Orbit consists of two main components that are both installed together with Homebrew and run locally on your machine:
 
@@ -73,7 +92,7 @@ mkdir -p results
 echo "hello from $(hostname)" > results/hello.out
 SBATCH
 ```
-The code above creates a minimal "hello world" blueprint-ready directory: the sbatch script writes output to `results/hello.out` and prints the work-node hostname.
+The code above creates a minimal "hello world" project directory: the sbatch script writes output to `results/hello.out` and prints the work-node hostname.
 
 If your cluster requires extra Slurm directives (for example partition/account), add them to `submit.sbatch` script.
 
@@ -92,15 +111,15 @@ Some Slurm clusters require partition and account to be specified; if that's the
 :::
 
 
-## 4. Initialize your first blueprint
+## 4. Initialize your project Orbitfile
 
 In the same directory:
 
 ```bash
-orbit blueprint init . --name orbit_quickstart
+orbit init . --name orbit_quickstart
 ```
 
-This creates an `Orbitfile` and sets the blueprint name.
+This creates an `Orbitfile` with project defaults and initializes `[blueprint].name`.
 
 ## 5. Build and run your first blueprint
 When you build a blueprint, Orbit:
@@ -115,4 +134,4 @@ orbit run orbit_quickstart:latest --on <cluster-name>
 ```
 
 After local changes, run `orbit blueprint build <path>` again to create a new version.
-Blueprints are identified by `Orbitfile` name: if you change `[blueprint].name`, new builds are associated with a new blueprint.
+Blueprints are identified by `[blueprint].name` in `Orbitfile`: if you change that value, new builds are associated with a new blueprint.

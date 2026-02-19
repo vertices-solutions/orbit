@@ -1,7 +1,7 @@
 {
   "id": "cli/commands/cluster/orbit-cluster",
   "title": "orbit cluster",
-  "description": "Operations on clusters: add, delete, poll, and manage clusters",
+  "description": "Operations on clusters: add, connect, delete, poll, and manage clusters",
   "source": "@site/docs/cli/commands/cluster/orbit-cluster.md",
   "sourceDirName": "cli/commands/cluster",
   "slug": "/cli/commands/cluster/orbit-cluster",
@@ -13,12 +13,12 @@
   "version": "current",
   "frontMatter": {
     "title": "orbit cluster",
-    "description": "Operations on clusters: add, delete, poll, and manage clusters"
+    "description": "Operations on clusters: add, connect, delete, poll, and manage clusters"
   },
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "orbit job submit",
-    "permalink": "/next/cli/commands/job/orbit-job-submit"
+    "title": "orbit job run",
+    "permalink": "/next/cli/commands/job/orbit-job-run"
   },
   "next": {
     "title": "orbit cluster add",

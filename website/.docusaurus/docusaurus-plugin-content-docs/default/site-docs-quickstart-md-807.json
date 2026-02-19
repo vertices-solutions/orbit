@@ -1,7 +1,7 @@
 {
   "id": "quickstart",
   "title": "Quickstart",
-  "description": "Install Orbit, submit your first job, initialize your first project, and submit it in under 5 minutes.",
+  "description": "Install Orbit, run your first job, initialize your first blueprint, and run it in under 5 minutes.",
   "source": "@site/docs/quickstart.md",
   "sourceDirName": ".",
   "slug": "/quickstart",
@@ -13,7 +13,7 @@
   "version": "current",
   "frontMatter": {
     "title": "Quickstart",
-    "description": "Install Orbit, submit your first job, initialize your first project, and submit it in under 5 minutes."
+    "description": "Install Orbit, run your first job, initialize your first blueprint, and run it in under 5 minutes."
   },
   "sidebar": "docsSidebar",
   "previous": {

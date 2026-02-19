@@ -21,7 +21,7 @@
     "permalink": "/next/cli/commands/job/orbit-job-ls"
   },
   "next": {
-    "title": "orbit job submit",
-    "permalink": "/next/cli/commands/job/orbit-job-submit"
+    "title": "orbit job run",
+    "permalink": "/next/cli/commands/job/orbit-job-run"
   }
 }

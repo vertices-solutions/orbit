@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/cli/commands/cluster/orbit-cluster-add.md",
   "sourceDirName": "cli/commands/cluster",
   "slug": "/cli/commands/cluster/orbit-cluster-add",
-  "permalink": "/cli/commands/cluster/orbit-cluster-add",
+  "permalink": "/0.14.0/cli/commands/cluster/orbit-cluster-add",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/commands/cluster/orbit-cluster-add.md",
@@ -18,10 +18,10 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "orbit cluster",
-    "permalink": "/cli/commands/cluster/orbit-cluster"
+    "permalink": "/0.14.0/cli/commands/cluster/orbit-cluster"
   },
   "next": {
     "title": "orbit cluster delete",
-    "permalink": "/cli/commands/cluster/orbit-cluster-delete"
+    "permalink": "/0.14.0/cli/commands/cluster/orbit-cluster-delete"
   }
 }

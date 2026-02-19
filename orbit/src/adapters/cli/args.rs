@@ -29,13 +29,15 @@ pub struct Cli {
 pub enum Cmd {
     /// Check that the daemon is reachable.
     Ping,
-    /// Run either a local directory or a versioned blueprint.
+    /// Initialize a project directory with an Orbitfile.
+    Init(InitArgs),
+    /// Run either a local project directory or a versioned blueprint.
     Run(RunArgs),
     /// Operations on jobs: run jobs, inspect status, and retrieve outputs/results.
     Job(JobArgs),
     /// Operations on clusters: add, connect, delete, poll, and manage clusters.
     Cluster(ClusterArgs),
-    /// Operations on local blueprints and Orbitfile metadata.
+    /// Operations on registered blueprints.
     Blueprint(BlueprintArgs),
     /// Generate shell completions.
     Completions(CompletionsArgs),
@@ -54,8 +56,16 @@ pub struct JobArgs {
 }
 
 #[derive(Args, Debug)]
+pub struct InitArgs {
+    pub path: PathBuf,
+    /// Blueprint name stored in Orbitfile and used when building blueprints.
+    #[arg(long)]
+    pub name: Option<String>,
+}
+
+#[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Path to a local directory, or blueprint ref <name:tag>.
+    /// Path to a local project directory or blueprint in `<name:tag>` format.
     /// Orbit resolves directories first; if not a directory, it resolves as a blueprint.
     pub target: String,
     /// Cluster name.
@@ -203,8 +213,6 @@ pub struct BlueprintArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum BlueprintCmd {
-    /// Initialize a blueprint root and Orbitfile.
-    Init(BlueprintInitArgs),
     /// Build a blueprint tarball and register it locally.
     Build(BlueprintBuildArgs),
     /// Run a registered blueprint by blueprint name.
@@ -213,14 +221,6 @@ pub enum BlueprintCmd {
     List(BlueprintListArgs),
     /// Delete a blueprint from the local registry.
     Delete(BlueprintDeleteArgs),
-}
-
-#[derive(Args, Debug)]
-pub struct BlueprintInitArgs {
-    pub path: PathBuf,
-    /// Blueprint name stored in Orbitfile and the local registry.
-    #[arg(long)]
-    pub name: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -516,6 +516,24 @@ mod tests {
             Cmd::Completions(completions) => assert!(matches!(completions.shell, Shell::Bash)),
             _ => panic!("expected completions command"),
         }
+    }
+
+    #[test]
+    fn init_parses_path_and_name() {
+        let args = Cli::parse_from(["orbit", "init", ".", "--name", "proj_a"]);
+        match args.cmd {
+            Cmd::Init(init) => {
+                assert_eq!(init.path, std::path::PathBuf::from("."));
+                assert_eq!(init.name.as_deref(), Some("proj_a"));
+            }
+            _ => panic!("expected init command"),
+        }
+    }
+
+    #[test]
+    fn blueprint_init_is_not_available() {
+        let args = Cli::try_parse_from(["orbit", "blueprint", "init", "."]);
+        assert!(args.is_err());
     }
 
     #[test]

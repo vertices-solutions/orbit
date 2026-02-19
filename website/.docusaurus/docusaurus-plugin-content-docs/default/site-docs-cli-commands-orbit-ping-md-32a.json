@@ -17,11 +17,11 @@
   },
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "orbit completions",
-    "permalink": "/next/cli/commands/orbit-completions"
+    "title": "orbit init",
+    "permalink": "/next/cli/commands/orbit-init"
   },
   "next": {
-    "title": "orbit",
-    "permalink": "/next/cli/commands/orbit"
+    "title": "orbit run",
+    "permalink": "/next/cli/commands/orbit-run"
   }
 }

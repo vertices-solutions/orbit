@@ -1,9 +1,9 @@
 ---
 title: "orbit run"
-description: "Run either a local directory or a versioned blueprint"
+description: "Run either a local project directory or a versioned blueprint"
 ---
 
-Run either a local directory or a versioned blueprint
+Run either a local project directory or a versioned blueprint
 
 Parent command: [`orbit`](./orbit)
 
@@ -11,7 +11,7 @@ Parent command: [`orbit`](./orbit)
 
 ## Arguments
 
-- `<TARGET>`: Path to a local directory, or blueprint ref <name:tag>. Orbit resolves directories first; if not a directory, it resolves as a blueprint
+- `<TARGET>`: Path to a local project directory or blueprint in `<name:tag>` format. Orbit resolves directories first; if not a directory, it resolves as a blueprint
 
 ## Flags and Options
 

@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/cli/commands/job/orbit-job-submit.md",
   "sourceDirName": "cli/commands/job",
   "slug": "/cli/commands/job/orbit-job-submit",
-  "permalink": "/cli/commands/job/orbit-job-submit",
+  "permalink": "/0.14.0/cli/commands/job/orbit-job-submit",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/commands/job/orbit-job-submit.md",
@@ -18,10 +18,10 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "orbit job retrieve",
-    "permalink": "/cli/commands/job/orbit-job-retrieve"
+    "permalink": "/0.14.0/cli/commands/job/orbit-job-retrieve"
   },
   "next": {
     "title": "orbit cluster",
-    "permalink": "/cli/commands/cluster/orbit-cluster"
+    "permalink": "/0.14.0/cli/commands/cluster/orbit-cluster"
   }
 }

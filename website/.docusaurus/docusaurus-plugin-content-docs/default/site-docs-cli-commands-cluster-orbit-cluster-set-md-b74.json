@@ -21,7 +21,7 @@
     "permalink": "/next/cli/commands/cluster/orbit-cluster-ls"
   },
   "next": {
-    "title": "orbit project",
-    "permalink": "/next/cli/commands/project/orbit-project"
+    "title": "orbit blueprint",
+    "permalink": "/next/cli/commands/blueprint/orbit-blueprint"
   }
 }

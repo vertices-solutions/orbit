@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/cli/index.md",
   "sourceDirName": "cli",
   "slug": "/cli/",
-  "permalink": "/cli/",
+  "permalink": "/0.14.0/cli/",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/index.md",
@@ -18,10 +18,10 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "Documentation Versions",
-    "permalink": "/versioning"
+    "permalink": "/0.14.0/versioning"
   },
   "next": {
     "title": "orbit job",
-    "permalink": "/cli/commands/job/orbit-job"
+    "permalink": "/0.14.0/cli/commands/job/orbit-job"
   }
 }

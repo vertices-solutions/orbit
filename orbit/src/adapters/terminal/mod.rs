@@ -113,7 +113,7 @@ impl OutputPort for TerminalOutput {
             }
             CommandResult::BlueprintInit { name, actions, .. } => {
                 render_blueprint_init_actions(actions)?;
-                println!("Blueprint '{}' initialized", name);
+                println!("Project initialized (blueprint name: '{}')", name);
             }
             CommandResult::BlueprintBuild { blueprint } => {
                 let name = if let Some(tag) = blueprint.version_tag.as_deref() {

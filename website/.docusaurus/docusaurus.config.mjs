@@ -10,12 +10,12 @@ export default {
   "baseUrl": "/",
   "onBrokenLinks": "throw",
   "markdown": {
+    "mermaid": true,
     "hooks": {
       "onBrokenMarkdownLinks": "warn",
       "onBrokenMarkdownImages": "throw"
     },
     "format": "mdx",
-    "mermaid": false,
     "emoji": true,
     "mdx1Compat": {
       "comments": true,
@@ -26,6 +26,9 @@ export default {
       "maintainCase": false
     }
   },
+  "themes": [
+    "@docusaurus/theme-mermaid"
+  ],
   "i18n": {
     "defaultLocale": "en",
     "locales": [
@@ -88,12 +91,8 @@ export default {
           "title": "Project",
           "items": [
             {
-              "label": "Main README",
+              "label": "GitHub",
               "href": "https://github.com/vertices-solutions/orbit"
-            },
-            {
-              "label": "Architecture",
-              "href": "https://github.com/vertices-solutions/orbit/blob/main/architecture/ARCHITECTURE.md"
             }
           ]
         }
@@ -266,6 +265,13 @@ export default {
     "tableOfContents": {
       "minHeadingLevel": 2,
       "maxHeadingLevel": 3
+    },
+    "mermaid": {
+      "theme": {
+        "dark": "dark",
+        "light": "default"
+      },
+      "options": {}
     }
   },
   "baseUrlIssueBanner": true,
@@ -297,7 +303,6 @@ export default {
   ],
   "customFields": {},
   "plugins": [],
-  "themes": [],
   "scripts": [],
   "headTags": [],
   "stylesheets": [],

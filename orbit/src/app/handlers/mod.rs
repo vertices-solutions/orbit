@@ -15,7 +15,7 @@ use crate::app::errors::{
 use crate::app::ports::{StreamKind, StreamOutputPort};
 use crate::app::services::{
     AddClusterResolver, BlueprintRuleSet, PathResolver, SbatchSelector, TemplateSpecialContext,
-    build_default_orbitfile_contents, discover_blueprint_from_run_root, load_blueprint_from_root,
+    build_default_orbitfile_contents, discover_project_from_run_root, load_blueprint_from_root,
     merge_run_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
     sanitize_blueprint_name, template_config_from_json, upsert_orbitfile_blueprint_name,
     validate_blueprint_name,
@@ -115,20 +115,21 @@ pub async fn handle_job_run(ctx: &AppContext, cmd: JobRunCommand) -> AppResult<C
 
     let resolver = PathResolver::new(ctx.fs.as_ref());
     let resolved_local_path = resolver.resolve_local(&cmd.local_path)?;
-    let discovered_blueprint =
-        discover_blueprint_from_run_root(ctx.fs.as_ref(), &resolved_local_path)?;
-    let discovered_blueprint_name = discovered_blueprint.as_ref().map(|bp| bp.name.clone());
+    let discovered_project = discover_project_from_run_root(ctx.fs.as_ref(), &resolved_local_path)?;
+    let discovered_blueprint_name = discovered_project
+        .as_ref()
+        .and_then(|project| project.blueprint_name.clone());
     let sbatch_selector =
         SbatchSelector::new(ctx.fs.as_ref(), ctx.interaction.as_ref(), ctx.ui_mode);
     let sbatchscript = if let Some(explicit) = cmd.sbatchscript.as_deref() {
         sbatch_selector
             .select(&resolved_local_path, Some(explicit))
             .await?
-    } else if let Some(blueprint) = discovered_blueprint.as_ref() {
-        if let Some(configured) = blueprint.submit_sbatch_script.as_deref() {
+    } else if let Some(project) = discovered_project.as_ref() {
+        if let Some(configured) = project.submit_sbatch_script.as_deref() {
             resolve_orbitfile_sbatch_script(
                 ctx.fs.as_ref(),
-                &blueprint.root,
+                &project.root,
                 &resolved_local_path,
                 configured,
             )?
@@ -143,17 +144,16 @@ pub async fn handle_job_run(ctx: &AppContext, cmd: JobRunCommand) -> AppResult<C
     let mut default_retrieve_path = None;
     let mut template_values_json = None;
 
-    if let Some(blueprint) = discovered_blueprint {
-        validate_blueprint_name(&blueprint.name)?;
-        filters = merge_run_filters(filters, &blueprint.rules);
-        default_retrieve_path = blueprint.default_retrieve_path.clone();
-        if let Some(template) = blueprint.template.as_ref() {
+    if let Some(project) = discovered_project {
+        filters = merge_run_filters(filters, &project.rules);
+        default_retrieve_path = project.default_retrieve_path.clone();
+        if let Some(template) = project.template.as_ref() {
             let values = resolve_template_values(
                 template,
                 cmd.template_preset.as_deref(),
                 &cmd.template_fields,
                 cmd.fill_defaults,
-                &blueprint.root,
+                &project.root,
                 ctx.fs.as_ref(),
                 ctx.interaction.as_ref(),
                 ctx.output.as_ref(),
@@ -744,7 +744,7 @@ pub async fn handle_blueprint_init(
     let init_path = resolve_blueprint_init_path(ctx, &cmd.path)?;
     let parent = init_path.parent().ok_or_else(|| {
         AppError::invalid_argument(format!(
-            "cannot initialize blueprint at '{}'",
+            "cannot initialize project at '{}'",
             init_path.display()
         ))
     })?;
@@ -756,7 +756,7 @@ pub async fn handle_blueprint_init(
     }
     if !ctx.fs.is_dir(&init_path)? {
         std::fs::create_dir_all(&init_path).map_err(|err| {
-            AppError::local_error(format!("failed to create blueprint directory: {err}"))
+            AppError::local_error(format!("failed to create project directory: {err}"))
         })?;
     }
 
@@ -1055,7 +1055,7 @@ async fn resolve_blueprint_init_name(
         .interaction
         .prompt_line_with_default_confirmable(
             "Blueprint name: ",
-            "Blueprint identifier used by orbit blueprint commands.",
+            "Blueprint identifier used by orbit blueprint build/run commands.",
             &default_name,
         )
         .await?;

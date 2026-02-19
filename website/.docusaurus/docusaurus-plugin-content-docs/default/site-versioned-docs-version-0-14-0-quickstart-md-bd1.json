@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/quickstart.md",
   "sourceDirName": ".",
   "slug": "/quickstart",
-  "permalink": "/quickstart",
+  "permalink": "/0.14.0/quickstart",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/quickstart.md",
@@ -18,10 +18,10 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "Introduction",
-    "permalink": "/"
+    "permalink": "/0.14.0/"
   },
   "next": {
     "title": "Documentation Versions",
-    "permalink": "/versioning"
+    "permalink": "/0.14.0/versioning"
   }
 }

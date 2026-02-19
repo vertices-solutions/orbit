@@ -17,11 +17,11 @@
   },
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "orbit project submit",
-    "permalink": "/next/cli/commands/project/orbit-project-submit"
+    "title": "orbit blueprint run",
+    "permalink": "/next/cli/commands/blueprint/orbit-blueprint-run"
   },
   "next": {
-    "title": "orbit ping",
-    "permalink": "/next/cli/commands/orbit-ping"
+    "title": "orbit init",
+    "permalink": "/next/cli/commands/orbit-init"
   }
 }

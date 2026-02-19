@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/cli/commands/job/orbit-job.md",
   "sourceDirName": "cli/commands/job",
   "slug": "/cli/commands/job/orbit-job",
-  "permalink": "/cli/commands/job/orbit-job",
+  "permalink": "/0.14.0/cli/commands/job/orbit-job",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/commands/job/orbit-job.md",
@@ -18,10 +18,10 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "CLI Reference",
-    "permalink": "/cli/"
+    "permalink": "/0.14.0/cli/"
   },
   "next": {
     "title": "orbit job cancel",
-    "permalink": "/cli/commands/job/orbit-job-cancel"
+    "permalink": "/0.14.0/cli/commands/job/orbit-job-cancel"
   }
 }

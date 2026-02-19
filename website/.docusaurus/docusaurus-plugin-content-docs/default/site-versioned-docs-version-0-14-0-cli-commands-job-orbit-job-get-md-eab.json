@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/cli/commands/job/orbit-job-get.md",
   "sourceDirName": "cli/commands/job",
   "slug": "/cli/commands/job/orbit-job-get",
-  "permalink": "/cli/commands/job/orbit-job-get",
+  "permalink": "/0.14.0/cli/commands/job/orbit-job-get",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/cli/commands/job/orbit-job-get.md",
@@ -18,10 +18,10 @@
   "sidebar": "docsSidebar",
   "previous": {
     "title": "orbit job cleanup",
-    "permalink": "/cli/commands/job/orbit-job-cleanup"
+    "permalink": "/0.14.0/cli/commands/job/orbit-job-cleanup"
   },
   "next": {
     "title": "orbit job list",
-    "permalink": "/cli/commands/job/orbit-job-list"
+    "permalink": "/0.14.0/cli/commands/job/orbit-job-list"
   }
 }

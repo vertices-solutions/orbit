@@ -7,13 +7,11 @@ Update cluster parameters
 
 Parent command: [`orbit cluster`](./orbit-cluster)
 
-**Usage:** `orbit cluster set --on <CLUSTER> <KEY=VALUE>`
+**Usage:** `orbit cluster set [OPTIONS] --on <CLUSTER> <KEY=VALUE>`
 
 ## Arguments
 
-- `<KEY=VALUE>`: Single setting assignment.
-  Supported keys: `host`, `username`, `port`, `identity_path`, `default_base_path`, `default`.
-  Use `default=true` to mark the cluster as default.
+- `<KEY=VALUE>`: Single setting assignment in KEY=VALUE form. Supported keys: host, username, port, identity_path, default_base_path, default
 
 ## Flags and Options
 

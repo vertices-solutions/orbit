@@ -1,7 +1,7 @@
 {
   "id": "orbitfile",
   "title": "Orbitfile",
-  "description": "Orbitfile is the single TOML file for project defaults, sync rules, and template-driven submissions in Orbit.",
+  "description": "Orbitfile is the single TOML file for project defaults, sync rules, and template-driven runs in Orbit.",
   "source": "@site/docs/orbitfile.md",
   "sourceDirName": ".",
   "slug": "/orbitfile",
@@ -13,6 +13,15 @@
   "version": "current",
   "frontMatter": {
     "title": "Orbitfile",
-    "description": "Orbitfile is the single TOML file for project defaults, sync rules, and template-driven submissions in Orbit."
+    "description": "Orbitfile is the single TOML file for project defaults, sync rules, and template-driven runs in Orbit."
+  },
+  "sidebar": "docsSidebar",
+  "previous": {
+    "title": "Documentation Versions",
+    "permalink": "/next/versioning"
+  },
+  "next": {
+    "title": "CLI Reference",
+    "permalink": "/next/cli/"
   }
 }

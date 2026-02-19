@@ -15,8 +15,9 @@ description: "Top-level help for the orbit CLI"
 ## Subcommands
 
 - [`orbit ping`](./orbit-ping): Check that the daemon is reachable
-- [`orbit run`](./orbit-run): Run either a local directory or a versioned blueprint
+- [`orbit init`](./orbit-init): Initialize a project directory with an Orbitfile
+- [`orbit run`](./orbit-run): Run either a local project directory or a versioned blueprint
 - [`orbit job`](./job/orbit-job): Operations on jobs: run jobs, inspect status, and retrieve outputs/results
-- [`orbit cluster`](./cluster/orbit-cluster): Operations on clusters: add, delete, poll, and manage clusters
-- [`orbit blueprint`](./blueprint/orbit-blueprint): Operations on local blueprints and Orbitfile metadata
+- [`orbit cluster`](./cluster/orbit-cluster): Operations on clusters: add, connect, delete, poll, and manage clusters
+- [`orbit blueprint`](./blueprint/orbit-blueprint): Operations on registered blueprints
 - [`orbit completions`](./orbit-completions): Generate shell completions

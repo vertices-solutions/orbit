@@ -17,7 +17,7 @@
   },
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "orbit ping",
-    "permalink": "/next/cli/commands/orbit-ping"
+    "title": "orbit run",
+    "permalink": "/next/cli/commands/orbit-run"
   }
 }

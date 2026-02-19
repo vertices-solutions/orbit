@@ -15,10 +15,11 @@ use crate::app::ports::{FilesystemPort, InteractionPort, NetworkPort};
 mod project;
 mod templates;
 pub use project::{
-    BlueprintRuleSet, OrbitfileBlueprintConfig, TemplateConfig, TemplateField, TemplateFieldType,
-    build_default_orbitfile_contents, discover_blueprint_from_run_root, load_blueprint_from_root,
-    merge_run_filters, resolve_orbitfile_sbatch_script, sanitize_blueprint_name,
-    template_config_from_json, upsert_orbitfile_blueprint_name, validate_blueprint_name,
+    BlueprintRuleSet, OrbitfileProjectConfig, TemplateConfig, TemplateField, TemplateFieldType,
+    build_default_orbitfile_contents, discover_project_from_run_root, load_blueprint_from_root,
+    load_project_from_root, merge_run_filters, resolve_orbitfile_sbatch_script,
+    sanitize_blueprint_name, template_config_from_json, upsert_orbitfile_blueprint_name,
+    validate_blueprint_name,
 };
 pub use templates::{TemplateSpecialContext, TemplateValues, resolve_template_values};
 

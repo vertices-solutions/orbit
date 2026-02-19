@@ -17,8 +17,8 @@
   },
   "sidebar": "docsSidebar",
   "previous": {
-    "title": "orbit cluster add",
-    "permalink": "/next/cli/commands/cluster/orbit-cluster-add"
+    "title": "orbit cluster connect",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster-connect"
   },
   "next": {
     "title": "orbit cluster get",

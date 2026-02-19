@@ -21,7 +21,7 @@
     "permalink": "/next/cli/commands/cluster/orbit-cluster"
   },
   "next": {
-    "title": "orbit cluster delete",
-    "permalink": "/next/cli/commands/cluster/orbit-cluster-delete"
+    "title": "orbit cluster connect",
+    "permalink": "/next/cli/commands/cluster/orbit-cluster-connect"
   }
 }

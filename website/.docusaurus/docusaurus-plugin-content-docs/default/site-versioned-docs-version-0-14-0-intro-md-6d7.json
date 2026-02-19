@@ -5,7 +5,7 @@
   "source": "@site/versioned_docs/version-0.14.0/intro.md",
   "sourceDirName": ".",
   "slug": "/",
-  "permalink": "/",
+  "permalink": "/0.14.0/",
   "draft": false,
   "unlisted": false,
   "editUrl": "https://github.com/vertices-solutions/orbit/tree/main/website/versioned_docs/version-0.14.0/intro.md",
@@ -19,6 +19,6 @@
   "sidebar": "docsSidebar",
   "next": {
     "title": "Quickstart",
-    "permalink": "/quickstart"
+    "permalink": "/0.14.0/quickstart"
   }
 }

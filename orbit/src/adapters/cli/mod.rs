@@ -49,6 +49,10 @@ pub fn generate_shell_completions(shell: Shell) {
 pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
     match cli.cmd {
         Cmd::Ping => Command::Ping(PingCommand),
+        Cmd::Init(args) => Command::Blueprint(BlueprintCommand::Init(BlueprintInitCommand {
+            path: args.path,
+            name: args.name,
+        })),
         Cmd::Run(args) => {
             let filters = run_filters_from_matches(matches);
             Command::Run(RunCommand {
@@ -143,10 +147,6 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
             }),
         }),
         Cmd::Blueprint(project_args) => Command::Blueprint(match project_args.cmd {
-            BlueprintCmd::Init(args) => BlueprintCommand::Init(BlueprintInitCommand {
-                path: args.path,
-                name: args.name,
-            }),
             BlueprintCmd::Build(args) => BlueprintCommand::Build(BlueprintBuildCommand {
                 path: args.path,
                 package_git: args.package_git,
@@ -181,6 +181,24 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
 mod tests {
     use super::*;
     use clap::FromArgMatches;
+
+    #[test]
+    fn command_from_cli_maps_init_to_blueprint_init_command() {
+        let command = cli_command();
+        let matches = command
+            .try_get_matches_from(["orbit", "init", ".", "--name", "demo"])
+            .expect("parse matches");
+        let cli = Cli::from_arg_matches(&matches).expect("parse cli");
+
+        let command = command_from_cli(cli, &matches);
+        match command {
+            Command::Blueprint(BlueprintCommand::Init(init)) => {
+                assert_eq!(init.path, std::path::PathBuf::from("."));
+                assert_eq!(init.name.as_deref(), Some("demo"));
+            }
+            _ => panic!("expected blueprint init command"),
+        }
+    }
 
     #[test]
     fn command_from_cli_maps_job_list_blueprint_filter() {

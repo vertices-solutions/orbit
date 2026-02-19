@@ -7,7 +7,7 @@ Connect to a cluster and validate the SSH session
 
 Parent command: [`orbit cluster`](./orbit-cluster)
 
-**Usage:** `orbit cluster connect <NAME>`
+**Usage:** `orbit cluster connect [OPTIONS] <NAME>`
 
 ## Arguments
 

@@ -1,9 +1,9 @@
 ---
 title: "orbit blueprint"
-description: "Operations on local blueprints and Orbitfile metadata"
+description: "Operations on registered blueprints"
 ---
 
-Operations on local blueprints and Orbitfile metadata
+Operations on registered blueprints
 
 Parent command: [`orbit`](../orbit)
 
@@ -16,7 +16,6 @@ Parent command: [`orbit`](../orbit)
 
 ## Subcommands
 
-- [`orbit blueprint init`](./orbit-blueprint-init): Initialize a blueprint root and Orbitfile
 - [`orbit blueprint build`](./orbit-blueprint-build): Build a blueprint tarball and register it locally
 - [`orbit blueprint run`](./orbit-blueprint-run): Run a registered blueprint by blueprint name
 - [`orbit blueprint list`](./orbit-blueprint-list): List registered blueprints
