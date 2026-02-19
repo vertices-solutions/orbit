@@ -117,7 +117,7 @@ pub enum ClusterCommand {
     Ls(ClusterLsCommand),
     Add(AddClusterCommand),
     Set(SetClusterCommand),
-    Connect(ConnectClusterCommand),
+    Reconnect(ReconnectClusterCommand),
     Delete(DeleteClusterCommand),
 }
 
@@ -153,7 +153,7 @@ pub struct SetClusterCommand {
 }
 
 #[derive(Debug, Clone)]
-pub struct ConnectClusterCommand {
+pub struct ReconnectClusterCommand {
     pub name: String,
 }
 

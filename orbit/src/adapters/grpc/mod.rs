@@ -29,16 +29,16 @@ use crate::app::ports::{
 use proto::agent_client::AgentClient;
 use proto::{
     AddClusterInit, AddClusterRequest, BuildBlueprintRequest, CancelJobRequest,
-    CancelJobRequestInit, CleanupJobRequest, CleanupJobRequestInit, ConnectClusterInit,
-    ConnectClusterRequest, ConnectClusterStreamEvent, DeleteBlueprintRequest, DeleteClusterRequest,
-    GetBlueprintRequest, JobLogsRequest, JobLogsRequestInit, ListAccountsRequest,
-    ListBlueprintsRequest, ListClustersRequest, ListJobsRequest, ListPartitionsRequest, LsRequest,
-    LsRequestInit, ResolveHomeDirRequest, ResolveHomeDirRequestInit, RetrieveJobRequest,
-    RetrieveJobRequestInit, RunBlueprintRequest, RunJobRequest, RunPathFilterRule, SetClusterInit,
-    SetClusterRequest, UpsertBlueprintRequest, add_cluster_init, add_cluster_request,
-    add_cluster_scratch_selection, connect_cluster_request, connect_cluster_stream_event,
-    resolve_home_dir_request, resolve_home_dir_request_init, run_blueprint_request,
-    run_job_request, run_stream_event, set_cluster_request, stream_event,
+    CancelJobRequestInit, CleanupJobRequest, CleanupJobRequestInit, DeleteBlueprintRequest,
+    DeleteClusterRequest, GetBlueprintRequest, JobLogsRequest, JobLogsRequestInit,
+    ListAccountsRequest, ListBlueprintsRequest, ListClustersRequest, ListJobsRequest,
+    ListPartitionsRequest, LsRequest, LsRequestInit, ReconnectClusterInit, ReconnectClusterRequest,
+    ReconnectClusterStreamEvent, ResolveHomeDirRequest, ResolveHomeDirRequestInit,
+    RetrieveJobRequest, RetrieveJobRequestInit, RunBlueprintRequest, RunJobRequest,
+    RunPathFilterRule, SetClusterInit, SetClusterRequest, UpsertBlueprintRequest, add_cluster_init,
+    add_cluster_request, add_cluster_scratch_selection, reconnect_cluster_request,
+    reconnect_cluster_stream_event, resolve_home_dir_request, resolve_home_dir_request_init,
+    run_blueprint_request, run_job_request, run_stream_event, set_cluster_request, stream_event,
 };
 use run_errors::parse_remote_path_failure;
 
@@ -1170,33 +1170,33 @@ impl OrbitdPort for GrpcOrbitdPort {
         .await
     }
 
-    async fn connect_cluster(
+    async fn reconnect_cluster(
         &self,
         name: String,
         output: &mut dyn StreamOutputPort,
         interaction: &dyn InteractionPort,
     ) -> AppResult<StreamCapture> {
         let mut client = self.connect().await?;
-        let (tx_ans, rx_ans) = mpsc::channel::<ConnectClusterRequest>(16);
+        let (tx_ans, rx_ans) = mpsc::channel::<ReconnectClusterRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
-        let init = ConnectClusterInit { name };
+        let init = ReconnectClusterInit { name };
         tx_ans
-            .send(ConnectClusterRequest {
-                msg: Some(connect_cluster_request::Msg::Init(init)),
+            .send(ReconnectClusterRequest {
+                msg: Some(reconnect_cluster_request::Msg::Init(init)),
             })
             .await
-            .map_err(|_| AppError::internal_error("failed to send connect cluster init"))?;
+            .map_err(|_| AppError::internal_error("failed to send reconnect cluster init"))?;
         let response = client
-            .connect_cluster(Request::new(outbound))
+            .reconnect_cluster(Request::new(outbound))
             .await
             .map_err(app_error_from_status)?;
         let inbound = response.into_inner();
-        handle_connect_cluster_stream(inbound, output, interaction, move |answers| {
+        handle_reconnect_cluster_stream(inbound, output, interaction, move |answers| {
             let tx_ans = tx_ans.clone();
             async move {
                 tx_ans
-                    .send(ConnectClusterRequest {
-                        msg: Some(proto::connect_cluster_request::Msg::Mfa(answers)),
+                    .send(ReconnectClusterRequest {
+                        msg: Some(proto::reconnect_cluster_request::Msg::Mfa(answers)),
                     })
                     .await
                     .map_err(|_| AppError::remote_error("server closed while sending MFA answers"))
@@ -1435,6 +1435,9 @@ fn format_status_error(status: &Status) -> String {
         Code::Cancelled => describe_error_code("canceled")
             .unwrap_or("Canceled.")
             .to_string(),
+        Code::NotFound => describe_error_code("not_found")
+            .unwrap_or("Requested item not found.")
+            .to_string(),
         Code::Unauthenticated => describe_error_code("authentication_failure")
             .unwrap_or("Authentication failed.")
             .to_string(),
@@ -1514,34 +1517,47 @@ where
     Ok(output.take_stream_capture())
 }
 
-async fn handle_connect_cluster_stream<S, F, Fut>(
+async fn handle_reconnect_cluster_stream<S, F, Fut>(
     mut inbound: S,
     output: &mut dyn StreamOutputPort,
     interaction: &dyn InteractionPort,
     mut send_mfa: F,
 ) -> AppResult<StreamCapture>
 where
-    S: tokio_stream::Stream<Item = Result<ConnectClusterStreamEvent, Status>> + Unpin,
+    S: tokio_stream::Stream<Item = Result<ReconnectClusterStreamEvent, Status>> + Unpin,
     F: FnMut(proto::MfaAnswer) -> Fut,
     Fut: Future<Output = AppResult<()>>,
 {
     let mut saw_terminal = false;
     while let Some(item) = inbound.next().await {
         match item {
-            Ok(ConnectClusterStreamEvent { event: Some(ev) }) => match ev {
-                connect_cluster_stream_event::Event::Mfa(mfa) => {
+            Ok(ReconnectClusterStreamEvent { event: Some(ev) }) => match ev {
+                reconnect_cluster_stream_event::Event::Mfa(mfa) => {
                     let answers = interaction.prompt_mfa(&mfa).await?;
                     send_mfa(answers).await?;
                 }
-                connect_cluster_stream_event::Event::Done(_done) => {
+                reconnect_cluster_stream_event::Event::Done(_done) => {
                     output.on_exit_code(0).await?;
                     saw_terminal = true;
                     break;
                 }
             },
-            Ok(ConnectClusterStreamEvent { event: None }) => {}
+            Ok(ReconnectClusterStreamEvent { event: None }) => {}
             Err(status) => {
                 let remote_code = remote_code_for_status(status.code());
+                if status.code() == Code::NotFound {
+                    let detail = status.message().trim();
+                    let message = if detail.is_empty() {
+                        format_status_error(&status)
+                    } else {
+                        detail.to_string()
+                    };
+                    return Err(AppError::with_exit_code(
+                        ErrorType::ClusterNotFound,
+                        message,
+                        cluster_reconnect_error_exit_code(remote_code),
+                    ));
+                }
                 let detail = status.message().trim();
                 if !detail.is_empty() && describe_error_code(detail).is_none() {
                     let detail_line = format!("{detail}\n");
@@ -1549,7 +1565,7 @@ where
                 }
                 output.on_error(remote_code).await?;
                 output
-                    .on_exit_code(cluster_connect_error_exit_code(remote_code))
+                    .on_exit_code(cluster_reconnect_error_exit_code(remote_code))
                     .await?;
                 saw_terminal = true;
                 break;
@@ -1633,7 +1649,7 @@ fn job_logs_error_exit_code(err: &str) -> i32 {
     }
 }
 
-fn cluster_connect_error_exit_code(err: &str) -> i32 {
+fn cluster_reconnect_error_exit_code(err: &str) -> i32 {
     match err {
         "invalid_argument" => 2,
         "not_found" => 3,

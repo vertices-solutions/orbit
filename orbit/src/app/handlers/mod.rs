@@ -616,28 +616,26 @@ pub async fn handle_cluster_set(
     })
 }
 
-pub async fn handle_cluster_connect(
+pub async fn handle_cluster_reconnect(
     ctx: &AppContext,
-    cmd: ConnectClusterCommand,
+    cmd: ReconnectClusterCommand,
 ) -> AppResult<CommandResult> {
     let mut stream_output = ctx.output.stream_output(StreamKind::Generic);
     let capture = ctx
         .orbitd
-        .connect_cluster(
+        .reconnect_cluster(
             cmd.name.clone(),
             &mut *stream_output,
             ctx.interaction.as_ref(),
         )
-        .await?;
+        .await
+        .map_err(|err| normalize_cluster_reconnect_error(err, &cmd.name))?;
     if capture.exit_code.unwrap_or(0) != 0 {
-        return Err(stream_error(
-            &capture,
-            ErrorContext::Cluster,
-            "command failed",
-        ));
+        let err = stream_error(&capture, ErrorContext::Cluster, "command failed");
+        return Err(normalize_cluster_reconnect_error(err, &cmd.name));
     }
 
-    Ok(CommandResult::ClusterConnect { name: cmd.name })
+    Ok(CommandResult::ClusterReconnect { name: cmd.name })
 }
 
 #[derive(Debug)]
@@ -1209,6 +1207,24 @@ fn stream_error(capture: &StreamCapture, context: ErrorContext, default: &str) -
     AppError::with_exit_code(ErrorType::RemoteError, default, exit_code)
 }
 
+fn normalize_cluster_reconnect_error(err: AppError, cluster_name: &str) -> AppError {
+    let message = err.message.trim();
+    if err.kind == ErrorType::ClusterNotFound
+        || (err.kind == ErrorType::RemoteError
+            && (message == "Requested item not found." || message.contains("not found")))
+    {
+        return AppError::with_exit_code(
+            ErrorType::ClusterNotFound,
+            format!(
+                "cluster '{}' is unknown; use 'cluster add' to register it",
+                cluster_name
+            ),
+            err.exit_code,
+        );
+    }
+    err
+}
+
 fn run_error(capture: &RunCapture) -> AppError {
     let exit_code = capture.exit_code.unwrap_or(1);
     if let Some(detail) = capture.detail.as_deref() {
@@ -1379,9 +1395,11 @@ impl StreamOutputPort for SilentStreamOutput {
 
 #[cfg(test)]
 mod tests {
-    use super::{ClusterSetUpdate, parse_cluster_set_setting, run_error};
+    use super::{
+        ClusterSetUpdate, normalize_cluster_reconnect_error, parse_cluster_set_setting, run_error,
+    };
     use crate::app::commands::RunCapture;
-    use crate::app::errors::{ErrorType, SBATCH_SUBMIT_FAILED_CODE};
+    use crate::app::errors::{AppError, ErrorType, SBATCH_SUBMIT_FAILED_CODE};
     use serde_json::json;
 
     #[test]
@@ -1428,5 +1446,31 @@ mod tests {
             err.details,
             Some(json!("sbatch: error: Batch job submission failed"))
         );
+    }
+
+    #[test]
+    fn normalize_cluster_reconnect_error_rewrites_not_found() {
+        let err =
+            AppError::with_exit_code(ErrorType::ClusterNotFound, "Requested item not found.", 3);
+        let normalized = normalize_cluster_reconnect_error(err, "cluster-a");
+        assert_eq!(normalized.kind, ErrorType::ClusterNotFound);
+        assert_eq!(
+            normalized.message,
+            "cluster 'cluster-a' is unknown; use 'cluster add' to register it"
+        );
+        assert_eq!(normalized.exit_code, 3);
+    }
+
+    #[test]
+    fn normalize_cluster_reconnect_error_rewrites_remote_not_found_message() {
+        let err =
+            AppError::with_exit_code(ErrorType::RemoteError, "cluster 'cluster-a' not found", 3);
+        let normalized = normalize_cluster_reconnect_error(err, "cluster-a");
+        assert_eq!(normalized.kind, ErrorType::ClusterNotFound);
+        assert_eq!(
+            normalized.message,
+            "cluster 'cluster-a' is unknown; use 'cluster add' to register it"
+        );
+        assert_eq!(normalized.exit_code, 3);
     }
 }

@@ -8,15 +8,15 @@ use async_trait::async_trait;
 use proto::agent_server::Agent;
 use proto::{
     AddClusterRequest, BuildBlueprintRequest, BuildBlueprintResponse, CancelJobRequest,
-    CleanupJobRequest, ConnectClusterRequest, ConnectClusterStreamEvent, DeleteBlueprintRequest,
-    DeleteBlueprintResponse, DeleteClusterRequest, DeleteClusterResponse, GetBlueprintRequest,
-    GetBlueprintResponse, JobLogsRequest, ListAccountsRequest, ListAccountsResponse,
-    ListAccountsUnitResponse, ListBlueprintsRequest, ListBlueprintsResponse, ListClustersRequest,
-    ListClustersResponse, ListJobsRequest, ListJobsResponse, ListPartitionsRequest,
-    ListPartitionsResponse, ListPartitionsUnitResponse, LsRequest, MfaAnswer, PingReply,
-    PingRequest, ResolveHomeDirRequest, RetrieveJobRequest, RunBlueprintRequest, RunJobRequest,
-    RunStreamEvent, SetClusterRequest, StreamEvent, UpsertBlueprintRequest,
-    UpsertBlueprintResponse, connect_cluster_stream_event, stream_event,
+    CleanupJobRequest, DeleteBlueprintRequest, DeleteBlueprintResponse, DeleteClusterRequest,
+    DeleteClusterResponse, GetBlueprintRequest, GetBlueprintResponse, JobLogsRequest,
+    ListAccountsRequest, ListAccountsResponse, ListAccountsUnitResponse, ListBlueprintsRequest,
+    ListBlueprintsResponse, ListClustersRequest, ListClustersResponse, ListJobsRequest,
+    ListJobsResponse, ListPartitionsRequest, ListPartitionsResponse, ListPartitionsUnitResponse,
+    LsRequest, MfaAnswer, PingReply, PingRequest, ReconnectClusterRequest,
+    ReconnectClusterStreamEvent, ResolveHomeDirRequest, RetrieveJobRequest, RunBlueprintRequest,
+    RunJobRequest, RunStreamEvent, SetClusterRequest, StreamEvent, UpsertBlueprintRequest,
+    UpsertBlueprintResponse, reconnect_cluster_stream_event, stream_event,
 };
 use tokio::sync::mpsc;
 use tokio_stream::Stream;
@@ -40,8 +40,9 @@ pub type OutStream =
     Pin<Box<dyn Stream<Item = Result<StreamEvent, Status>> + Send + Sync + 'static>>;
 pub type RunOutStream =
     Pin<Box<dyn Stream<Item = Result<RunStreamEvent, Status>> + Send + Sync + 'static>>;
-pub type ConnectClusterOutStream =
-    Pin<Box<dyn Stream<Item = Result<ConnectClusterStreamEvent, Status>> + Send + Sync + 'static>>;
+pub type ReconnectClusterOutStream = Pin<
+    Box<dyn Stream<Item = Result<ReconnectClusterStreamEvent, Status>> + Send + Sync + 'static>,
+>;
 
 #[derive(Clone)]
 pub struct GrpcAgent {
@@ -93,16 +94,16 @@ impl RunStreamOutputPort for GrpcRunStreamOutput {
 }
 
 #[derive(Clone)]
-struct GrpcConnectClusterStreamOutput {
-    sender: mpsc::Sender<Result<ConnectClusterStreamEvent, Status>>,
+struct GrpcReconnectClusterStreamOutput {
+    sender: mpsc::Sender<Result<ReconnectClusterStreamEvent, Status>>,
 }
 
 #[async_trait]
-impl StreamOutputPort for GrpcConnectClusterStreamOutput {
+impl StreamOutputPort for GrpcReconnectClusterStreamOutput {
     async fn send(&self, event: StreamEvent) -> Result<(), AppError> {
         let mapped = match event.event {
-            Some(stream_event::Event::Mfa(mfa)) => Some(ConnectClusterStreamEvent {
-                event: Some(connect_cluster_stream_event::Event::Mfa(mfa)),
+            Some(stream_event::Event::Mfa(mfa)) => Some(ReconnectClusterStreamEvent {
+                event: Some(reconnect_cluster_stream_event::Event::Mfa(mfa)),
             }),
             _ => None,
         };
@@ -237,7 +238,7 @@ impl Agent for GrpcAgent {
     type RunBlueprintStream = RunOutStream;
     type AddClusterStream = OutStream;
     type SetClusterStream = OutStream;
-    type ConnectClusterStream = ConnectClusterOutStream;
+    type ReconnectClusterStream = ReconnectClusterOutStream;
     type ResolveHomeDirStream = OutStream;
 
     async fn ping(&self, request: Request<PingRequest>) -> Result<Response<PingReply>, Status> {
@@ -1415,11 +1416,11 @@ impl Agent for GrpcAgent {
         Ok(Response::new(out))
     }
 
-    async fn connect_cluster(
+    async fn reconnect_cluster(
         &self,
-        request: Request<tonic::Streaming<ConnectClusterRequest>>,
-    ) -> Result<Response<Self::ConnectClusterStream>, Status> {
-        let span = rpc_span(&request, "ConnectCluster");
+        request: Request<tonic::Streaming<ReconnectClusterRequest>>,
+    ) -> Result<Response<Self::ReconnectClusterStream>, Status> {
+        let span = rpc_span(&request, "ReconnectCluster");
         let _enter = span.enter();
         tracing::info!(target: "orbitd::rpc", "received request");
         let remote_addr = format_remote_addr(request.remote_addr());
@@ -1431,20 +1432,20 @@ impl Agent for GrpcAgent {
             .ok_or_else(|| Status::invalid_argument(codes::INVALID_ARGUMENT))?;
 
         let name = match init.msg {
-            Some(proto::connect_cluster_request::Msg::Init(i)) => i.name,
+            Some(proto::reconnect_cluster_request::Msg::Init(i)) => i.name,
             _ => {
                 return Err(Status::invalid_argument(codes::INVALID_ARGUMENT));
             }
         };
-        tracing::info!("connect_cluster start remote_addr={remote_addr} name={name}");
+        tracing::info!("reconnect_cluster start remote_addr={remote_addr} name={name}");
         let current_span = tracing::Span::current();
 
-        let (evt_tx, evt_rx) = mpsc::channel::<Result<ConnectClusterStreamEvent, Status>>(64);
+        let (evt_tx, evt_rx) = mpsc::channel::<Result<ReconnectClusterStreamEvent, Status>>(64);
         let (mfa_tx, mfa_rx) = mpsc::channel::<MfaAnswer>(16);
         tokio::spawn(
             async move {
                 while let Ok(Some(item)) = inbound.message().await {
-                    if let Some(proto::connect_cluster_request::Msg::Mfa(ans)) = item.msg
+                    if let Some(proto::reconnect_cluster_request::Msg::Mfa(ans)) = item.msg
                         && mfa_tx.send(ans).await.is_err()
                     {
                         break;
@@ -1455,14 +1456,14 @@ impl Agent for GrpcAgent {
         );
 
         let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
-        let stream_output = GrpcConnectClusterStreamOutput {
+        let stream_output = GrpcReconnectClusterStreamOutput {
             sender: evt_tx.clone(),
         };
         let usecases = self.usecases.clone();
         tokio::spawn(
             async move {
                 if let Err(err) = usecases
-                    .connect_cluster(&name, &stream_output, &mut mfa_port)
+                    .reconnect_cluster(&name, &stream_output, &mut mfa_port)
                     .await
                 {
                     let _ = evt_tx.send(Err(status_from_app_error(err))).await;
@@ -1470,9 +1471,9 @@ impl Agent for GrpcAgent {
                 }
 
                 let _ = evt_tx
-                    .send(Ok(ConnectClusterStreamEvent {
-                        event: Some(connect_cluster_stream_event::Event::Done(
-                            proto::ConnectClusterDone {},
+                    .send(Ok(ReconnectClusterStreamEvent {
+                        event: Some(reconnect_cluster_stream_event::Event::Done(
+                            proto::ReconnectClusterDone {},
                         )),
                     }))
                     .await;
@@ -1480,7 +1481,7 @@ impl Agent for GrpcAgent {
             .instrument(current_span.clone()),
         );
 
-        let out: ConnectClusterOutStream =
+        let out: ReconnectClusterOutStream =
             Box::pin(crate::adapters::ssh::receiver_to_stream(evt_rx));
         Ok(Response::new(out))
     }
@@ -1629,6 +1630,7 @@ impl Agent for GrpcAgent {
 mod tests {
     use super::*;
     use proto::add_cluster_init;
+    use tonic::Code;
 
     #[test]
     fn parse_add_cluster_host_validates() {
@@ -1661,5 +1663,16 @@ mod tests {
         assert_eq!(parse_port(22).unwrap(), 22u16);
         let err = parse_port(u32::from(u16::MAX) + 1).unwrap_err();
         assert_eq!(err.message(), codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn status_from_app_error_maps_not_found_with_message() {
+        let status = status_from_app_error(AppError::with_message(
+            AppErrorKind::NotFound,
+            codes::NOT_FOUND,
+            "cluster 'missing' not found",
+        ));
+        assert_eq!(status.code(), Code::NotFound);
+        assert_eq!(status.message(), "cluster 'missing' not found");
     }
 }

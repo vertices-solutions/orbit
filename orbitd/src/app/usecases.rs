@@ -356,7 +356,7 @@ impl UseCases {
         Ok(slurm::parse_sshare_accounts(&output))
     }
 
-    pub async fn connect_cluster(
+    pub async fn reconnect_cluster(
         &self,
         name: &str,
         stream: &dyn StreamOutputPort,
@@ -4805,13 +4805,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_cluster_returns_not_found_for_unknown_cluster() {
+    async fn reconnect_cluster_returns_not_found_for_unknown_cluster() {
         let usecases = build_usecases_for_list_jobs_tests().await;
         let stream = NoopStreamOutput;
         let mut mfa = NoopMfa::new();
 
         let err = usecases
-            .connect_cluster("unknown-cluster", &stream, &mut mfa)
+            .reconnect_cluster("unknown-cluster", &stream, &mut mfa)
             .await
             .expect_err("must fail");
         assert_eq!(err.kind(), AppErrorKind::NotFound);
@@ -4819,7 +4819,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn connect_cluster_sends_keepalive_when_already_connected() {
+    async fn reconnect_cluster_sends_keepalive_when_already_connected() {
         let remote_exec = Arc::new(ScriptedRemoteExec::new(
             Ok(ExecCapture {
                 stdout: Vec::new(),
@@ -4839,16 +4839,16 @@ mod tests {
         let stream = NoopStreamOutput;
         let mut mfa = NoopMfa::new();
         usecases
-            .connect_cluster("cluster-a", &stream, &mut mfa)
+            .reconnect_cluster("cluster-a", &stream, &mut mfa)
             .await
-            .expect("connect should succeed");
+            .expect("reconnect should succeed");
 
         assert_eq!(remote_exec.keepalive_calls(), 1);
         assert_eq!(remote_exec.ensure_connected_calls(), 0);
     }
 
     #[tokio::test]
-    async fn connect_cluster_establishes_connection_when_disconnected() {
+    async fn reconnect_cluster_establishes_connection_when_disconnected() {
         let remote_exec = Arc::new(ScriptedRemoteExec::new(
             Ok(ExecCapture {
                 stdout: Vec::new(),
@@ -4868,9 +4868,9 @@ mod tests {
         let stream = NoopStreamOutput;
         let mut mfa = NoopMfa::new();
         usecases
-            .connect_cluster("cluster-a", &stream, &mut mfa)
+            .reconnect_cluster("cluster-a", &stream, &mut mfa)
             .await
-            .expect("connect should succeed");
+            .expect("reconnect should succeed");
 
         assert_eq!(remote_exec.keepalive_calls(), 0);
         assert_eq!(remote_exec.ensure_connected_calls(), 1);

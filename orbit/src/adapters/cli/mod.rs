@@ -47,6 +47,7 @@ pub fn generate_shell_completions(shell: Shell) {
 }
 
 pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
+    // CLI -> domain mapper
     match cli.cmd {
         Cmd::Ping => Command::Ping(PingCommand),
         Cmd::Init(args) => Command::Blueprint(BlueprintCommand::Init(BlueprintInitCommand {
@@ -137,8 +138,8 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
                 cluster: args.cluster,
                 setting: args.setting,
             }),
-            ClusterCmd::Connect(args) => {
-                ClusterCommand::Connect(ConnectClusterCommand { name: args.name })
+            ClusterCmd::Reconnect(args) => {
+                ClusterCommand::Reconnect(ReconnectClusterCommand { name: args.name })
             }
             ClusterCmd::Delete(args) => ClusterCommand::Delete(DeleteClusterCommand {
                 name: args.name,
@@ -270,19 +271,19 @@ mod tests {
     }
 
     #[test]
-    fn command_from_cli_maps_cluster_connect_name() {
+    fn command_from_cli_maps_cluster_reconnect_name() {
         let command = cli_command();
         let matches = command
-            .try_get_matches_from(["orbit", "cluster", "connect", "cluster-a"])
+            .try_get_matches_from(["orbit", "cluster", "reconnect", "cluster-a"])
             .expect("parse matches");
         let cli = Cli::from_arg_matches(&matches).expect("parse cli");
 
         let command = command_from_cli(cli, &matches);
         match command {
-            Command::Cluster(ClusterCommand::Connect(connect)) => {
+            Command::Cluster(ClusterCommand::Reconnect(connect)) => {
                 assert_eq!(connect.name, "cluster-a");
             }
-            _ => panic!("expected cluster connect command"),
+            _ => panic!("expected cluster reconnect command"),
         }
     }
 }

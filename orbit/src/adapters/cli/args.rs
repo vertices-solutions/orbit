@@ -35,7 +35,7 @@ pub enum Cmd {
     Run(RunArgs),
     /// Operations on jobs: run jobs, inspect status, and retrieve outputs/results.
     Job(JobArgs),
-    /// Operations on clusters: add, connect, delete, poll, and manage clusters.
+    /// Operations on clusters: add, reconnect, delete, poll, and manage clusters.
     Cluster(ClusterArgs),
     /// Operations on registered blueprints.
     Blueprint(BlueprintArgs),
@@ -287,8 +287,8 @@ pub enum ClusterCmd {
     Add(AddClusterArgs),
     /// Update cluster parameters.
     Set(SetClusterArgs),
-    /// Connect to a cluster and validate the SSH session.
-    Connect(ConnectClusterArgs),
+    /// Reconnect to a cluster and validate the SSH session.
+    Reconnect(ReconnectClusterArgs),
     /// Delete a cluster and its job records.
     Delete(DeleteClusterArgs),
 }
@@ -318,8 +318,8 @@ pub struct SetClusterArgs {
 }
 
 #[derive(Args, Debug)]
-pub struct ConnectClusterArgs {
-    /// Cluster name to connect.
+pub struct ReconnectClusterArgs {
+    /// Cluster name to reconnect.
     pub name: String,
 }
 
@@ -685,22 +685,22 @@ mod tests {
     }
 
     #[test]
-    fn cluster_connect_parses_name() {
-        let args = Cli::parse_from(["orbit", "cluster", "connect", "cluster-a"]);
+    fn cluster_reconnect_parses_name() {
+        let args = Cli::parse_from(["orbit", "cluster", "reconnect", "cluster-a"]);
         match args.cmd {
             Cmd::Cluster(cluster) => match cluster.cmd {
-                ClusterCmd::Connect(connect) => {
+                ClusterCmd::Reconnect(connect) => {
                     assert_eq!(connect.name, "cluster-a");
                 }
-                _ => panic!("expected cluster connect command"),
+                _ => panic!("expected cluster reconnect command"),
             },
             _ => panic!("expected cluster command"),
         }
     }
 
     #[test]
-    fn cluster_connect_requires_name() {
-        let args = Cli::try_parse_from(["orbit", "cluster", "connect"]);
+    fn cluster_reconnect_requires_name() {
+        let args = Cli::try_parse_from(["orbit", "cluster", "reconnect"]);
         assert!(args.is_err());
     }
 
