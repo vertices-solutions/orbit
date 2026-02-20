@@ -25,6 +25,7 @@ pub use templates::{TemplateSpecialContext, TemplateValues, resolve_template_val
 
 const DEFAULT_SSH_PORT: u32 = 22;
 const DEFAULT_BASE_PATH: &str = "~/runs";
+const OTHER_IDENTITY_OPTION: &str = "other";
 
 #[derive(Debug, Clone)]
 pub struct ResolvedAddCluster {
@@ -236,6 +237,41 @@ impl<'a> AddClusterResolver<'a> {
     }
 
     async fn prompt_identity_path(&self, default: Option<&str>) -> AppResult<String> {
+        let identities = discover_identity_paths(self.fs);
+        let (options, default_selection) = build_identity_selector_options(identities);
+        let selected = self
+            .interaction
+            .select_enum(
+                "SSH key",
+                &options,
+                Some(default_selection.as_str()),
+                "Select a private key from ~/.ssh, or choose other to enter a custom path.",
+            )
+            .await?;
+        if selected == OTHER_IDENTITY_OPTION {
+            return self.prompt_custom_identity_path(default).await;
+        }
+        match self
+            .validate_with_feedback(
+                &selected,
+                "Validating identity path...",
+                |input| {
+                    validate_identity_path(self.fs, input)?;
+                    Ok(input.to_string())
+                },
+                |path| format!("Identity path: {path}"),
+            )
+            .await
+        {
+            Ok(path) => Ok(path),
+            Err(_) => {
+                self.prompt_custom_identity_path(Some(selected.as_str()))
+                    .await
+            }
+        }
+    }
+
+    async fn prompt_custom_identity_path(&self, default: Option<&str>) -> AppResult<String> {
         let hint = default.unwrap_or("<none>");
         let help = format!("{hint} - SSH private key path used for authentication.");
         self.prompt_and_validate(
@@ -683,50 +719,82 @@ fn looks_like_identity_file(contents: &[u8]) -> bool {
 }
 
 fn find_preferred_identity_path(fs: &dyn FilesystemPort) -> Option<String> {
-    let home_dir = dirs::home_dir()?;
+    discover_identity_paths(fs).into_iter().next()
+}
+
+fn discover_identity_paths(fs: &dyn FilesystemPort) -> Vec<String> {
+    // TODO: home dir discovery seems to be detail that should be hidden by the FilesystemPort
+    let Some(home_dir) = dirs::home_dir() else {
+        return Vec::new();
+    };
     let ssh_dir = home_dir.join(".ssh");
-    let entries = fs.read_dir(&ssh_dir).ok()?;
+    discover_identity_paths_in_dir(fs, &ssh_dir)
+}
+
+fn discover_identity_paths_in_dir(fs: &dyn FilesystemPort, ssh_dir: &Path) -> Vec<String> {
+    let entries = match fs.read_dir(ssh_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
     let mut ed25519 = Vec::new();
+    let mut rsa = Vec::new();
     let mut other = Vec::new();
-    for entry in entries {
-        let path = entry;
-        let is_dir = fs.is_dir(&path).unwrap_or(false);
-        if is_dir {
+
+    for path in entries {
+        if fs.is_dir(&path).unwrap_or(false) || !fs.is_file(&path).unwrap_or(false) {
             continue;
         }
-        let is_file = fs.is_file(&path).unwrap_or(false);
-        if !is_file {
-            continue;
-        }
+
         let file_name = path
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or_default();
-        if file_name.ends_with(".pub") {
+        let normalized_name = file_name.to_ascii_lowercase();
+        if normalized_name.ends_with(".pub") {
             continue;
         }
         if matches!(
-            file_name,
+            normalized_name.as_str(),
             "authorized_keys" | "known_hosts" | "known_hosts.old" | "config"
         ) {
             continue;
         }
+
         let path_str = path.to_string_lossy().into_owned();
         if validate_identity_path(fs, &path_str).is_err() {
             continue;
         }
-        if file_name.to_ascii_lowercase().contains("ed25519") {
+
+        if normalized_name.contains("ed25519") {
             ed25519.push(path_str);
+        } else if normalized_name.contains("rsa") {
+            rsa.push(path_str);
         } else {
             other.push(path_str);
         }
     }
+
     ed25519.sort();
+    rsa.sort();
     other.sort();
-    ed25519
-        .into_iter()
-        .next()
-        .or_else(|| other.into_iter().next())
+
+    let mut ordered = Vec::with_capacity(ed25519.len() + rsa.len() + other.len());
+    ordered.extend(ed25519);
+    ordered.extend(rsa);
+    ordered.extend(other);
+    ordered
+}
+
+fn build_identity_selector_options(identity_paths: Vec<String>) -> (Vec<String>, String) {
+    let mut options = Vec::with_capacity(identity_paths.len() + 1);
+    options.push(OTHER_IDENTITY_OPTION.to_string());
+    options.extend(identity_paths);
+    let default = options
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| OTHER_IDENTITY_OPTION.to_string());
+    (options, default)
 }
 
 fn collect_sbatch_scripts(fs: &dyn FilesystemPort, root: &Path) -> AppResult<Vec<PathBuf>> {
@@ -909,6 +977,12 @@ mod tests {
         ))
     }
 
+    fn write_identity_file(dir: &Path, name: &str) {
+        let content =
+            b"-----BEGIN OPENSSH PRIVATE KEY-----\nkey\n-----END OPENSSH PRIVATE KEY-----\n";
+        std::fs::write(dir.join(name), content).unwrap();
+    }
+
     #[tokio::test]
     async fn resolve_add_cluster_non_interactive_defaults() {
         let listener = match TcpListener::bind("127.0.0.1:0") {
@@ -1045,6 +1119,49 @@ mod tests {
     #[test]
     fn validate_name_accepts_hostname_style() {
         assert!(validate_name("gpu.cluster-01", &HashSet::new()).is_ok());
+    }
+
+    #[test]
+    fn discover_identity_paths_orders_ed25519_then_rsa_then_other() {
+        let root = temp_dir();
+        write_identity_file(&root, "id_rsa");
+        write_identity_file(&root, "id_ed25519");
+        write_identity_file(&root, "zeta");
+        write_identity_file(&root, "id_ed25519_work");
+        write_identity_file(&root, "id_rsa_backup");
+        std::fs::write(root.join("id_rsa.pub"), "ssh-rsa AAAA").unwrap();
+        std::fs::write(root.join("known_hosts"), "known-host").unwrap();
+
+        let discovered = discover_identity_paths_in_dir(&StdFilesystem, &root);
+        let expected = vec![
+            root.join("id_ed25519").to_string_lossy().to_string(),
+            root.join("id_ed25519_work").to_string_lossy().to_string(),
+            root.join("id_rsa").to_string_lossy().to_string(),
+            root.join("id_rsa_backup").to_string_lossy().to_string(),
+            root.join("zeta").to_string_lossy().to_string(),
+        ];
+        assert_eq!(discovered, expected);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn build_identity_selector_options_places_other_first_with_second_default() {
+        let identities = vec![
+            "/tmp/key-ed25519".to_string(),
+            "/tmp/key-rsa".to_string(),
+            "/tmp/key-other".to_string(),
+        ];
+        let (options, default) = build_identity_selector_options(identities);
+        assert_eq!(options[0], OTHER_IDENTITY_OPTION);
+        assert_eq!(options[1], "/tmp/key-ed25519");
+        assert_eq!(default, "/tmp/key-ed25519");
+    }
+
+    #[test]
+    fn build_identity_selector_options_defaults_to_other_when_no_keys() {
+        let (options, default) = build_identity_selector_options(Vec::new());
+        assert_eq!(options, vec![OTHER_IDENTITY_OPTION.to_string()]);
+        assert_eq!(default, OTHER_IDENTITY_OPTION.to_string());
     }
 
     fn temp_dir() -> PathBuf {

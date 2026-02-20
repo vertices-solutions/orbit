@@ -389,7 +389,8 @@ pub struct AddClusterArgs {
     #[arg(long)]
     pub name: Option<String>,
 
-    /// Defaults to ~/.ssh/id_ed25519.
+    /// In interactive mode, pick from discovered ~/.ssh keys (or enter a custom path via "other").
+    /// In non-interactive mode, defaults to the first discovered key (prefers ed25519, then rsa).
     #[arg(long)]
     pub identity_path: Option<String>,
 
