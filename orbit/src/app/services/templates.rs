@@ -226,30 +226,40 @@ async fn prompt_for_field(
     let prompt = format!("{name}: ");
     let help = description.unwrap_or("");
     loop {
-        let input = if let Some(default) = default {
+        let mut prompt_line = if let Some(default) = default {
             let default_str = json_value_to_string(default)?;
             interaction
-                .prompt_line_with_default(&prompt, help, &default_str)
+                .prompt_line_with_default_confirmable(&prompt, help, &default_str)
                 .await?
         } else {
-            interaction.prompt_line(&prompt, help).await?
+            interaction.prompt_line_confirmable(&prompt, help).await?
         };
+        let input = prompt_line.input.clone();
+        prompt_line.start_validation("Validating input...")?;
         let parsed = match parse_template_value_from_string(field_type, enum_values, &input) {
             Ok(value) => value,
             Err(err) => {
-                output.warn(&err.message).await?;
+                prompt_line.finish_failure(&validation_error_message(&err))?;
                 continue;
             }
         };
         if validate_paths && is_path_field(field_type) {
             if let Err(err) = validate_path(&input, project_root, field_type, fs) {
-                output.warn(&err.message).await?;
+                prompt_line.finish_failure(&validation_error_message(&err))?;
                 continue;
             }
         }
         let message = format_confirmation_message(name, &parsed, Some(&input))?;
-        output.success(&message).await?;
+        prompt_line.finish_success(&message)?;
         return Ok(parsed);
+    }
+}
+
+fn validation_error_message(err: &AppError) -> String {
+    if err.message.trim().is_empty() {
+        "validation failed".to_string()
+    } else {
+        err.message.clone()
     }
 }
 
