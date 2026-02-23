@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
 use proto::{RunPathFilterAction, RunPathFilterRule};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -35,7 +36,7 @@ pub struct OrbitfileProjectConfig {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TemplateConfig {
-    pub fields: BTreeMap<String, TemplateField>,
+    pub fields: IndexMap<String, TemplateField>,
     pub files: Vec<String>,
     pub presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
     #[serde(default)]
@@ -114,11 +115,11 @@ struct RawSync {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RawTemplate {
     #[serde(default)]
-    fields: BTreeMap<String, RawTemplateField>,
+    fields: IndexMap<String, RawTemplateField>,
     #[serde(default)]
     files: RawTemplateFiles,
     #[serde(default)]
-    presets: BTreeMap<String, BTreeMap<String, toml::Value>>,
+    presets: IndexMap<String, IndexMap<String, toml::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -409,7 +410,7 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
         return Ok(None);
     };
 
-    let mut fields = BTreeMap::new();
+    let mut fields = IndexMap::new();
     for (name, raw_field) in raw.fields {
         let field_name = name.trim();
         if field_name.is_empty() {
@@ -418,6 +419,11 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
             ));
         }
         validate_template_field_name(field_name)?;
+        if fields.contains_key(field_name) {
+            return Err(AppError::invalid_argument(format!(
+                "template field '{field_name}' is listed more than once"
+            )));
+        }
         let field_type = parse_template_field_type(&raw_field.field_type)?;
         let enum_values = normalize_enum_values(field_name, field_type, raw_field.values)?;
         let field = TemplateField {
@@ -783,10 +789,40 @@ mod tests {
         assert!(template.fields.contains_key("sample_name"));
         assert!(template.fields.contains_key("num_steps"));
         assert!(template.fields.contains_key("config"));
+        assert_eq!(
+            template.fields.keys().cloned().collect::<Vec<_>>(),
+            vec!["sample_name", "num_steps", "config", "mode"]
+        );
         let mode = template.fields.get("mode").expect("mode");
         assert_eq!(mode.enum_values, vec!["fast", "accurate"]);
         assert_eq!(template.files, vec!["configs/run.yaml"]);
         assert!(template.presets.contains_key("fast"));
+    }
+
+    #[test]
+    fn parse_template_config_preserves_declared_field_order() {
+        let raw = toml::from_str::<RawOrbitfile>(
+            r#"
+            [template]
+
+            [template.fields.zeta]
+            type = "string"
+
+            [template.fields.alpha]
+            type = "string"
+
+            [template.fields.beta]
+            type = "string"
+            "#,
+        )
+        .expect("orbitfile");
+        let template = parse_template_config(raw.template)
+            .expect("parse")
+            .expect("template");
+        assert_eq!(
+            template.fields.keys().cloned().collect::<Vec<_>>(),
+            vec!["zeta", "alpha", "beta"]
+        );
     }
 
     #[test]

@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use tempfile::TempDir;
@@ -25,16 +26,16 @@ pub struct PreparedTemplate {
     pub values_json: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TemplateConfig {
-    fields: BTreeMap<String, TemplateField>,
+    fields: IndexMap<String, TemplateField>,
     files: Vec<String>,
     presets: BTreeMap<String, BTreeMap<String, JsonValue>>,
     #[serde(default)]
     special_variables: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TemplateFieldType {
     String,
@@ -46,7 +47,7 @@ enum TemplateFieldType {
     Enum,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 struct TemplateField {
     field_type: TemplateFieldType,
     default: Option<JsonValue>,
@@ -63,11 +64,11 @@ struct RawOrbitfile {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RawTemplate {
     #[serde(default)]
-    fields: BTreeMap<String, RawTemplateField>,
+    fields: IndexMap<String, RawTemplateField>,
     #[serde(default)]
     files: RawTemplateFiles,
     #[serde(default)]
-    presets: BTreeMap<String, BTreeMap<String, toml::Value>>,
+    presets: IndexMap<String, IndexMap<String, toml::Value>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -205,13 +206,18 @@ fn parse_template_config(raw: Option<RawTemplate>) -> AppResult<Option<TemplateC
         return Ok(None);
     };
 
-    let mut fields = BTreeMap::new();
+    let mut fields = IndexMap::new();
     for (name, raw_field) in raw.fields {
         let field_name = name.trim();
         if field_name.is_empty() {
             return Err(invalid_argument("template field name cannot be empty"));
         }
         validate_template_field_name(field_name)?;
+        if fields.contains_key(field_name) {
+            return Err(invalid_argument(format!(
+                "template field '{field_name}' is listed more than once"
+            )));
+        }
         let field_type = parse_template_field_type(&raw_field.field_type)?;
         let enum_values = normalize_enum_values(field_name, field_type, raw_field.values)?;
         let field = TemplateField {
@@ -1378,6 +1384,34 @@ mod tests {
             .expect("load config")
             .expect("template config");
         assert!(json.contains("\"files\":[\"config.txt\"]"));
+    }
+
+    #[test]
+    fn load_template_config_json_preserves_declared_field_order() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let orbitfile = r#"
+            [template]
+
+            [template.fields.zeta]
+            type = "string"
+
+            [template.fields.alpha]
+            type = "string"
+
+            [template.fields.beta]
+            type = "string"
+        "#;
+        let orbitfile_path = root.path().join("Orbitfile");
+        std::fs::write(&orbitfile_path, orbitfile).expect("orbitfile");
+
+        let json = load_template_config_json(&orbitfile_path)
+            .expect("load config")
+            .expect("template config");
+        let parsed: TemplateConfig = serde_json::from_str(&json).expect("json");
+        assert_eq!(
+            parsed.fields.keys().map(String::as_str).collect::<Vec<_>>(),
+            vec!["zeta", "alpha", "beta"]
+        );
     }
 
     #[test]
