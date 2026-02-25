@@ -1,21 +1,21 @@
 ---
-title: "orbit run"
-description: "Run either a local project directory or a versioned blueprint"
+title: "orbit blueprint run"
+description: "Run a registered blueprint by blueprint name"
 ---
 
-Run either a local project directory or a versioned blueprint
+Run a registered blueprint by blueprint name
 
-Parent command: [`orbit`](./orbit)
+Parent command: [`orbit blueprint`](./orbit-blueprint)
 
-**Usage:** `orbit run [OPTIONS] <TARGET>`
+**Usage:** `orbit blueprint run [OPTIONS] <BLUEPRINT>`
 
 ## Arguments
 
-- `<TARGET>`: Path to a project you want to run on cluster - either in local directory or blueprint in `<name:tag>` format. Orbit resolves directories first; if not a directory, it resolves as a blueprint
+- `<BLUEPRINT>`: Built blueprint name:tag (e.g., my-blueprint:20260112.001 or my-blueprint:latest)
 
 ## Flags and Options
 
-- `--on <CLUSTER>`: Cluster name. If omitted, the default cluster will be used
+- `--on <CLUSTER>`: Cluster name
 - `--non-interactive`: Run without prompts, fail on MFA, and output JSON only.
 - `--sbatchscript <PATH>`: Path to the sbatch script to run
 - `--preset <PRESET>`: Apply a template preset before prompting for missing fields
