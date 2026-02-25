@@ -18,6 +18,7 @@ impl Dispatcher {
     pub async fn dispatch(&self, command: Command) -> AppResult<i32> {
         let result = match command {
             Command::Ping(cmd) => handlers::handle_ping(&self.ctx, cmd).await,
+            Command::Init(cmd) => handlers::handle_project_init(&self.ctx, cmd).await,
             Command::Run(cmd) => handlers::handle_run(&self.ctx, cmd).await,
             Command::Job(cmd) => match cmd {
                 JobCommand::Run(cmd) => handlers::handle_job_run(&self.ctx, cmd).await,
@@ -43,9 +44,6 @@ impl Dispatcher {
                 }
             },
             Command::Blueprint(cmd) => match cmd {
-                BlueprintCommand::Init(cmd) => {
-                    handlers::handle_blueprint_init(&self.ctx, cmd).await
-                }
                 BlueprintCommand::Build(cmd) => {
                     handlers::handle_blueprint_build(&self.ctx, cmd).await
                 }

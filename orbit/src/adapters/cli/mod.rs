@@ -50,10 +50,10 @@ pub fn command_from_cli(cli: Cli, matches: &ArgMatches) -> Command {
     // CLI -> domain mapper
     match cli.cmd {
         Cmd::Ping => Command::Ping(PingCommand),
-        Cmd::Init(args) => Command::Blueprint(BlueprintCommand::Init(BlueprintInitCommand {
+        Cmd::Init(args) => Command::Init(ProjectInitCommand {
             path: args.path,
             name: args.name,
-        })),
+        }),
         Cmd::Run(args) => {
             let filters = run_filters_from_matches(matches);
             Command::Run(RunCommand {
@@ -184,7 +184,7 @@ mod tests {
     use clap::FromArgMatches;
 
     #[test]
-    fn command_from_cli_maps_init_to_blueprint_init_command() {
+    fn command_from_cli_maps_init_to_project_init_command() {
         let command = cli_command();
         let matches = command
             .try_get_matches_from(["orbit", "init", ".", "--name", "demo"])
@@ -193,11 +193,11 @@ mod tests {
 
         let command = command_from_cli(cli, &matches);
         match command {
-            Command::Blueprint(BlueprintCommand::Init(init)) => {
+            Command::Init(init) => {
                 assert_eq!(init.path, std::path::PathBuf::from("."));
                 assert_eq!(init.name.as_deref(), Some("demo"));
             }
-            _ => panic!("expected blueprint init command"),
+            _ => panic!("expected init command"),
         }
     }
 

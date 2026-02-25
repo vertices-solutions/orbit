@@ -11,21 +11,21 @@ Keep it in your project root, and Orbit will discover the nearest `Orbitfile` au
 
 - `orbit run <path> --on <cluster>` or `orbit job run <path> --on <cluster>`: discovers the nearest ancestor directory containing `Orbitfile`.
 - `orbit run <blueprint:tag> --on <cluster>` or `orbit blueprint run ... --on <cluster>`: uses registered blueprint metadata captured from Orbitfile at build time.
-- `orbit blueprint build`: requires `[blueprint].name` and uses Orbitfile metadata and sync rules while packaging.
+- `orbit blueprint build`: requires `[project].name` and uses Orbitfile metadata and sync rules while packaging.
 
 This keeps runs reproducible: the same defaults, filters, templating rules, and (when present) blueprint identity travel with the project.
 
 ## Orbitfile sections
 
-- `[blueprint]` (optional in general): defines `name` (must match `^[A-Za-z0-9_-]+$`).
-- `[blueprint].name` is required only when building blueprints.
+- `[project]` (optional in general): defines `name` (must match `^[A-Za-z0-9_-]+$`).
+- `[project].name` is required only when building blueprints.
 - `[retrieve]` (optional): `default_path` for `orbit job retrieve`.
 - `[submit]` (optional): `sbatch_script` default for run commands.
 - `[sync]` (optional): `include`/`exclude` rules for synced files.
 - `[template]` (optional): enables templating features.
 
-`orbit init` initializes an Orbitfile with `[blueprint]` by default, so the project is ready for blueprint builds immediately.
-If you only run local directories and do not build blueprints, you can omit the `[blueprint]` section.
+`orbit init` initializes an Orbitfile with `[project]` by default, so the project is ready for blueprint builds immediately.
+If you only run local directories and do not build blueprints, you can omit the `[project]` section.
 
 ## Templates
 
@@ -42,7 +42,7 @@ Imagine the same pipeline is run for multiple samples. You want:
 An Orbitfile like this gives you that flow:
 
 ```toml
-[blueprint]
+[project]
 name = "rna_analysis"
 
 [submit]

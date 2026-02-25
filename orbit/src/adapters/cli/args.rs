@@ -58,17 +58,17 @@ pub struct JobArgs {
 #[derive(Args, Debug)]
 pub struct InitArgs {
     pub path: PathBuf,
-    /// Blueprint name stored in Orbitfile and used when building blueprints.
+    /// Project name - it will be stored in Orbitfile and you will be able to filter jobs by it.
     #[arg(long)]
     pub name: Option<String>,
 }
 
 #[derive(Args, Debug)]
 pub struct RunArgs {
-    /// Path to a local project directory or blueprint in `<name:tag>` format.
+    /// Path to a project you want to run on cluster - either in local directory or blueprint in `<name:tag>` format.
     /// Orbit resolves directories first; if not a directory, it resolves as a blueprint.
     pub target: String,
-    /// Cluster name.
+    /// Cluster name. If omitted, the default cluster will be used.
     #[arg(long = "on", value_name = "CLUSTER")]
     pub cluster: Option<String>,
     /// Path to the sbatch script to run.

@@ -21,7 +21,7 @@ Orbit's primary goal is making remote clusters feel like they are just local res
 - **Directory project**: a project that exists as a local folder on your machine.
 - **Blueprint project**: a project stored by Orbit as a versioned blueprint.
 - **Job**: the result created when a project is submitted to a cluster.
-- **Orbitfile**: project configuration file. It controls sync/template/submit/retrieve behavior for project runs, and optionally carries `[blueprint].name` for blueprint builds.
+- **Orbitfile**: project configuration file. It controls sync/template/submit/retrieve behavior for project runs, and optionally carries `[project].name` for blueprint builds.
 
 ## How to run the code that you have
 ```mermaid
@@ -119,7 +119,7 @@ In the same directory:
 orbit init . --name orbit_quickstart
 ```
 
-This creates an `Orbitfile` with project defaults and initializes `[blueprint].name`.
+This creates an `Orbitfile` with project defaults and initializes `[project].name`.
 
 ## 5. Build and run your first blueprint
 When you build a blueprint, Orbit:
@@ -134,4 +134,4 @@ orbit run orbit_quickstart:latest --on <cluster-name>
 ```
 
 After local changes, run `orbit blueprint build <path>` again to create a new version.
-Blueprints are identified by `[blueprint].name` in `Orbitfile`: if you change that value, new builds are associated with a new blueprint.
+Blueprints are identified by `[project].name` in `Orbitfile`: if you change that value, new builds are associated with a new blueprint.

@@ -68,7 +68,7 @@ pub struct TemplateField {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct RawOrbitfile {
     #[serde(default)]
-    blueprint: Option<RawBlueprint>,
+    project: Option<RawProject>,
     #[serde(default)]
     retrieve: Option<RawRetrieve>,
     #[serde(default)]
@@ -79,10 +79,10 @@ struct RawOrbitfile {
     template: Option<RawTemplate>,
 }
 
-/// Raw [blueprint] section used while loading and writing Orbitfiles.
+/// Raw [project] section used while loading and writing Orbitfiles.
 /// The name is validated after parsing.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct RawBlueprint {
+struct RawProject {
     name: String,
 }
 
@@ -140,7 +140,7 @@ struct RawTemplateFiles {
     paths: Vec<String>,
 }
 
-pub fn validate_blueprint_name(name: &str) -> AppResult<()> {
+pub fn validate_project_name(name: &str) -> AppResult<()> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(AppError::invalid_argument("blueprint name cannot be empty"));
@@ -156,7 +156,11 @@ pub fn validate_blueprint_name(name: &str) -> AppResult<()> {
     Ok(())
 }
 
-pub fn sanitize_blueprint_name(input: &str) -> String {
+pub fn validate_blueprint_name(name: &str) -> AppResult<()> {
+    validate_project_name(name)
+}
+
+pub fn sanitize_project_name(input: &str) -> String {
     input
         .trim()
         .chars()
@@ -164,10 +168,14 @@ pub fn sanitize_blueprint_name(input: &str) -> String {
         .collect()
 }
 
+pub fn sanitize_blueprint_name(input: &str) -> String {
+    sanitize_project_name(input)
+}
+
 pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
-    validate_blueprint_name(name)?;
+    validate_project_name(name)?;
     let mut raw = RawOrbitfile {
-        blueprint: Some(RawBlueprint {
+        project: Some(RawProject {
             name: name.trim().to_string(),
         }),
         ..RawOrbitfile::default()
@@ -180,14 +188,14 @@ pub fn build_default_orbitfile_contents(name: &str) -> AppResult<String> {
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
 }
 
-pub fn upsert_orbitfile_blueprint_name(existing: Option<&str>, name: &str) -> AppResult<String> {
-    validate_blueprint_name(name)?;
+pub fn upsert_orbitfile_project_name(existing: Option<&str>, name: &str) -> AppResult<String> {
+    validate_project_name(name)?;
     let mut raw = match existing {
         Some(contents) => toml::from_str::<RawOrbitfile>(contents)
             .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?,
         None => RawOrbitfile::default(),
     };
-    raw.blueprint = Some(RawBlueprint {
+    raw.project = Some(RawProject {
         name: name.trim().to_string(),
     });
     if raw.sync.is_none() {
@@ -197,6 +205,10 @@ pub fn upsert_orbitfile_blueprint_name(existing: Option<&str>, name: &str) -> Ap
         });
     }
     toml::to_string(&raw).map_err(|err| AppError::local_error(err.to_string()))
+}
+
+pub fn upsert_orbitfile_blueprint_name(existing: Option<&str>, name: &str) -> AppResult<String> {
+    upsert_orbitfile_project_name(existing, name)
 }
 
 pub fn discover_project_from_run_root(
@@ -250,7 +262,7 @@ pub fn load_blueprint_from_root(
     let config = load_project_from_root(fs, blueprint_root)?;
     if config.blueprint_name.is_none() {
         return Err(AppError::invalid_argument(
-            "blueprint build requires [blueprint].name in Orbitfile",
+            "blueprint build requires [project].name in Orbitfile",
         ));
     }
     Ok(config)
@@ -260,17 +272,17 @@ fn parse_orbitfile_config(content: &str, project_root: &Path) -> AppResult<Orbit
     let raw = toml::from_str::<RawOrbitfile>(content)
         .map_err(|err| AppError::invalid_argument(format!("invalid Orbitfile: {err}")))?;
     let RawOrbitfile {
-        blueprint,
+        project,
         retrieve,
         submit,
         sync,
         template,
     } = raw;
 
-    let blueprint_name = match blueprint {
+    let blueprint_name = match project {
         Some(section) => {
             let name = section.name.trim().to_string();
-            validate_blueprint_name(&name)?;
+            validate_project_name(&name)?;
             Some(name)
         }
         None => None,
@@ -705,9 +717,9 @@ mod tests {
     }
 
     #[test]
-    fn default_orbitfile_contains_blueprint_and_git_exclude() {
+    fn default_orbitfile_contains_project_and_git_exclude() {
         let content = build_default_orbitfile_contents("demo").expect("content");
-        assert!(content.contains("[blueprint]"));
+        assert!(content.contains("[project]"));
         assert!(content.contains("name = \"demo\""));
         assert!(content.contains("[sync]"));
         assert!(content.contains("/.git/"));
@@ -716,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_orbitfile_config_allows_missing_blueprint_section() {
+    fn parse_orbitfile_config_allows_missing_project_section() {
         let config = parse_orbitfile_config(
             r#"
             [submit]
@@ -738,10 +750,10 @@ mod tests {
     }
 
     #[test]
-    fn parse_orbitfile_config_rejects_empty_blueprint_name_if_section_exists() {
+    fn parse_orbitfile_config_rejects_empty_blueprint_name_if_project_section_exists() {
         let err = parse_orbitfile_config(
             r#"
-            [blueprint]
+            [project]
             name = "   "
             "#,
             std::path::Path::new("/tmp/project-a"),
@@ -754,7 +766,7 @@ mod tests {
     fn parse_template_config_accepts_fields_files_and_presets() {
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [blueprint]
+            [project]
             name = "demo"
 
             [template]
@@ -987,7 +999,7 @@ mod tests {
     fn parse_template_config_rejects_invalid_inputs() {
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [blueprint]
+            [project]
             name = "demo"
 
             [template]
@@ -1002,7 +1014,7 @@ mod tests {
 
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [blueprint]
+            [project]
             name = "demo"
 
             [template]
@@ -1016,7 +1028,7 @@ mod tests {
 
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [blueprint]
+            [project]
             name = "demo"
 
             [template]
@@ -1033,7 +1045,7 @@ mod tests {
 
         let raw = toml::from_str::<RawOrbitfile>(
             r#"
-            [blueprint]
+            [project]
             name = "demo"
 
             [template]

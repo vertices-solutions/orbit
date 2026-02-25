@@ -15,6 +15,7 @@ pub use results::{
 #[derive(Debug, Clone)]
 pub enum Command {
     Ping(PingCommand),
+    Init(ProjectInitCommand),
     Run(RunCommand),
     Job(JobCommand),
     Cluster(ClusterCommand),
@@ -166,7 +167,6 @@ pub struct DeleteClusterCommand {
 
 #[derive(Debug, Clone)]
 pub enum BlueprintCommand {
-    Init(BlueprintInitCommand),
     Build(BlueprintBuildCommand),
     Run(BlueprintRunCommand),
     List(BlueprintListCommand),
@@ -174,7 +174,7 @@ pub enum BlueprintCommand {
 }
 
 #[derive(Debug, Clone)]
-pub struct BlueprintInitCommand {
+pub struct ProjectInitCommand {
     pub path: PathBuf,
     pub name: Option<String>,
 }

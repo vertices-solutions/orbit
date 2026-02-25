@@ -412,7 +412,7 @@ fn result_to_json(result: &CommandResult) -> Value {
             "name": name,
             "status": "deleted",
         }),
-        CommandResult::BlueprintInit {
+        CommandResult::Init {
             name,
             path,
             orbitfile,

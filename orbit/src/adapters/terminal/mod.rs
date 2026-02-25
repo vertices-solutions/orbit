@@ -39,7 +39,7 @@ impl TerminalOutput {
     }
 }
 
-fn render_blueprint_init_actions(actions: &[BlueprintInitAction]) -> AppResult<()> {
+fn render_project_init_actions(actions: &[BlueprintInitAction]) -> AppResult<()> {
     for action in actions {
         match &action.status {
             InitActionStatus::Success => {
@@ -111,9 +111,11 @@ impl OutputPort for TerminalOutput {
             CommandResult::ClusterDelete { name } => {
                 println!("Cluster '{}' deleted.", name);
             }
-            CommandResult::BlueprintInit { name, actions, .. } => {
-                render_blueprint_init_actions(actions)?;
-                println!("Project initialized (blueprint name: '{}')", name);
+            CommandResult::Init {
+                name: _, actions, ..
+            } => {
+                render_project_init_actions(actions)?;
+                println!("Project initialized");
             }
             CommandResult::BlueprintBuild { blueprint } => {
                 let name = if let Some(tag) = blueprint.version_tag.as_deref() {

@@ -126,7 +126,7 @@ pub enum CommandResult {
     ClusterDelete {
         name: String,
     },
-    BlueprintInit {
+    Init {
         name: String,
         path: PathBuf,
         orbitfile: PathBuf,

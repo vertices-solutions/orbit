@@ -18,8 +18,9 @@ pub use project::{
     BlueprintRuleSet, OrbitfileProjectConfig, TemplateConfig, TemplateField, TemplateFieldType,
     build_default_orbitfile_contents, discover_project_from_run_root, load_blueprint_from_root,
     load_project_from_root, merge_run_filters, resolve_orbitfile_sbatch_script,
-    sanitize_blueprint_name, template_config_from_json, upsert_orbitfile_blueprint_name,
-    validate_blueprint_name,
+    sanitize_blueprint_name, sanitize_project_name, template_config_from_json,
+    upsert_orbitfile_blueprint_name, upsert_orbitfile_project_name, validate_blueprint_name,
+    validate_project_name,
 };
 pub use templates::{TemplateSpecialContext, TemplateValues, resolve_template_values};
 

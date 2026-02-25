@@ -3676,7 +3676,7 @@ fn discover_orbitfile_root(start: &Path) -> AppResult<Option<PathBuf>> {
 #[derive(Deserialize)]
 struct RawOrbitfile {
     #[serde(default)]
-    blueprint: Option<RawBlueprint>,
+    project: Option<RawProject>,
     #[serde(default)]
     retrieve: Option<RawRetrieve>,
     #[serde(default)]
@@ -3686,7 +3686,7 @@ struct RawOrbitfile {
 }
 
 #[derive(Deserialize)]
-struct RawBlueprint {
+struct RawProject {
     name: String,
 }
 
@@ -3731,12 +3731,12 @@ fn load_orbitfile_metadata(orbitfile_path: &Path) -> AppResult<OrbitfileMetadata
             orbitfile_path.display()
         ))
     })?;
-    let blueprint = raw
-        .blueprint
-        .ok_or_else(|| invalid_argument("Orbitfile is missing [blueprint]"))?;
-    let name = blueprint.name.trim().to_string();
+    let project = raw
+        .project
+        .ok_or_else(|| invalid_argument("Orbitfile is missing [project]"))?;
+    let name = project.name.trim().to_string();
     if name.is_empty() {
-        return Err(invalid_argument("Orbitfile is missing [blueprint].name"));
+        return Err(invalid_argument("Orbitfile is missing [project].name"));
     }
 
     let default_retrieve_path = trim_optional(raw.retrieve.and_then(|v| v.default_path));

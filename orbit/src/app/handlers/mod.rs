@@ -17,8 +17,8 @@ use crate::app::services::{
     AddClusterResolver, BlueprintRuleSet, PathResolver, SbatchSelector, TemplateSpecialContext,
     build_default_orbitfile_contents, discover_project_from_run_root, load_blueprint_from_root,
     merge_run_filters, resolve_orbitfile_sbatch_script, resolve_template_values,
-    sanitize_blueprint_name, template_config_from_json, upsert_orbitfile_blueprint_name,
-    validate_blueprint_name,
+    sanitize_project_name, template_config_from_json, upsert_orbitfile_project_name,
+    validate_blueprint_name, validate_project_name,
 };
 
 pub async fn handle_ping(ctx: &AppContext, _cmd: PingCommand) -> AppResult<CommandResult> {
@@ -735,11 +735,11 @@ pub async fn handle_cluster_delete(
     Ok(CommandResult::ClusterDelete { name: cmd.name })
 }
 
-pub async fn handle_blueprint_init(
+pub async fn handle_project_init(
     ctx: &AppContext,
-    cmd: BlueprintInitCommand,
+    cmd: ProjectInitCommand,
 ) -> AppResult<CommandResult> {
-    let init_path = resolve_blueprint_init_path(ctx, &cmd.path)?;
+    let init_path = resolve_project_init_path(ctx, &cmd.path)?;
     let parent = init_path.parent().ok_or_else(|| {
         AppError::invalid_argument(format!(
             "cannot initialize project at '{}'",
@@ -760,15 +760,15 @@ pub async fn handle_blueprint_init(
 
     let orbitfile_path = init_path.join("Orbitfile");
     let orbitfile_exists = ctx.fs.is_file(&orbitfile_path)?;
-    let resolved_name = resolve_blueprint_init_name(ctx, cmd.name, &init_path).await?;
-    validate_blueprint_name(&resolved_name)?;
+    let resolved_name = resolve_project_init_name(ctx, cmd.name, &init_path).await?;
+    validate_project_name(&resolved_name)?;
 
     let contents = if orbitfile_exists {
         let bytes = ctx.fs.read_file(&orbitfile_path)?;
         let existing = String::from_utf8(bytes).map_err(|err| {
             AppError::invalid_argument(format!("invalid Orbitfile encoding: {err}"))
         })?;
-        upsert_orbitfile_blueprint_name(Some(existing.as_str()), &resolved_name)?
+        upsert_orbitfile_project_name(Some(existing.as_str()), &resolved_name)?
     } else {
         build_default_orbitfile_contents(&resolved_name)?
     };
@@ -796,7 +796,7 @@ pub async fn handle_blueprint_init(
     }
     let canonical = ctx.fs.canonicalize(&init_path)?;
 
-    Ok(CommandResult::BlueprintInit {
+    Ok(CommandResult::Init {
         name: resolved_name,
         path: canonical.clone(),
         orbitfile: canonical.join("Orbitfile"),
@@ -809,7 +809,7 @@ pub async fn handle_blueprint_build(
     ctx: &AppContext,
     cmd: BlueprintBuildCommand,
 ) -> AppResult<CommandResult> {
-    let build_path = resolve_blueprint_init_path(ctx, &cmd.path)?;
+    let build_path = resolve_project_init_path(ctx, &cmd.path)?;
     let canonical = ctx.fs.canonicalize(&build_path)?;
     let _blueprint_config = load_blueprint_from_root(ctx.fs.as_ref(), &canonical)?;
     let blueprint = ctx
@@ -1013,7 +1013,7 @@ fn resolve_cluster_by_name_or_default(
         })
 }
 
-fn resolve_blueprint_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {
+fn resolve_project_init_path(ctx: &AppContext, path: &std::path::Path) -> AppResult<PathBuf> {
     if path.is_absolute() {
         Ok(path.to_path_buf())
     } else {
@@ -1021,17 +1021,17 @@ fn resolve_blueprint_init_path(ctx: &AppContext, path: &std::path::Path) -> AppR
     }
 }
 
-async fn resolve_blueprint_init_name(
+async fn resolve_project_init_name(
     ctx: &AppContext,
     requested: Option<String>,
     init_path: &std::path::Path,
 ) -> AppResult<String> {
     if let Some(name) = requested {
         let trimmed = name.trim().to_string();
-        validate_blueprint_name(&trimmed)?;
+        validate_project_name(&trimmed)?;
         if ctx.ui_mode.is_interactive() {
             ctx.output
-                .success(&format!("Blueprint name: {trimmed}"))
+                .success(&format!("Project name: {trimmed}"))
                 .await?;
         }
         return Ok(trimmed);
@@ -1046,20 +1046,20 @@ async fn resolve_blueprint_init_name(
     let default_name = init_path
         .file_name()
         .and_then(|name| name.to_str())
-        .map(sanitize_blueprint_name)
+        .map(sanitize_project_name)
         .filter(|value| !value.trim().is_empty())
-        .unwrap_or_else(|| "blueprint".to_string());
+        .unwrap_or_else(|| "project".to_string());
     let mut prompt = ctx
         .interaction
         .prompt_line_with_default_confirmable(
-            "Blueprint name: ",
-            "Blueprint identifier used by orbit blueprint build/run commands.",
+            "Project name: ",
+            "Project identifier used by orbit blueprint build/run commands.",
             &default_name,
         )
         .await?;
     let name = prompt.input.trim().to_string();
-    validate_blueprint_name(&name)?;
-    prompt.finish_success(&format!("Blueprint name: {name}"))?;
+    validate_project_name(&name)?;
+    prompt.finish_success(&format!("Project name: {name}"))?;
     Ok(name)
 }
 
