@@ -68,35 +68,14 @@ impl<'a> AddClusterResolver<'a> {
         existing_names: &HashSet<String>,
     ) -> AppResult<ResolvedAddCluster> {
         let non_interactive = !self.ui_mode.is_interactive();
-        let destination = normalize_option(args.destination);
+        let destination = args.destination.trim().to_string();
         let name_arg = normalize_option(args.name);
         let identity_path_arg = normalize_option(args.identity_path);
         let default_base_path_arg = normalize_option(args.default_base_path);
 
-        let parsed_destination = if let Some(value) = destination.as_deref() {
-            let parsed = parse_destination(value)?;
+        let parsed_destination = {
+            let parsed = parse_destination(&destination)?;
             self.validate_destination(&parsed)?;
-            parsed
-        } else {
-            if non_interactive {
-                return Err(AppError::invalid_argument(
-                    "destination is required in non-interactive mode",
-                ));
-            }
-            let (parsed, _) = self
-                .prompt_and_validate(
-                    "Destination: ",
-                    "SSH destination in user@host[:port] form.",
-                    None,
-                    "Validating destination...",
-                    |input| {
-                        let parsed = parse_destination(input)?;
-                        self.validate_destination(&parsed)?;
-                        Ok((parsed, input.to_string()))
-                    },
-                    |(_, input)| format!("Destination: {input}"),
-                )
-                .await?;
             parsed
         };
 
@@ -835,7 +814,6 @@ const SCIENTISTS: &[&str] = &[
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::errors::ErrorType;
     use std::fs::OpenOptions;
     use std::io::Write;
     use std::net::TcpListener;
@@ -1002,7 +980,7 @@ mod tests {
             Err(err) => panic!("failed to create identity file: {err}"),
         };
         let args = AddClusterCommand {
-            destination: Some(format!("alex@localhost:{port}")),
+            destination: format!("alex@localhost:{port}"),
             name: None,
             identity_path: Some(identity_path.clone()),
             default_base_path: None,
@@ -1024,27 +1002,6 @@ mod tests {
         );
         assert_eq!(resolved.username, "alex");
         assert_eq!(resolved.name, "localhost");
-    }
-
-    #[tokio::test]
-    async fn resolve_add_cluster_non_interactive_requires_destination() {
-        let args = AddClusterCommand {
-            destination: None,
-            name: None,
-            identity_path: Some("~/.ssh/id_rsa".into()),
-            default_base_path: None,
-            is_default: false,
-        };
-
-        let resolver = AddClusterResolver::new(
-            &TestInteraction,
-            &StdFilesystem,
-            &StdNetwork,
-            UiMode::NonInteractive,
-        );
-        let err = resolver.resolve(args, &HashSet::new()).await.unwrap_err();
-        assert_eq!(err.kind, ErrorType::InvalidArgument);
-        assert!(err.message.contains("destination"));
     }
 
     #[test]
@@ -1082,7 +1039,7 @@ mod tests {
             Err(err) => panic!("failed to create identity file: {err}"),
         };
         let args = AddClusterCommand {
-            destination: Some(format!("alex@127.0.0.1:{port}")),
+            destination: format!("alex@127.0.0.1:{port}"),
             name: Some("local".into()),
             identity_path: Some(identity_path),
             default_base_path: None,

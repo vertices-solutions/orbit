@@ -381,9 +381,9 @@ pub struct JobRunArgs {
 
 #[derive(Args, Debug)]
 pub struct AddClusterArgs {
-    /// Destination in ssh format: user@host[:port] (required in non-interactive mode)
+    /// Destination in ssh format: user@host[:port].
     #[arg(value_name = "DESTINATION")]
-    pub destination: Option<String>,
+    pub destination: String,
 
     /// Friendly cluster name you’ll use in other commands (e.g. "gpu01" or "lab-cluster").
     #[arg(long)]
@@ -721,6 +721,12 @@ mod tests {
             },
             _ => panic!("expected cluster command"),
         }
+    }
+
+    #[test]
+    fn cluster_add_requires_destination() {
+        let args = Cli::try_parse_from(["orbit", "cluster", "add"]);
+        assert!(args.is_err());
     }
 
     #[test]

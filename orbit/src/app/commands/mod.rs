@@ -140,7 +140,7 @@ pub struct ClusterLsCommand {
 
 #[derive(Debug, Clone)]
 pub struct AddClusterCommand {
-    pub destination: Option<String>,
+    pub destination: String,
     pub name: Option<String>,
     pub identity_path: Option<String>,
     pub default_base_path: Option<String>,
