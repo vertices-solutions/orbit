@@ -722,6 +722,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         let mut client = self.connect().await?;
         let (tx_ans, rx_ans) = mpsc::channel::<AddClusterRequest>(16);
         let outbound = ReceiverStream::new(rx_ans);
+        let cluster_name = name.clone();
         let host: add_cluster_init::Host = match hostname {
             Some(v) => add_cluster_init::Host::Hostname(v),
             None => match ip {
@@ -781,6 +782,7 @@ impl OrbitdPort for GrpcOrbitdPort {
         let mut selected_is_default = planned_is_default;
         let mut scratch_options: Vec<String> = Vec::new();
         let gathering_spinner_message = "Gathering additional cluster information...";
+        let connecting_spinner_message = format!("Connecting to {cluster_name}...");
         let mut gathering_feedback: Option<Box<dyn PromptFeedbackPort>> =
             if interactive_scratch_selection && selected_scratch_directory.is_none() {
                 Some(interaction.prompt_feedback().await?)
@@ -791,16 +793,43 @@ impl OrbitdPort for GrpcOrbitdPort {
         let mut active_validation_spinner_message: Option<String> = None;
         let mut pending_validation_path: Option<String> = None;
         let mut validation_spinner: Option<InlineSpinner> = None;
+        let mut connection_spinner = InlineSpinner::start(&connecting_spinner_message);
+        let mut connection_reported = false;
         while let Some(item) = inbound.next().await {
             match item {
                 Ok(proto::StreamEvent { event: Some(ev) }) => match ev {
                     stream_event::Event::Stdout(bytes) => {
+                        report_add_cluster_connected(
+                            &cluster_name,
+                            &mut connection_reported,
+                            &mut connection_spinner,
+                            output,
+                        )
+                        .await?;
                         output.on_stdout(&bytes).await?;
                     }
                     stream_event::Event::Stderr(bytes) => {
+                        report_add_cluster_connected(
+                            &cluster_name,
+                            &mut connection_reported,
+                            &mut connection_spinner,
+                            output,
+                        )
+                        .await?;
                         output.on_stderr(&bytes).await?;
                     }
                     stream_event::Event::ExitCode(code) => {
+                        if code == 0 {
+                            report_add_cluster_connected(
+                                &cluster_name,
+                                &mut connection_reported,
+                                &mut connection_spinner,
+                                output,
+                            )
+                            .await?;
+                        } else if let Some(mut spinner) = connection_spinner.take() {
+                            spinner.stop();
+                        }
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
@@ -814,6 +843,10 @@ impl OrbitdPort for GrpcOrbitdPort {
                         break;
                     }
                     stream_event::Event::Mfa(mfa) => {
+                        let connection_spinner_was_active = !connection_reported;
+                        if let Some(mut spinner) = connection_spinner.take() {
+                            spinner.stop();
+                        }
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
@@ -852,6 +885,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                         } else if let Some(message) = validation_spinner_active_message.as_deref() {
                             validation_spinner = InlineSpinner::start(message);
                         }
+                        if connection_spinner_was_active {
+                            connection_spinner = InlineSpinner::start(&connecting_spinner_message);
+                        }
                         if gathering_was_active {
                             if let Some(feedback) = gathering_feedback.as_mut() {
                                 feedback.start_information_gathering(gathering_spinner_message)?;
@@ -859,6 +895,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                         }
                     }
                     stream_event::Event::Error(err) => {
+                        if let Some(mut spinner) = connection_spinner.take() {
+                            spinner.stop();
+                        }
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
@@ -876,6 +915,13 @@ impl OrbitdPort for GrpcOrbitdPort {
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
+                        report_add_cluster_connected(
+                            &cluster_name,
+                            &mut connection_reported,
+                            &mut connection_spinner,
+                            output,
+                        )
+                        .await?;
                         if gathering_active {
                             if let Some(feedback) = gathering_feedback.as_mut() {
                                 feedback.stop_information_gathering()?;
@@ -900,6 +946,13 @@ impl OrbitdPort for GrpcOrbitdPort {
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
+                        report_add_cluster_connected(
+                            &cluster_name,
+                            &mut connection_reported,
+                            &mut connection_spinner,
+                            output,
+                        )
+                        .await?;
                         active_validation_spinner_message = None;
                         if validation.accepted {
                             selected_scratch_directory = validation.directory;
@@ -935,6 +988,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                         }
                     }
                     stream_event::Event::AddClusterBasePathPrompt(prompt) => {
+                        if let Some(mut spinner) = connection_spinner.take() {
+                            spinner.stop();
+                        }
                         if let Some(mut active_spinner) = validation_spinner.take() {
                             active_spinner.stop();
                         }
@@ -991,6 +1047,13 @@ impl OrbitdPort for GrpcOrbitdPort {
                             }
                             selected_default_base_path = Some(validated_path);
                             pending_base_path_input = None;
+                            report_add_cluster_connected(
+                                &cluster_name,
+                                &mut connection_reported,
+                                &mut connection_spinner,
+                                output,
+                            )
+                            .await?;
                             if !gathering_active {
                                 if let Some(feedback) = gathering_feedback.as_mut() {
                                     feedback
@@ -1019,6 +1082,13 @@ impl OrbitdPort for GrpcOrbitdPort {
                                     )
                                     .await?;
                             }
+                            report_add_cluster_connected(
+                                &cluster_name,
+                                &mut connection_reported,
+                                &mut connection_spinner,
+                                output,
+                            )
+                            .await?;
                             let next_default =
                                 base_path_default.as_deref().unwrap_or("~/runs").to_string();
                             let mut next_prompt =
@@ -1042,6 +1112,13 @@ impl OrbitdPort for GrpcOrbitdPort {
                             }
                             gathering_active = false;
                         }
+                        report_add_cluster_connected(
+                            &cluster_name,
+                            &mut connection_reported,
+                            &mut connection_spinner,
+                            output,
+                        )
+                        .await?;
 
                         let make_default = if let Some(value) = planned_is_default {
                             value
@@ -1070,6 +1147,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                 },
                 Ok(proto::StreamEvent { event: None }) => {}
                 Err(status) => {
+                    if let Some(mut spinner) = connection_spinner.take() {
+                        spinner.stop();
+                    }
                     if let Some(mut active_spinner) = validation_spinner.take() {
                         active_spinner.stop();
                     }
@@ -1086,6 +1166,9 @@ impl OrbitdPort for GrpcOrbitdPort {
                     break;
                 }
             }
+        }
+        if let Some(mut spinner) = connection_spinner.take() {
+            spinner.stop();
         }
         if let Some(mut active_spinner) = validation_spinner.take() {
             active_spinner.stop();
@@ -1417,6 +1500,24 @@ async fn send_add_cluster_default_selection(
         })
         .await
         .map_err(|_| AppError::remote_error("server closed while sending default selection"))
+}
+
+async fn report_add_cluster_connected(
+    cluster_name: &str,
+    connection_reported: &mut bool,
+    connection_spinner: &mut Option<InlineSpinner>,
+    output: &mut dyn StreamOutputPort,
+) -> AppResult<()> {
+    if *connection_reported {
+        return Ok(());
+    }
+    *connection_reported = true;
+    if let Some(mut spinner) = connection_spinner.take() {
+        spinner.stop();
+    }
+    output
+        .on_stderr(format!("✓ Connected to {cluster_name}\n").as_bytes())
+        .await
 }
 
 fn daemon_unavailable_message(daemon_endpoint: &str) -> String {
