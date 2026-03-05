@@ -65,7 +65,7 @@ pub fn cluster_status_to_response(status: &ClusterStatus) -> ListClustersUnitRes
 
 pub fn job_record_to_response(jr: &JobRecord) -> ListJobsUnitResponse {
     ListJobsUnitResponse {
-        name: jr.name.clone(),
+        name: jr.host_name.clone(),
         job_id: jr.id,
         scheduler_id: jr.scheduler_id,
         created_at: jr.created_at.clone(),
@@ -206,7 +206,7 @@ mod tests {
         let record = JobRecord {
             id: 42,
             scheduler_id: Some(31415),
-            name: "train".to_string(),
+            host_name: "train".to_string(),
             created_at: "2026-02-07T00:00:00Z".to_string(),
             finished_at: Some("2026-02-07T00:10:00Z".to_string()),
             is_completed: true,

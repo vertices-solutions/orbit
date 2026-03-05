@@ -1084,7 +1084,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs where host_id = ?1
             )
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.blueprint_name as blueprint_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.blueprint_name as blueprint_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as host_name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -1112,7 +1112,7 @@ impl HostStore {
                    aj.blueprint_name as blueprint_name,
                    aj.default_retrieve_path as default_retrieve_path,
                    aj.template_values as template_values,
-                   h.name as name
+                   h.name as host_name
             from jobs aj
             join hosts h on aj.host_id = h.id
             where aj.id = ?1
@@ -1130,7 +1130,7 @@ impl HostStore {
             with all_jobs as (
                 select * from jobs
             )
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.blueprint_name as blueprint_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.blueprint_name as blueprint_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as host_name
             from all_jobs aj
             join hosts h
               on aj.host_id = h.id;
@@ -1144,7 +1144,7 @@ impl HostStore {
     pub async fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let rows = sqlx::query(
             r#"
-            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.blueprint_name as blueprint_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as name
+            select aj.id as id, aj.scheduler_id as scheduler_id,aj.is_completed as is_completed,aj.created_at as created_at,aj.completed_at as completed_at,aj.terminal_state as terminal_state,aj.scheduler_state as scheduler_state,aj.local_path as local_path,aj.remote_path as remote_path,aj.stdout_path as stdout_path,aj.stderr_path as stderr_path,aj.blueprint_name as blueprint_name,aj.default_retrieve_path as default_retrieve_path,aj.template_values as template_values,h.name as host_name
             from jobs aj
             join hosts h
               on aj.host_id = h.id
@@ -1337,7 +1337,7 @@ fn row_to_job(row: sqlx::sqlite::SqliteRow) -> JobRecord {
     JobRecord {
         id: row.try_get("id").unwrap(),
         scheduler_id: row.try_get("scheduler_id").unwrap(),
-        name: row.try_get("name").unwrap(),
+        host_name: row.try_get("host_name").unwrap(),
         created_at: row.try_get("created_at").unwrap(),
         finished_at: row.try_get("completed_at").unwrap(),
         is_completed: row.try_get("is_completed").unwrap(),
@@ -1665,7 +1665,7 @@ mod tests {
         assert_eq!(jobs.len(), 1);
         let got = &jobs[0];
         assert_eq!(got.scheduler_id, Some(42));
-        assert_eq!(got.name, "host-a");
+        assert_eq!(got.host_name, "host-a");
         assert_eq!(got.local_path, "/tmp/local");
         assert_eq!(got.remote_path, "/remote/run");
         assert!(!got.is_completed);
@@ -2073,7 +2073,7 @@ mod tests {
         let got = db.get_job_by_job_id(job_id).await.unwrap().unwrap();
         assert_eq!(got.id, job_id);
         assert_eq!(got.scheduler_id, Some(42));
-        assert_eq!(got.name, "host-a");
+        assert_eq!(got.host_name, "host-a");
     }
 
     #[tokio::test]

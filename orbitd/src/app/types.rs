@@ -148,7 +148,7 @@ pub struct NewJob {
 pub struct JobRecord {
     pub id: i64,
     pub scheduler_id: Option<i64>,
-    pub name: String,
+    pub host_name: String, // Name of host on which this job is running
     pub created_at: String,
     pub finished_at: Option<String>,
     pub is_completed: bool,

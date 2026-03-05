@@ -203,12 +203,12 @@ impl UseCases {
             .await
             .unwrap_or(true)
         {
-            let stream = NoopStreamOutput;
+            let stream: &'static dyn StreamOutputPort = &NOOP_STREAM_OUTPUT;
             let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
             drop(mfa_tx);
             let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
             self.remote_exec
-                .ensure_connected(&config, &stream, &mut mfa_port)
+                .ensure_connected(&config, stream, &mut mfa_port)
                 .await
                 .map_err(|err| {
                     AppError::with_message(
@@ -297,12 +297,12 @@ impl UseCases {
             .await
             .unwrap_or(true)
         {
-            let stream = NoopStreamOutput;
+            let stream: &'static dyn StreamOutputPort = &NOOP_STREAM_OUTPUT;
             let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
             drop(mfa_tx);
             let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
             self.remote_exec
-                .ensure_connected(&config, &stream, &mut mfa_port)
+                .ensure_connected(&config, stream, &mut mfa_port)
                 .await
                 .map_err(|err| {
                     AppError::with_message(
@@ -632,7 +632,7 @@ find jobs for '{base_name}' and cancel them with `job cancel`"
         };
         if !force {
             let running_jobs = self.jobs.list_running_jobs().await?;
-            if running_jobs.iter().any(|job| job.name == trimmed) {
+            if running_jobs.iter().any(|job| job.host_name == trimmed) {
                 return Err(AppError::with_message(
                     AppErrorKind::Conflict,
                     codes::CONFLICT,
@@ -880,7 +880,7 @@ cancel them with `job cancel` or pass --force"
                     ));
                 }
             };
-            if !input.name.is_empty() && input.name != job.name {
+            if !input.name.is_empty() && input.name != job.host_name {
                 return Err(AppError::new(
                     AppErrorKind::InvalidArgument,
                     codes::NOT_FOUND,
@@ -908,7 +908,7 @@ cancel them with `job cancel` or pass --force"
                     .to_string_lossy()
                     .into_owned(),
             };
-            (job.name, list_path)
+            (job.host_name, list_path)
         } else {
             if input.name.is_empty() {
                 return Err(AppError::new(
@@ -990,7 +990,7 @@ cancel them with `job cancel` or pass --force"
         };
         let telemetry_base = TelemetryEvent {
             project: job.blueprint_name.clone(),
-            cluster: Some(job.name.clone()),
+            cluster: Some(job.host_name.clone()),
             job_id: Some(input.job_id),
             remote_path: Some(job.remote_path.clone()),
             ..TelemetryEvent::default()
@@ -1066,7 +1066,7 @@ cancel them with `job cancel` or pass --force"
             }
         }
 
-        let config = match self.config_for_host_name(&job.name).await {
+        let config = match self.config_for_host_name(&job.host_name).await {
             Ok(value) => value,
             Err(err) => {
                 let _ = stream
@@ -1275,7 +1275,7 @@ cancel them with `job cancel` or pass --force"
             job.stdout_path.clone()
         };
 
-        let config = match self.config_for_host_name(&job.name).await {
+        let config = match self.config_for_host_name(&job.host_name).await {
             Ok(value) => value,
             Err(err) => {
                 let _ = stream
@@ -1412,7 +1412,7 @@ cancel them with `job cancel` or pass --force"
             return Ok(());
         };
 
-        let config = match self.config_for_host_name(&job.name).await {
+        let config = match self.config_for_host_name(&job.host_name).await {
             Ok(value) => value,
             Err(err) => {
                 let _ = stream
@@ -1536,7 +1536,7 @@ cancel them with `job cancel` or pass --force"
 
         let telemetry_base = TelemetryEvent {
             project: job.blueprint_name.clone(),
-            cluster: Some(job.name.clone()),
+            cluster: Some(job.host_name.clone()),
             job_id: Some(input.job_id),
             remote_path: Some(job.remote_path.clone()),
             ..TelemetryEvent::default()
@@ -1586,7 +1586,7 @@ cancel them with `job cancel` or pass --force"
             return Ok(());
         }
 
-        let config = match self.config_for_host_name(&job.name).await {
+        let config = match self.config_for_host_name(&job.host_name).await {
             Ok(value) => value,
             Err(err) => {
                 let _ = stream
@@ -2544,10 +2544,13 @@ cancel them with `job cancel` or pass --force"
     }
 
     pub async fn check_running_jobs(&self, min_age: StdDuration) -> AppResult<()> {
+        // Get jobs to check from the DB
         let jobs = self.jobs.list_running_jobs().await?;
         if jobs.is_empty() {
             return Ok(());
         }
+
+        // Enumerate hosts
         let hosts = self.clusters.list_hosts(None).await?;
         let min_age = TimeDuration::try_from(min_age).unwrap_or(TimeDuration::ZERO);
         let now = self.clock.now_utc();
@@ -2559,7 +2562,10 @@ cancel them with `job cancel` or pass --force"
 
         let mut jobs_by_host: HashMap<String, Vec<JobRecord>> = HashMap::new();
         for job in jobs {
-            jobs_by_host.entry(job.name.clone()).or_default().push(job);
+            jobs_by_host
+                .entry(job.host_name.clone())
+                .or_default()
+                .push(job);
         }
 
         let mut completed_ids: Vec<(i64, Option<String>)> = Vec::new();
@@ -2582,13 +2588,13 @@ cancel them with `job cancel` or pass --force"
                 .await
                 .unwrap_or(true)
             {
-                let stream = NoopStreamOutput;
+                let stream: &'static dyn StreamOutputPort = &NOOP_STREAM_OUTPUT;
                 let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
                 drop(mfa_tx);
                 let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
                 if let Err(err) = self
                     .remote_exec
-                    .ensure_connected(&config, &stream, &mut mfa_port)
+                    .ensure_connected(&config, stream, &mut mfa_port)
                     .await
                 {
                     tracing::warn!("failed to connect to {name} for job checks: {err}");
@@ -3183,6 +3189,7 @@ impl MfaPort for GrpcMfaPort {
 }
 
 struct NoopStreamOutput;
+static NOOP_STREAM_OUTPUT: NoopStreamOutput = NoopStreamOutput;
 
 #[async_trait::async_trait]
 impl StreamOutputPort for NoopStreamOutput {
@@ -4645,7 +4652,7 @@ mod tests {
             jobs.iter()
                 .all(|job| job.blueprint_name.as_deref() == Some("demo-project"))
         );
-        let mut cluster_names: Vec<&str> = jobs.iter().map(|job| job.name.as_str()).collect();
+        let mut cluster_names: Vec<&str> = jobs.iter().map(|job| job.host_name.as_str()).collect();
         cluster_names.sort_unstable();
         assert_eq!(cluster_names, vec!["cluster-a", "cluster-b"]);
     }
@@ -4660,7 +4667,7 @@ mod tests {
             .await
             .expect("list jobs");
         assert_eq!(jobs.len(), 1);
-        assert_eq!(jobs[0].name, "cluster-a");
+        assert_eq!(jobs[0].host_name, "cluster-a");
         assert_eq!(jobs[0].blueprint_name.as_deref(), Some("demo-project"));
     }
 
