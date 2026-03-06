@@ -1,0 +1,8 @@
+{
+  "label": "orbit cluster",
+  "position": 2,
+  "link": {
+    "type": "doc",
+    "id": "cli/commands/cluster/orbit-cluster"
+  }
+}
