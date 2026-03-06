@@ -306,6 +306,7 @@ mod tests {
             default_base_path: Some("/home/alice/jobs".to_string()),
             default_scratch_directory: Some("/scratch/alice".to_string()),
             is_default: false,
+            needs_manual_interaction: false,
         }
     }
 }

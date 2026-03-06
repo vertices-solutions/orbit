@@ -4,6 +4,7 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration as StdDuration, Instant};
 
 use proto::{
@@ -93,7 +94,7 @@ impl UseCases {
     }
 
     pub async fn list_clusters(&self, check_reachability: bool) -> AppResult<Vec<ClusterStatus>> {
-        let hosts = self.clusters.list_hosts(None).await?;
+        let hosts = self.clusters.list_hosts(None, None).await?;
         let mut out = Vec::with_capacity(hosts.len());
         for host in hosts {
             let reachable = if check_reachability {
@@ -390,6 +391,8 @@ impl UseCases {
             self.remote_exec.send_keepalive(&host.name).await?;
         }
 
+        self.set_host_needs_manual_interaction(&host, false).await?;
+
         self.telemetry.event(
             "cluster.connected",
             TelemetryEvent {
@@ -666,7 +669,7 @@ cancel them with `job cancel` or pass --force"
     }
 
     async fn promote_last_added_cluster_to_default(&self) -> AppResult<()> {
-        let mut remaining_hosts = self.clusters.list_hosts(None).await?;
+        let mut remaining_hosts = self.clusters.list_hosts(None, None).await?;
         let Some(last_added) = remaining_hosts.pop() else {
             return Ok(());
         };
@@ -2551,7 +2554,7 @@ cancel them with `job cancel` or pass --force"
         }
 
         // Enumerate hosts
-        let hosts = self.clusters.list_hosts(None).await?;
+        let hosts = self.clusters.list_hosts(None, Some(false)).await?;
         let min_age = TimeDuration::try_from(min_age).unwrap_or(TimeDuration::ZERO);
         let now = self.clock.now_utc();
 
@@ -2559,7 +2562,7 @@ cancel them with `job cancel` or pass --force"
         for host in hosts {
             host_map.insert(host.name.clone(), host);
         }
-
+        // Create host -> jobs mapping
         let mut jobs_by_host: HashMap<String, Vec<JobRecord>> = HashMap::new();
         for job in jobs {
             jobs_by_host
@@ -2569,15 +2572,18 @@ cancel them with `job cancel` or pass --force"
         }
 
         let mut completed_ids: Vec<(i64, Option<String>)> = Vec::new();
-        for (name, host_jobs) in jobs_by_host {
-            let Some(host) = host_map.get(&name) else {
-                tracing::warn!("host record missing for running job on '{name}'");
+        for (host_name, host_jobs) in jobs_by_host {
+            // Iterating over host names and checking all the jobs, by host
+            let Some(host) = host_map.get(&host_name) else {
+                tracing::debug!(
+                    "skipping automatic checks for '{host_name}' (missing host or manual interaction required)"
+                );
                 continue;
             };
             let config = match self.config_for_host(host).await {
                 Ok(cfg) => cfg,
                 Err(err) => {
-                    tracing::warn!("failed to resolve session for {name}: {err}");
+                    tracing::warn!("failed to resolve session for {host_name}: {err}");
                     continue;
                 }
             };
@@ -2588,16 +2594,29 @@ cancel them with `job cancel` or pass --force"
                 .await
                 .unwrap_or(true)
             {
-                let stream: &'static dyn StreamOutputPort = &NOOP_STREAM_OUTPUT;
+                let stream = MfaTrackingStreamOutput::default();
                 let (mfa_tx, mfa_rx) = mpsc::channel::<proto::MfaAnswer>(1);
                 drop(mfa_tx);
                 let mut mfa_port = GrpcMfaPort { receiver: mfa_rx };
                 if let Err(err) = self
                     .remote_exec
-                    .ensure_connected(&config, stream, &mut mfa_port)
+                    .ensure_connected(&config, &stream, &mut mfa_port)
                     .await
                 {
-                    tracing::warn!("failed to connect to {name} for job checks: {err}");
+                    if stream.saw_mfa_prompt() {
+                        if let Err(store_err) =
+                            self.set_host_needs_manual_interaction(host, true).await
+                        {
+                            tracing::warn!(
+                                "failed to flag {host_name} as needing manual interaction: {store_err}"
+                            );
+                        } else {
+                            tracing::info!(
+                                "host {host_name} now requires manual reconnect after MFA prompt"
+                            );
+                        }
+                    }
+                    tracing::warn!("failed to connect to {host_name} for job checks: {err}");
                     continue;
                 }
             }
@@ -2625,14 +2644,14 @@ cancel them with `job cancel` or pass --force"
                     let capture = match self.remote_exec.exec_capture(&config, &command).await {
                         Ok(v) => v,
                         Err(e) => {
-                            tracing::warn!("sacct check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("sacct check failed on {host_name} for {job_id}: {e}");
                             continue;
                         }
                     };
                     if capture.exit_code != 0 {
                         let err_text = String::from_utf8_lossy(&capture.stderr);
                         tracing::warn!(
-                            "sacct returned {} on {name} for {job_id}: {}",
+                            "sacct returned {} on {host_name} for {job_id}: {}",
                             capture.exit_code,
                             err_text
                         );
@@ -2646,7 +2665,7 @@ cancel them with `job cancel` or pass --force"
                         }
                         None => {
                             tracing::debug!(
-                                "sacct returned no terminal state for {name} job {job_id}"
+                                "sacct returned no terminal state for {host_name} job {job_id}"
                             );
                         }
                     };
@@ -2655,13 +2674,13 @@ cancel them with `job cancel` or pass --force"
                     let capture = match self.remote_exec.exec_capture(&config, &command).await {
                         Ok(v) => v,
                         Err(e) => {
-                            tracing::warn!("squeue check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("squeue check failed on {host_name} for {job_id}: {e}");
                             continue;
                         }
                     };
                     if capture.exit_code != 0 {
                         tracing::warn!(
-                            "squeue returned {} on {name} for {job_id}: {}",
+                            "squeue returned {} on {host_name} for {job_id}: {}",
                             capture.exit_code,
                             String::from_utf8_lossy(&capture.stderr)
                         );
@@ -2675,7 +2694,7 @@ cancel them with `job cancel` or pass --force"
                             .await
                         {
                             tracing::warn!(
-                                "failed to update scheduler state for {name} job {job_id}: {e}"
+                                "failed to update scheduler state for {host_name} job {job_id}: {e}"
                             );
                         }
                     }
@@ -2693,7 +2712,7 @@ cancel them with `job cancel` or pass --force"
                                             .await
                                         {
                                             tracing::warn!(
-                                                "failed to update scheduler state for {name} job {job_id}: {e}"
+                                                "failed to update scheduler state for {host_name} job {job_id}: {e}"
                                             );
                                         }
                                         continue;
@@ -2703,17 +2722,17 @@ cancel them with `job cancel` or pass --force"
                                         continue;
                                     }
                                     tracing::debug!(
-                                        "scontrol returned non-terminal state for {name} job {job_id}: {state}"
+                                        "scontrol returned non-terminal state for {host_name} job {job_id}: {state}"
                                     );
                                     continue;
                                 }
                                 tracing::debug!(
-                                    "scontrol returned no job state for {name} job {job_id}"
+                                    "scontrol returned no job state for {host_name} job {job_id}"
                                 );
                             } else {
                                 let err_text = String::from_utf8_lossy(&capture.stderr);
                                 tracing::warn!(
-                                    "scontrol returned {} on {name} for {job_id}: {}",
+                                    "scontrol returned {} on {host_name} for {job_id}: {}",
                                     capture.exit_code,
                                     err_text
                                 );
@@ -2724,7 +2743,9 @@ cancel them with `job cancel` or pass --force"
                             }
                         }
                         Err(e) => {
-                            tracing::warn!("scontrol check failed on {name} for {job_id}: {e}");
+                            tracing::warn!(
+                                "scontrol check failed on {host_name} for {job_id}: {e}"
+                            );
                         }
                     }
 
@@ -2732,14 +2753,14 @@ cancel them with `job cancel` or pass --force"
                     let capture = match self.remote_exec.exec_capture(&config, &command).await {
                         Ok(v) => v,
                         Err(e) => {
-                            tracing::warn!("squeue check failed on {name} for {job_id}: {e}");
+                            tracing::warn!("squeue check failed on {host_name} for {job_id}: {e}");
                             continue;
                         }
                     };
                     if capture.exit_code != 0 {
                         let err_text = String::from_utf8_lossy(&capture.stderr);
                         tracing::warn!(
-                            "squeue returned {} on {name} for {job_id}: {}",
+                            "squeue returned {} on {host_name} for {job_id}: {}",
                             capture.exit_code,
                             err_text
                         );
@@ -2756,7 +2777,7 @@ cancel them with `job cancel` or pass --force"
                             .await
                         {
                             tracing::warn!(
-                                "failed to update scheduler state for {name} job {job_id}: {e}"
+                                "failed to update scheduler state for {host_name} job {job_id}: {e}"
                             );
                         }
                     } else {
@@ -2775,6 +2796,20 @@ cancel them with `job cancel` or pass --force"
                 tracing::warn!("failed to mark job {id} completed: {e}");
             }
         }
+        Ok(())
+    }
+
+    async fn set_host_needs_manual_interaction(
+        &self,
+        host: &HostRecord,
+        needs_manual_interaction: bool,
+    ) -> AppResult<()> {
+        if host.needs_manual_interaction == needs_manual_interaction {
+            return Ok(());
+        }
+        let mut updated = host_record_to_new_host(host, host.is_default);
+        updated.needs_manual_interaction = needs_manual_interaction;
+        self.clusters.upsert_host(&updated).await?;
         Ok(())
     }
 
@@ -2996,6 +3031,7 @@ cancel them with `job cancel` or pass --force"
             default_base_path: normalized_default_base_path,
             default_scratch_directory: normalized_default_scratch_directory,
             is_default,
+            needs_manual_interaction: false,
         };
 
         if self.clusters.upsert_host(&new_host).await.is_err() {
@@ -3191,9 +3227,34 @@ impl MfaPort for GrpcMfaPort {
 struct NoopStreamOutput;
 static NOOP_STREAM_OUTPUT: NoopStreamOutput = NoopStreamOutput;
 
+#[derive(Default)]
+struct MfaTrackingStreamOutput {
+    saw_mfa_prompt: AtomicBool,
+}
+
+impl MfaTrackingStreamOutput {
+    fn saw_mfa_prompt(&self) -> bool {
+        self.saw_mfa_prompt.load(Ordering::Relaxed)
+    }
+}
+
 #[async_trait::async_trait]
 impl StreamOutputPort for NoopStreamOutput {
     async fn send(&self, _event: StreamEvent) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn is_closed(&self) -> bool {
+        false
+    }
+}
+
+#[async_trait::async_trait]
+impl StreamOutputPort for MfaTrackingStreamOutput {
+    async fn send(&self, event: StreamEvent) -> AppResult<()> {
+        if matches!(event.event, Some(stream_event::Event::Mfa(_))) {
+            self.saw_mfa_prompt.store(true, Ordering::Relaxed);
+        }
         Ok(())
     }
 
@@ -3244,6 +3305,7 @@ fn host_record_to_new_host(host: &HostRecord, is_default: bool) -> NewHost {
         default_base_path: host.default_base_path.clone(),
         default_scratch_directory: host.default_scratch_directory.clone(),
         is_default,
+        needs_manual_interaction: host.needs_manual_interaction,
     }
 }
 
@@ -4321,6 +4383,103 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct MfaPromptingConnectRemoteExec {
+        ensure_connected_calls: Mutex<usize>,
+    }
+
+    impl MfaPromptingConnectRemoteExec {
+        fn ensure_connected_calls(&self) -> usize {
+            *self
+                .ensure_connected_calls
+                .lock()
+                .expect("ensure_connected_calls lock")
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl RemoteExecPort for MfaPromptingConnectRemoteExec {
+        async fn exec_capture(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+        ) -> AppResult<ExecCapture> {
+            panic!("exec_capture should not be called in check_running_jobs MFA tests");
+        }
+
+        async fn exec_stream(
+            &self,
+            _config: &SshConfig,
+            _command: &str,
+            _stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("exec_stream should not be called in check_running_jobs MFA tests");
+        }
+
+        async fn ensure_connected(
+            &self,
+            _config: &SshConfig,
+            stream: &dyn StreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            *self
+                .ensure_connected_calls
+                .lock()
+                .expect("ensure_connected_calls lock") += 1;
+            let _ = stream
+                .send(StreamEvent {
+                    event: Some(stream_event::Event::Mfa(proto::MfaPrompt {
+                        name: "test-mfa".to_string(),
+                        instructions: "OTP required".to_string(),
+                        prompts: vec![proto::Prompt {
+                            text: "code".to_string(),
+                            echo: false,
+                        }],
+                    })),
+                })
+                .await;
+            Err(AppError::with_message(
+                AppErrorKind::Aborted,
+                codes::AUTHENTICATION_FAILURE,
+                "client disconnected during MFA",
+            ))
+        }
+
+        async fn ensure_connected_submit(
+            &self,
+            _config: &SshConfig,
+            _stream: &dyn RunStreamOutputPort,
+            _mfa: &mut dyn MfaPort,
+        ) -> AppResult<()> {
+            panic!("ensure_connected_submit should not be called in check_running_jobs MFA tests");
+        }
+
+        async fn needs_connect(&self, _config: &SshConfig) -> AppResult<bool> {
+            Ok(true)
+        }
+
+        async fn directory_exists(
+            &self,
+            _config: &SshConfig,
+            _remote_dir: &str,
+        ) -> AppResult<bool> {
+            panic!("directory_exists should not be called in check_running_jobs MFA tests");
+        }
+
+        async fn send_keepalive(&self, _session_name: &str) -> AppResult<()> {
+            panic!("send_keepalive should not be called in check_running_jobs MFA tests");
+        }
+
+        async fn is_connected(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("is_connected should not be called in check_running_jobs MFA tests");
+        }
+
+        async fn remove_session(&self, _session_name: &str) -> AppResult<bool> {
+            panic!("remove_session should not be called in check_running_jobs MFA tests");
+        }
+    }
+
+    #[derive(Default)]
     struct NoopFileSync;
 
     #[async_trait::async_trait]
@@ -4399,6 +4558,7 @@ mod tests {
             default_base_path: Some("/home/alice/runs".to_string()),
             default_scratch_directory: Some("/scratch/alice".to_string()),
             is_default: false,
+            needs_manual_interaction: false,
         }
     }
 
@@ -4800,7 +4960,7 @@ mod tests {
 
         let hosts = usecases
             .clusters
-            .list_hosts(None)
+            .list_hosts(None, None)
             .await
             .expect("list hosts after delete");
         assert_eq!(hosts.len(), 2);
@@ -4809,6 +4969,47 @@ mod tests {
         assert_eq!(default_hosts[0].name, "cluster-c");
         assert!(hosts.iter().any(|host| host.name == "cluster-b"));
         assert!(hosts.iter().any(|host| host.name == "cluster-c"));
+    }
+
+    #[tokio::test]
+    async fn check_running_jobs_marks_manual_interaction_after_mfa_prompt_and_skips_next_scan() {
+        let remote_exec = Arc::new(MfaPromptingConnectRemoteExec::default());
+        let usecases = build_usecases_with_remote_exec(remote_exec.clone()).await;
+
+        let host_id = usecases
+            .clusters
+            .upsert_host(&sample_localhost_host("cluster-a"))
+            .await
+            .expect("insert cluster");
+        usecases
+            .jobs
+            .insert_job(&sample_job(host_id, "run-a", None))
+            .await
+            .expect("insert job");
+
+        usecases
+            .check_running_jobs(StdDuration::from_secs(0))
+            .await
+            .expect("first scan");
+
+        let host = usecases
+            .clusters
+            .get_by_name("cluster-a")
+            .await
+            .expect("cluster lookup")
+            .expect("cluster should exist");
+        assert!(host.needs_manual_interaction);
+        assert_eq!(remote_exec.ensure_connected_calls(), 1);
+
+        usecases
+            .check_running_jobs(StdDuration::from_secs(0))
+            .await
+            .expect("second scan");
+        assert_eq!(
+            remote_exec.ensure_connected_calls(),
+            1,
+            "host requiring manual interaction must be skipped on subsequent scans"
+        );
     }
 
     #[tokio::test]
@@ -4837,9 +5038,11 @@ mod tests {
             None,
         ));
         let usecases = build_usecases_with_remote_exec(remote_exec.clone()).await;
+        let mut host = sample_localhost_host("cluster-a");
+        host.needs_manual_interaction = true;
         usecases
             .clusters
-            .upsert_host(&sample_localhost_host("cluster-a"))
+            .upsert_host(&host)
             .await
             .expect("insert cluster");
 
@@ -4852,6 +5055,13 @@ mod tests {
 
         assert_eq!(remote_exec.keepalive_calls(), 1);
         assert_eq!(remote_exec.ensure_connected_calls(), 0);
+        let refreshed = usecases
+            .clusters
+            .get_by_name("cluster-a")
+            .await
+            .expect("cluster lookup")
+            .expect("cluster exists");
+        assert!(!refreshed.needs_manual_interaction);
     }
 
     #[tokio::test]
@@ -4866,9 +5076,11 @@ mod tests {
             None,
         ));
         let usecases = build_usecases_with_remote_exec(remote_exec.clone()).await;
+        let mut host = sample_localhost_host("cluster-a");
+        host.needs_manual_interaction = true;
         usecases
             .clusters
-            .upsert_host(&sample_localhost_host("cluster-a"))
+            .upsert_host(&host)
             .await
             .expect("insert cluster");
 
@@ -4881,6 +5093,13 @@ mod tests {
 
         assert_eq!(remote_exec.keepalive_calls(), 0);
         assert_eq!(remote_exec.ensure_connected_calls(), 1);
+        let refreshed = usecases
+            .clusters
+            .get_by_name("cluster-a")
+            .await
+            .expect("cluster lookup")
+            .expect("cluster exists");
+        assert!(!refreshed.needs_manual_interaction);
     }
 
     const SAMPLE_PARTITIONS_OUTPUT_ANONYMIZED: &str = concat!(

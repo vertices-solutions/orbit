@@ -137,6 +137,7 @@ impl HostStore {
               default_base_path TEXT,
               default_scratch_directory TEXT,
               is_default INTEGER NOT NULL DEFAULT 0,
+              needs_manual_interaction INTEGER NOT NULL DEFAULT 0,
               created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
               CHECK (hostname IS NOT NULL OR ip IS NOT NULL)
@@ -178,6 +179,16 @@ impl HostStore {
             sqlx::query("ALTER TABLE hosts ADD COLUMN is_default INTEGER NOT NULL DEFAULT 0")
                 .execute(&self.pool)
                 .await?;
+        }
+        if !columns
+            .iter()
+            .any(|name| name == "needs_manual_interaction")
+        {
+            sqlx::query(
+                "ALTER TABLE hosts ADD COLUMN needs_manual_interaction INTEGER NOT NULL DEFAULT 0",
+            )
+            .execute(&self.pool)
+            .await?;
         }
 
         sqlx::query(
@@ -347,8 +358,8 @@ impl HostStore {
               username, hostname, ip,
               slurm_major, slurm_minor, slurm_patch,
               distro_name, distro_version, kernel_version,
-              port, identity_path, accounting_available, default_base_path, default_scratch_directory, is_default
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+              port, identity_path, accounting_available, default_base_path, default_scratch_directory, is_default, needs_manual_interaction
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             "#,
         )
@@ -368,6 +379,7 @@ impl HostStore {
         .bind(&host.default_base_path)
         .bind(&host.default_scratch_directory)
         .bind(host.is_default)
+        .bind(host.needs_manual_interaction)
         .fetch_one(&self.pool)
         .await?;
 
@@ -435,8 +447,9 @@ impl HostStore {
               accounting_available = ?14,
               default_base_path = ?15,
               default_scratch_directory = ?16,
-              is_default = ?17
-            WHERE id = ?18
+              is_default = ?17,
+              needs_manual_interaction = ?18
+            WHERE id = ?19
             "#,
         )
         .bind(&host.name)
@@ -456,6 +469,7 @@ impl HostStore {
         .bind(&host.default_base_path)
         .bind(&host.default_scratch_directory)
         .bind(host.is_default)
+        .bind(host.needs_manual_interaction)
         .bind(id)
         .execute(&self.pool)
         .await?;
@@ -531,15 +545,31 @@ impl HostStore {
         Ok(row.map(row_to_host))
     }
 
-    /// List all hosts (optionally filter by username).
-    pub async fn list_hosts(&self, username: Option<&str>) -> Result<Vec<HostRecord>> {
+    /// List all hosts (optionally filter by username and manual-interaction flag).
+    pub async fn list_hosts(
+        &self,
+        username: Option<&str>,
+        needs_manual_interaction: Option<bool>,
+    ) -> Result<Vec<HostRecord>> {
         let mut out = Vec::new();
-        let mut rows = if let Some(u) = username {
-            sqlx::query("SELECT * FROM hosts WHERE username = ? ORDER BY id ASC")
+        let mut rows = match (username, needs_manual_interaction) {
+            (Some(u), Some(needs_manual)) => {
+                sqlx::query(
+                    "SELECT * FROM hosts WHERE username = ? AND needs_manual_interaction = ? ORDER BY id ASC",
+                )
                 .bind(u)
+                .bind(needs_manual)
                 .fetch(&self.pool)
-        } else {
-            sqlx::query("SELECT * FROM hosts ORDER BY id ASC").fetch(&self.pool)
+            }
+            (Some(u), None) => sqlx::query("SELECT * FROM hosts WHERE username = ? ORDER BY id ASC")
+                .bind(u)
+                .fetch(&self.pool),
+            (None, Some(needs_manual)) => sqlx::query(
+                "SELECT * FROM hosts WHERE needs_manual_interaction = ? ORDER BY id ASC",
+            )
+            .bind(needs_manual)
+            .fetch(&self.pool),
+            (None, None) => sqlx::query("SELECT * FROM hosts ORDER BY id ASC").fetch(&self.pool),
         };
 
         use futures_util::TryStreamExt;
@@ -1242,6 +1272,10 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
 
     let accounting_available = row.try_get::<i64, _>("accounting_available").unwrap_or(0) != 0;
     let is_default = row.try_get::<i64, _>("is_default").unwrap_or(0) != 0;
+    let needs_manual_interaction = row
+        .try_get::<i64, _>("needs_manual_interaction")
+        .unwrap_or(0)
+        != 0;
     HostRecord {
         id: row.try_get("id").unwrap(),
         name: row.try_get("name").unwrap(),
@@ -1265,6 +1299,7 @@ fn row_to_host(row: sqlx::sqlite::SqliteRow) -> HostRecord {
         default_base_path: row.try_get("default_base_path").unwrap(),
         default_scratch_directory: row.try_get("default_scratch_directory").ok().flatten(),
         is_default,
+        needs_manual_interaction,
     }
 }
 
@@ -1384,6 +1419,7 @@ mod tests {
             default_base_path: Some("/home/jeff/runs".to_string()),
             default_scratch_directory: Some("/scratch/jeff".to_string()),
             is_default: false,
+            needs_manual_interaction: false,
         }
     }
 
@@ -1520,6 +1556,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn list_hosts_filters_by_manual_interaction_flag() {
+        let db = HostStore::open_memory().await.unwrap();
+
+        let mut manual = make_host("needs-manual", "alice", Address::Hostname("h1".into()));
+        manual.needs_manual_interaction = true;
+        db.insert_host(&manual).await.unwrap();
+
+        let automatic_a = make_host("automatic-a", "alice", Address::Hostname("h2".into()));
+        db.insert_host(&automatic_a).await.unwrap();
+
+        let automatic_b = make_host("automatic-b", "bob", Address::Hostname("h3".into()));
+        db.insert_host(&automatic_b).await.unwrap();
+
+        let all = db.list_hosts(None, None).await.unwrap();
+        assert_eq!(all.len(), 3);
+
+        let manual_only = db.list_hosts(None, Some(true)).await.unwrap();
+        assert_eq!(manual_only.len(), 1);
+        assert_eq!(manual_only[0].name, "needs-manual");
+
+        let automatic_only = db.list_hosts(None, Some(false)).await.unwrap();
+        assert_eq!(automatic_only.len(), 2);
+        assert!(
+            automatic_only
+                .iter()
+                .all(|host| !host.needs_manual_interaction)
+        );
+
+        let alice_automatic = db.list_hosts(Some("alice"), Some(false)).await.unwrap();
+        assert_eq!(alice_automatic.len(), 1);
+        assert_eq!(alice_automatic[0].name, "automatic-a");
+    }
+
+    #[tokio::test]
     async fn update_name_conflict_is_rejected() {
         let db = HostStore::open_memory().await.unwrap();
 
@@ -1593,6 +1663,7 @@ mod tests {
             default_base_path: Some("/home/alice/runs".to_string()),
             default_scratch_directory: Some("/scratch/alice".to_string()),
             is_default: false,
+            needs_manual_interaction: false,
         };
         db.insert_host(&host).await.unwrap();
         let mut info_map: HashMap<String, serde_json::Value> = HashMap::new();

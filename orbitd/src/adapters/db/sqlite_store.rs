@@ -103,9 +103,13 @@ impl ClusterStorePort for SqliteStoreAdapter {
         skip(self, username),
         fields(op = "list_hosts", table = "hosts")
     )]
-    async fn list_hosts(&self, username: Option<&str>) -> AppResult<Vec<HostRecord>> {
+    async fn list_hosts(
+        &self,
+        username: Option<&str>,
+        needs_manual_interaction: Option<bool>,
+    ) -> AppResult<Vec<HostRecord>> {
         self.store
-            .list_hosts(username)
+            .list_hosts(username, needs_manual_interaction)
             .await
             .map_err(map_store_error)
     }

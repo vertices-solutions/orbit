@@ -15,5 +15,9 @@ pub trait ClusterStorePort: Send + Sync {
     async fn update_host(&self, id: i64, host: &NewHost) -> AppResult<()>;
     async fn delete_by_name(&self, name: &str) -> AppResult<usize>;
     async fn get_by_name(&self, name: &str) -> AppResult<Option<HostRecord>>;
-    async fn list_hosts(&self, username: Option<&str>) -> AppResult<Vec<HostRecord>>;
+    async fn list_hosts(
+        &self,
+        username: Option<&str>,
+        needs_manual_interaction: Option<bool>,
+    ) -> AppResult<Vec<HostRecord>>;
 }
