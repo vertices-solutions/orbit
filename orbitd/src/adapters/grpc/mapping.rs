@@ -60,6 +60,7 @@ pub fn cluster_status_to_response(status: &ClusterStatus) -> ListClustersUnitRes
         reachable: status.reachable,
         is_default: host.is_default,
         default_scratch_directory: host.default_scratch_directory.to_owned(),
+        needs_manual_interaction: host.needs_manual_interaction,
     }
 }
 
@@ -172,6 +173,7 @@ mod tests {
         assert_eq!(response.connected, true);
         assert_eq!(response.reachable, false);
         assert!(!response.is_default);
+        assert!(!response.needs_manual_interaction);
         assert_eq!(
             response.default_base_path.as_deref(),
             Some("/home/alice/jobs")
@@ -186,13 +188,16 @@ mod tests {
 
     #[test]
     fn cluster_status_to_response_maps_hostname_host() {
+        let mut host = host_record(Address::Hostname("hpc.example".to_string()));
+        host.needs_manual_interaction = true;
         let status = ClusterStatus {
-            host: host_record(Address::Hostname("hpc.example".to_string())),
+            host,
             connected: false,
             reachable: true,
         };
 
         let response = cluster_status_to_response(&status);
+        assert!(response.needs_manual_interaction);
         match response.host {
             Some(list_clusters_unit_response::Host::Hostname(value)) => {
                 assert_eq!(value, "hpc.example")

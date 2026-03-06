@@ -264,6 +264,7 @@ message ListClustersUnitResponse {
   bool reachable = 10;
   bool is_default = 11;
   optional string default_scratch_directory = 12;
+  bool needs_manual_interaction = 13;
 }
 
 message ListJobsRequest {

@@ -34,6 +34,10 @@ pub(super) fn cluster_to_json(
         json!(item.default_base_path.as_deref()),
     );
     out.insert("is_default".into(), json!(item.is_default));
+    out.insert(
+        "needs_manual_interaction".into(),
+        json!(item.needs_manual_interaction),
+    );
     Value::Object(out)
 }
 
@@ -75,6 +79,7 @@ mod tests {
             default_base_path: None,
             is_default: false,
             default_scratch_directory: None,
+            needs_manual_interaction: false,
         }
     }
 
@@ -113,6 +118,7 @@ mod tests {
         assert_eq!(json["name"], "cluster-a");
         assert_eq!(json["address"], "node");
         assert_eq!(json["is_default"], false);
+        assert_eq!(json["needs_manual_interaction"], false);
     }
 
     #[test]
@@ -132,6 +138,7 @@ mod tests {
         cluster.identity_path = None;
         cluster.default_base_path = Some("/cluster/base".to_string());
         cluster.accounting_available = true;
+        cluster.needs_manual_interaction = true;
 
         let json = cluster_to_json(&cluster, true);
         assert_eq!(json["status"], "disconnected");
@@ -141,6 +148,7 @@ mod tests {
         assert!(json["identity_path"].is_null());
         assert_eq!(json["default_base_path"], "/cluster/base");
         assert_eq!(json["accounting_available"], true);
+        assert_eq!(json["needs_manual_interaction"], true);
     }
 
     #[test]

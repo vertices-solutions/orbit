@@ -401,6 +401,14 @@ def validate_cluster_list_flags(orbit_cmd, cluster_name):
         raise RuntimeError(f"cluster list: cluster '{cluster_name}' is not configured")
     if "reachable" in default_cluster:
         raise RuntimeError("cluster list: reachable must be omitted without --check-reachability")
+    if "needs_manual_interaction" not in default_cluster:
+        raise RuntimeError(
+            "cluster list: needs_manual_interaction is missing from response"
+        )
+    if not isinstance(default_cluster.get("needs_manual_interaction"), bool):
+        raise RuntimeError(
+            "cluster list: needs_manual_interaction must be a boolean"
+        )
 
     with_reachability = parse_json_output(
         run_cmd(cmd + ["cluster", "list", "--check-reachability"])
@@ -418,6 +426,10 @@ def validate_cluster_list_flags(orbit_cmd, cluster_name):
     if "reachable" not in checked_cluster:
         raise RuntimeError(
             "cluster list --check-reachability: reachable is missing from response"
+        )
+    if "needs_manual_interaction" not in checked_cluster:
+        raise RuntimeError(
+            "cluster list --check-reachability: needs_manual_interaction is missing from response"
         )
 
 

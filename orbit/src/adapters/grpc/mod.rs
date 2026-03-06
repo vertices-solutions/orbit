@@ -843,7 +843,7 @@ impl OrbitdPort for GrpcOrbitdPort {
                         break;
                     }
                     stream_event::Event::Mfa(mfa) => {
-                        let connection_spinner_was_active = !connection_reported;
+                        let connection_spinner_was_active = connection_spinner.is_some();
                         if let Some(mut spinner) = connection_spinner.take() {
                             spinner.stop();
                         }

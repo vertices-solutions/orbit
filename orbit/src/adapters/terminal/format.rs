@@ -415,6 +415,7 @@ mod tests {
             default_base_path: None,
             is_default: false,
             default_scratch_directory: None,
+            needs_manual_interaction: false,
         }
     }
 
